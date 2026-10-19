@@ -1,0 +1,20 @@
+[project]
+name = "walkie-vision"
+version = "0.1.0"
+description = "Walkie's vision: object detection, pose, face recognition and person re-identification on ROS 2 (EIC RoboCup 2026)"
+requires-python = ">=3.12,<3.13"
+# Runtime dependencies (ROS 2, PyTorch, ONNX Runtime, the model libraries) are
+# declared in pixi.toml.
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# ROS 2 ships pytest plugins (launch_testing, etc.) that are not needed here.
+addopts = "-p no:launch_testing -p no:launch_ros -p no:ament_copyright -p no:ament_flake8 -p no:ament_pep257 -p no:ament_xmllint -p no:ament_lint"

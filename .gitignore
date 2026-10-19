@@ -1,0 +1,27 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+# Model files from `pixi run fetch-models` (see
+# docs/setup/01-vision-environment.md), and Ultralytics downloads into the
+# working directory
+models/
+weights/
+*.onnx
+*.pt
+*.pth
+*.ts
+# Output of `pixi run check-env`
+checks/output/
+# Output of `pixi run build-msgs`
+/ros2_ws/build/
+/ros2_ws/install/
+/ros2_ws/log/
+# Embedding bake-off recordings, frames and results (docs/guides/bakeoff.md).
+# They are large and may show people.
+/bakeoff-data/
+# MkDocs build output
+site/
+# Python
+__pycache__/
+*.egg-info/
+.pytest_cache/

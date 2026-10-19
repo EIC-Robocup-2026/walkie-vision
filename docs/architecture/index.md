@@ -1,0 +1,95 @@
+# Architecture
+
+This section explains how walkie-vision is put together and **why**. The
+[Setup Log](../setup/index.md) shows how each part was installed. These pages
+show how the parts fit, which alternatives we rejected, and what each choice
+costs later.
+
+| Page                | What it covers                                                                         |
+| ------------------- | -------------------------------------------------------------------------------------- |
+| [Vision](vision.md) | The two processes, the topics and the service, the messages, the model code, and every decision |
+
+## Architecture Decision Records
+
+Each significant decision is written down as an **Architecture Decision
+Record (ADR)**: a short file with the context, the decision and its
+consequences. The idea comes from
+[Michael Nygard's article](https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions).
+
+- Every ADR is one file in `docs/architecture/decisions/`, numbered in order,
+  for example `0004-one-environment-two-processes.md`.
+- The architecture pages embed the ADRs as collapsed blocks at the bottom.
+  Click one to expand it.
+- A decision is significant if it is hard to reverse, if it changes what other
+  repositories must send or expect, or if a new member would ask "why is it
+  like this?"
+
+Each ADR has a status, shown by the colour of its block:
+
+| Status                                  | Block              | Meaning                                                                    |
+| --------------------------------------- | ------------------ | -------------------------------------------------------------------------- |
+| Proposed                                | `note` (blue)      | Written for review. Nothing depends on it yet.                             |
+| Accepted                                | `success` (green)  | Agreed and in effect.                                                      |
+| Accepted, partly superseded by ADR-NNNN | `success` (green)  | In effect, except for the points the newer ADR replaces.                   |
+| Superseded by ADR-NNNN                  | `quote` (grey)     | Replaced by a newer decision. Kept so the reasons stay readable.           |
+| Rejected                                | `failure` (red)    | Considered and turned down.                                                |
+
+After an ADR is accepted, do not change its decision. If the decision
+changes, write a new ADR and set the old one to "Superseded by ADR-NNNN".
+If the new ADR replaces only part of the old one, it names that part, and
+the old one becomes "Accepted, partly superseded by ADR-NNNN". Change only
+the old ADR's status line, and the title of its block on the architecture
+page. Fixing typos and links is fine.
+
+ADR numbers belong to this repository. ADR-0007 here and ADR-0007 in
+walkie-database are different decisions. When a page refers to another
+repository's ADR, it names the repository.
+
+## Add a decision
+
+1. Copy the template below into
+   `docs/architecture/decisions/NNNN-short-title.md`, with the next free
+   number.
+2. Fill it in. Keep everything between the two marker lines: that is the
+   part shown on the architecture page.
+3. Add a collapsed block for it at the bottom of the architecture page it
+   belongs to, in number order.
+4. Run `pixi run docs-build`. It fails if a link or the ADR file name is
+   wrong.
+
+```markdown title="docs/architecture/decisions/NNNN-short-title.md"
+# ADR-NNNN: Short title in plain words
+
+<!-- ;--8<-- [start:body] -->
+**Status:** Proposed · **Date:** YYYY-MM-DD
+
+**Context**
+
+What problem or situation forces a decision. Facts only, with file paths
+where they help.
+
+**Decision**
+
+What we will do, stated plainly.
+
+**Consequences**
+
+- What gets easier, what gets harder, and what we must now keep in mind.
+
+**See also:** [a related page](/setup/index.md)
+<!-- ;--8<-- [end:body] -->
+```
+
+The block on the architecture page:
+
+```markdown title="docs/architecture/vision.md"
+??? note "ADR-NNNN: Short title in plain words · Proposed"
+
+    ;--8<-- "architecture/decisions/NNNN-short-title.md:body"
+```
+
+!!! tip "Links inside an ADR start with `/`"
+    Write links from the `docs/` folder, for example
+    `[Build the Vision Environment](/setup/01-vision-environment.md)`. The
+    same text appears on two pages in different folders, and a relative
+    link would break on one of them.

@@ -1,0 +1,54 @@
+name: Docs
+
+# Builds the MkDocs site and publishes it to GitHub Pages. Only the docs
+# environment is installed: the default environment (ROS, PyTorch and the
+# CUDA libraries) is about 9.6 GB and is not needed to build the site.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "pixi.toml"
+      - "pixi.lock"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Installs from pixi.lock and fails if the lock file is out of date.
+      - uses: prefix-dev/setup-pixi@9dabb60412d3d2d967a8d682f7ce01317af40514 # v0.11.0
+        with:
+          environments: docs
+          cache: true
+
+      - name: Build site
+        run: pixi run -e docs docs-build
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

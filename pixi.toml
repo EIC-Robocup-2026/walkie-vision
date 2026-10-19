@@ -1,0 +1,178 @@
+[workspace]
+authors = ["natapol2547 <robloxplay41@gmail.com>"]
+channels = ["https://prefix.dev/robostack-jazzy", "https://prefix.dev/conda-forge"]
+name = "walkie-vision"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[dependencies]
+# RoboStack Jazzy builds for Python 3.12.
+python = "3.12.*"
+ros-jazzy-ros-base = ">=0.11.0,<0.12"
+# The ROS 2 middleware, because walkie-ros and the robot run on Zenoh.
+# 0.2.10's rmw_wait can block forever (ros2/rmw_zenoh#1032); 0.2.11 fixes it
+# (ros2/rmw_zenoh#1040). RoboStack's 0.2.11 build comes from the same stack
+# build as ros-base above, so no source build is needed. This package also
+# provides the router, rmw_zenohd.
+ros-jazzy-rmw-zenoh-cpp = ">=0.2.11,<0.3"
+# Detection2DArray and related messages for the detector output.
+ros-jazzy-vision-msgs = ">=4.1.1,<5"
+numpy = ">=2.5.4,<3"
+# clip-anytorch (below) imports pkg_resources, which setuptools removed in 82.
+# torch needs 77.0.3 or newer.
+setuptools = ">=77.0.3,<82"
+pytest = ">=9.1.1,<10"
+# Build toolchain for this repository's message package, the same set as
+# walkie-agent-ros uses for rai_interfaces. Without it, CMake falls back to an
+# apt ROS install on PATH, if there is one.
+colcon-common-extensions = "*"
+ros-jazzy-ament-cmake = "*"
+ros-jazzy-rosidl-default-generators = "*"
+c-compiler = "*"
+cxx-compiler = "*"
+cmake = "*"
+pkg-config = "*"
+make = "*"
+# cuobjdump, which checks/c01_fatbins.py uses to list the GPU architectures
+# compiled into torch, torchvision and onnxruntime-gpu. 12.8 is the CUDA
+# version of those wheels, and it reads sm_120 entries. A 13.x cuobjdump
+# would pull in conda's cuda-version 13, which declares that it needs a
+# CUDA 13 driver (__cuda >=13, R580 or newer).
+cuda-cuobjdump = "12.8.*"
+
+[pypi-dependencies]
+walkie-vision = { path = ".", editable = true }
+# PyTorch from the official CUDA 12.8 index. torch 2.11.0 and torchvision
+# 0.26.0 are the newest pair with CUDA 12 wheels that carry kernels for both
+# sm_75 (RTX 2060, development laptops) and sm_120 (RTX 50-series; walkie-ros
+# builds its robot image for sm_120). The 12.8 index stops at torch 2.11. The
+# CUDA 12.9 index has newer torch wheels with sm_120, but its torchvision
+# wheels (0.26.0 to 0.28.0) stop at sm_90 and carry no PTX, so torchvision's
+# own CUDA operators, such as torchvision.ops.nms, fail on an RTX 50-series
+# GPU.
+# CUDA 12 is kept, not CUDA 13, because CUDA 12 builds run on every driver
+# that supports an RTX 50-series GPU (R570 and newer), while CUDA 13 builds
+# need R580 or newer.
+# Move torch and torchvision together, and run `pixi run check-env` (its
+# fatbin check lists the architectures) before moving to another index.
+torch = { version = "==2.11.0", index = "https://download.pytorch.org/whl/cu128" }
+torchvision = { version = "==0.26.0", index = "https://download.pytorch.org/whl/cu128" }
+# 1.26 is the last onnxruntime-gpu release on PyPI built for CUDA 12; 1.27 and
+# newer are CUDA 13 builds. 1.26 is built with CUDA 12.8, as torch above is,
+# and its cuda and cudnn extras resolve to the same CUDA and cuDNN 9 wheels
+# that torch uses, so there is one copy of each.
+# Its CUDA provider has machine code up to sm_90a and PTX for compute_90 only.
+# On an RTX 50-series GPU the driver compiles each kernel module from that PTX
+# the first time a session uses it. Compiling all 230 modules with ptxas 12.8
+# took 22 minutes on one core of an i7-10750H, so the first run can take
+# minutes. The driver caches the result in ~/.nv/ComputeCache: about 0.33 GiB
+# for all 230 modules, within the default CUDA_CACHE_MAXSIZE of 1 GiB, so the
+# cache size is not raised here. A driver update empties the cache.
+# The CUDA provider library has no RUNPATH to the CUDA wheels. A process must
+# call onnxruntime.preload_dlls() (or import torch) before it creates a
+# session; otherwise ONNX Runtime falls back to the CPU provider without
+# raising. walkie_vision.face calls preload_dlls() itself when CUDA is
+# requested.
+onnxruntime-gpu = { version = ">=1.26.0,<1.27", extras = ["cuda", "cudnn"] }
+# The InsightFace package is not used: it requires the CPU-only onnxruntime
+# package, which installs the same `onnxruntime` module and can replace the
+# CUDA provider, and pixi 0.80 treats the lock file as out of date when that
+# requirement is removed with a dependency override. walkie_vision.face
+# vendors the three parts that are needed (SCRFD, ArcFace and the alignment).
+# onnx reads the ArcFace graph to pick its input normalisation, as InsightFace
+# does, and builds the test graph in checks/c04_ort.py.
+onnx = ">=1.23.2,<2"
+# cv2 for the face code (cv2.dnn.blobFromImage, cv2.warpAffine). Ultralytics
+# requires it too. The PyPI wheel, not conda-forge's opencv, so that there is
+# one copy.
+opencv-python = ">=5.0.0.93,<6"
+# YOLO26 and YOLOE-26 need 8.4. Ultralytics releases often; move the bound on
+# purpose, after the detector checks pass.
+ultralytics = ">=8.4.182,<8.5"
+# Byte-track association for model.track(); Ultralytics would otherwise try
+# to pip-install it on first use.
+lap = ">=0.5.12,<0.6"
+# YOLOE's set_classes() tokenizes the class names with `clip.clip.tokenize`.
+# Ultralytics asks for git+https://github.com/ultralytics/CLIP.git; this is a
+# PyPI release of the same OpenAI CLIP package.
+clip-anytorch = ">=2.6.0,<3"
+# EmbeddingGemma 2 needs transformers 5.18 or newer and sentence-transformers
+# 6.1 or newer.
+transformers = ">=5.20.1,<6"
+sentence-transformers = ">=6.1.0,<7"
+# sentence-transformers 6.1 requires huggingface_hub below 2.0 (2.2.0 is on
+# PyPI). Raise this bound together with sentence-transformers.
+huggingface-hub = ">=1.31.0,<2"
+# CLIP ViT-B/16 baseline. Load the OpenAI weights as "ViT-B-16-quickgelu"; the
+# plain "ViT-B-16" config uses GELU and does not match those weights.
+open-clip-torch = ">=3.3.0,<4"
+
+# Every `pixi run` and `pixi shell` uses Zenoh, the agreed middleware for all
+# Walkie repositories, even when the calling shell exports another one. There
+# is no custom Zenoh configuration: nodes find each other only through a Zenoh
+# router, at rmw_zenoh's default tcp/localhost:7447. To use another middleware,
+# set RMW_IMPLEMENTATION in a task's `env`, or run
+# `pixi run env RMW_IMPLEMENTATION=rmw_fastrtps_cpp <cmd>`.
+# The docs environment leaves out the default feature, and with it this table,
+# so its own feature below sets the same value.
+[activation.env]
+RMW_IMPLEMENTATION = "rmw_zenoh_cpp"
+# Ultralytics pip-installs missing packages at runtime by default. That would
+# change the locked environment behind pixi's back, so it is turned off and
+# every package Ultralytics needs is declared above instead.
+YOLO_AUTOINSTALL = "false"
+
+# Sources ros2_ws's overlay, so that walkie_vision_msgs can be imported once it
+# is built. Pixi runs this script before it applies [activation.env] and a
+# task's env.
+[activation]
+scripts = ["scripts/activate.sh"]
+
+# The same command as walkie-agent-ros's build-ros2. Python3_EXECUTABLE is
+# passed explicitly so a user-level ~/.colcon/defaults.yaml (often set for an
+# apt ROS install) cannot point CMake at the system Python. The next
+# `pixi run` or `pixi shell` sources the overlay; the shell that ran the build
+# does not.
+[tasks.build-msgs]
+cmd = "colcon build --symlink-install --cmake-args -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python"
+cwd = "ros2_ws"
+description = "Build the walkie_vision_msgs package in ros2_ws with colcon"
+
+# The test task does not depend on build-msgs: pixi computes the environment
+# before it runs a dependency, so the overlay would still be missing in the
+# first run after a build. tests/conftest.py says what to run instead.
+[tasks.test]
+cmd = "pytest"
+description = "Run the test suite"
+
+[tasks.fetch-models]
+cmd = "python -m walkie_vision.models"
+description = "Download the model files that are not fetched on first use into models/ and verify their SHA-256"
+
+[tasks.check-env]
+cmd = "python checks/run_checks.py"
+depends-on = ["fetch-models"]
+description = "Check the GPU builds, every model and rclpy on this computer (logs in checks/output/)"
+
+[tasks.bakeoff]
+cmd = "python tools/bakeoff/bakeoff.py"
+description = "Compare the object and room embedders on labelled images (docs/guides/bakeoff.md)"
+
+[feature.docs.tasks]
+docs = "mkdocs serve"
+docs-build = "mkdocs build --strict"
+
+[feature.docs.dependencies]
+mkdocs-material = ">=9.7,<10"
+# The same pins as walkie-database. Material for MkDocs does not support
+# MkDocs 2.0, which removes the plugin system; `mkdocs build` prints a warning
+# about it.
+mkdocs = ">=1.6,<2"
+
+# The docs environment has no ROS, but sets the same middleware as
+# [activation.env] above, so that every environment agrees.
+[feature.docs.activation.env]
+RMW_IMPLEMENTATION = "rmw_zenoh_cpp"
+
+[environments]
+docs = { features = ["docs"], no-default-feature = true }
