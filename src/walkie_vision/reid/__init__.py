@@ -2,7 +2,9 @@
 
 load_osnet() returns the network with Kaiyang Zhou's MSMT17 re-ID weights.
 It maps a person crop to a 512-value appearance embedding; compare two
-embeddings by cosine similarity.
+embeddings by cosine similarity. walkie_vision.reid.identifier wraps it as a
+walkie_vision.providers.ReIdentifier (OSNetReIdentifier). It is not imported
+here, because it imports this module.
 """
 
 from __future__ import annotations

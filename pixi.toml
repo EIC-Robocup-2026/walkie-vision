@@ -154,6 +154,13 @@ cmd = "python checks/run_checks.py"
 depends-on = ["fetch-models"]
 description = "Check the GPU builds, every model and rclpy on this computer (logs in checks/output/)"
 
+# Arguments after the task name go to ros2 launch: `pixi run vision task:=hri`
+# or `pixi run vision sim:=true`. It does not depend on fetch-models, which
+# needs the network; the launch says what to run when the models are missing.
+[tasks.vision]
+cmd = "ros2 launch launch/vision.launch.py"
+description = "Run the vision node (objects and people from the head camera), restarted if it exits"
+
 [tasks.bakeoff]
 cmd = "python tools/bakeoff/bakeoff.py"
 description = "Compare the object and room embedders on labelled images (docs/guides/bakeoff.md)"

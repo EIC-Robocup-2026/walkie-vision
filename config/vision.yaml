@@ -1,0 +1,78 @@
+# Parameters of the vision node (walkie_vision.node). The values here equal
+# the defaults in VisionConfig. Every parameter is read-only: change it here
+# and restart the node. The detector's classes are not here; they come from
+# the task's file in config/tasks/.
+# Write every double with a decimal point (10.0, not 10): rclpy rejects an
+# integer for a double parameter.
+walkie_vision:
+  ros__parameters:
+    # The head camera's RGB image. On the robot: bgra8, 2208 x 1242, 15 Hz.
+    image_topic: /zed_head/zed_node/rgb/color/rect/image
+    # The calibration of those pixels. walkie-ros documents this topic, and
+    # the sim publishes it. The node skips an image whose size it does not match.
+    camera_info_topic: /zed_head/zed_node/depth/camera_info
+    # PersonDetectionArray and ObjectDetectionArray, one of each per image.
+    people_topic: /walkie_vision/people
+    objects_topic: /walkie_vision/objects
+
+    # The device of the PyTorch models: cpu, cuda or cuda:N. ONNX Runtime's
+    # face models always use GPU 0.
+    device: cuda:0
+
+    # YOLOE-26 with text prompts. A file name is looked up in
+    # models/ultralytics/; an absolute path is used as it is. mobileclip2_b.ts
+    # must be in the same folder.
+    objects_weights: yoloe-26s-seg.pt
+    # The input size; a multiple of 32.
+    objects_imgsz: 640
+    # The detector's threshold. The tracker needs low-score boxes for its
+    # second matching stage, so this stays low.
+    objects_conf: 0.1
+    # One label per box: an armchair is not also a chair.
+    objects_agnostic_nms: true
+    # An Ultralytics tracker file by name, or an absolute path.
+    objects_tracker: bytetrack.yaml
+    # Objects that score under this are not published.
+    objects_min_score: 0.25
+
+    # YOLO26 pose with tracking.
+    pose_weights: yolo26s-pose.pt
+    pose_imgsz: 640
+    pose_conf: 0.1
+    # BoT-SORT with camera-motion compensation and no re-ID model, so a
+    # person keeps their id while the base turns.
+    pose_tracker: botsort.yaml
+    # People who score under this are not published.
+    people_min_score: 0.25
+    # YOLO26 pose has no NMS and sometimes gives one person a second, partial
+    # box. A person whose box has an IoU above this with a higher-scoring
+    # person's box is not published. 1.0 publishes every box.
+    people_dedupe_iou: 0.5
+
+    # SCRFD's threshold. walkie-agent-ros trusts a face from 0.5.
+    face_det_thresh: 0.5
+    # SCRFD's input sizes for the crops around each head; multiples of 32.
+    face_input_sizes: [160, 256, 384, 640]
+    # Only this many of the largest people get a face search.
+    face_max_people: 6
+    # A face's centre must be within this share of the head crop's side
+    # from the head keypoints.
+    face_max_offset: 0.25
+
+    # People whose box is smaller than this, in pixels, get no appearance vector.
+    reid_min_crop_px: 16
+    # OSNet's batch size.
+    reid_batch_size: 16
+
+    # At most this many images a second; 0 means as fast as the GPU allows
+    # (bench only). The cap leaves GPU time for the ZED's depth.
+    max_rate_hz: 10.0
+    # After this many failed images in a row, the node exits and the launch
+    # starts it again.
+    max_consecutive_failures: 30
+    # One image taking longer than this means the GPU hangs: the node exits.
+    process_timeout_s: 60.0
+    # How often the latency summary is logged, in seconds of wall time.
+    latency_log_period_s: 10.0
+    # Warn when an array is older than this when it is published, in seconds.
+    stale_warn_s: 0.5

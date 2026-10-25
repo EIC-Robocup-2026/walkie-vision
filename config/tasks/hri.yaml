@@ -1,0 +1,5 @@
+# The streaming detector's text prompts during the HRI task. walkie-agent-ros's
+# find_seats looks for these seat classes by name (case-insensitive).
+walkie_vision:
+  ros__parameters:
+    classes: [chair, sofa, armchair, stool]

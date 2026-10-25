@@ -36,6 +36,11 @@ def _image_key(image: np.ndarray) -> bytes:
     return repr(image.shape).encode() + np.ascontiguousarray(image).tobytes()
 
 
+def _face_vector(face: Face, dim: int) -> np.ndarray:
+    """Return the hash vector of a face's box, the fakes' stand-in for its embedding."""
+    return hash_vector(b"face " + np.asarray(face.bbox, dtype=np.float64).tobytes(), dim)
+
+
 def _clip_box(box: np.ndarray, image: np.ndarray) -> np.ndarray | None:
     """Clip an x1, y1, x2, y2 box to the image; None when nothing is left."""
     height, width = image.shape[:2]
@@ -137,6 +142,39 @@ class FakeFaceRecognizer:
         faces = copy.deepcopy(self.faces)
         for face in faces:
             if face.embedding is None:
-                key = np.asarray(face.bbox, dtype=np.float64).tobytes()
-                face.embedding = hash_vector(b"face " + key, self.dim)
+                face.embedding = _face_vector(face, self.dim)
         return faces
+
+
+class FakePersonFaceRecognizer:
+    """Gives each person the first unused given face whose centre is inside the person's box.
+
+    A face given without an embedding gets the same hash vector as in
+    FakeFaceRecognizer, so the same face gives the same embedding in every
+    image.
+    """
+
+    def __init__(self, faces: Sequence[Face], model_name: str = "fake_face", dim: int = 512) -> None:
+        self.faces = list(faces)
+        self.model_name = model_name
+        self.dim = dim
+
+    def faces_for(self, image: np.ndarray, people: Sequence[PersonPose]) -> list[Face | None]:
+        used: set[int] = set()
+        out: list[Face | None] = []
+        for person in people:
+            x1, y1, x2, y2 = np.asarray(person.box, dtype=np.float64)
+            chosen: Face | None = None
+            for i, face in enumerate(self.faces):
+                if i in used:
+                    continue
+                fx1, fy1, fx2, fy2 = np.asarray(face.bbox, dtype=np.float64)
+                cx, cy = (fx1 + fx2) / 2, (fy1 + fy2) / 2
+                if x1 <= cx <= x2 and y1 <= cy <= y2:
+                    used.add(i)
+                    chosen = copy.deepcopy(face)
+                    if chosen.embedding is None:
+                        chosen.embedding = _face_vector(face, self.dim)
+                    break
+            out.append(chosen)
+        return out

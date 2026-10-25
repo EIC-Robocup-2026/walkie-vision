@@ -1,6 +1,6 @@
 """The interfaces of the vision models, and the results they return.
 
-The ROS nodes (not written yet) will call each model only through one of
+The vision node (walkie_vision.node) calls each model only through one of
 these Protocols. A test passes a fake from walkie_vision.fakes instead, and a
 model can be replaced without a change to the node that calls it.
 
@@ -185,4 +185,21 @@ class FaceRecognizer(Protocol):
 
     def recognize(self, image: np.ndarray) -> list[Face]:
         """Return every face in a BGR image, each with its embedding."""
+        ...
+
+
+@runtime_checkable
+class PersonFaceRecognizer(Protocol):
+    """A face model that looks for each person's face where their pose puts the head.
+
+    It returns one entry per person, in the order of people: the person's
+    face, in pixels of the whole image and with its embedding, or None when
+    no face was found for that person. No face is given to two people.
+    """
+
+    model_name: str
+    dim: int
+
+    def faces_for(self, image: np.ndarray, people: Sequence[PersonPose]) -> list[Face | None]:
+        """Return the face of each person in a BGR image, or None, in the order of people."""
         ...

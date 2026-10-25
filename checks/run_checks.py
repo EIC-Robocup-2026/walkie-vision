@@ -44,6 +44,8 @@ CHECKS = [
     ("c09_osnet", ["c09_osnet.py"]),
     ("c10_ros_first", ["c10_ros.py", "ros-first"]),
     ("c10_ml_first", ["c10_ros.py", "ml-first"]),
+    ("c11_providers", ["c11_providers.py"]),
+    ("c12_vision_node", ["c12_vision_node.py"]),
 ]
 
 

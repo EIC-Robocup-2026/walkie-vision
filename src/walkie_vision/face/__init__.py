@@ -7,8 +7,13 @@ The InsightFace package itself is not installed; see pixi.toml for why.
 
 The buffalo_l model files are a separate matter: InsightFace releases them
 for non-commercial research only.
+
+heads.py is this repository's own code: it runs the detector on a crop
+around each person's head, from the pose keypoints, and gives each person
+their face.
 """
 
 from .analysis import Face, FaceAnalyzer
+from .heads import HeadCropConfig, HeadFaceRecognizer
 
-__all__ = ["Face", "FaceAnalyzer"]
+__all__ = ["Face", "FaceAnalyzer", "HeadCropConfig", "HeadFaceRecognizer"]
