@@ -12,6 +12,7 @@ pixi run fetch-models   # model files into models/, checked by SHA-256
 pixi run build-msgs     # build ros2_ws/src/walkie_vision_msgs with colcon
 pixi run test           # pytest; fakes only, no GPU, no models, Fast DDS
 pixi run check-env      # every model on this GPU; logs in checks/output/
+pixi run vision         # the vision node (launch/vision.launch.py); needs a router
 pixi run docs-build     # mkdocs build --strict; must pass with no warnings
 pixi install --locked   # must succeed: pixi.lock is committed
 ```
@@ -24,6 +25,11 @@ build, because `scripts/activate.sh` sources the overlay on activation.
 - `ros2_ws/src/walkie_vision_msgs/`: the messages and the service only.
 - `src/walkie_vision/providers.py`: model interfaces and result types.
 - `src/walkie_vision/convert.py`: results to messages, with validation.
+- `src/walkie_vision/node.py`, `pipeline.py`, `image.py`: the vision node,
+  one process for every model (ADR-0010). `yolo.py` and `face/heads.py` are
+  the detector, pose and head-crop face providers.
+- `config/`: the node's parameters (`vision.yaml`, `sim.yaml`).
+  `launch/vision.launch.py` starts the node and restarts it when it exits.
 - `src/walkie_vision/fakes.py`: deterministic fakes for tests.
 - `src/walkie_vision/face/`, `src/walkie_vision/reid/`: vendored model code.
   Keep the licence headers and the change lists up to date.
@@ -42,6 +48,9 @@ build, because `scripts/activate.sh` sources the overlay on activation.
   `build/`, `install/` and `log/` folders. `.gitignore` covers them.
 - Never start a Zenoh router on port 7447 in a test or check. `c10` uses a
   private router on a free port.
+- Never run `pixi run vision` on a computer joined to someone else's router
+  while their vision node runs: consumers would get two arrays per image
+  (`docs/guides/vision-node.md`).
 - Use only ungated Hugging Face models, pinned to a commit in `HUB_MODELS`,
   and pass that `revision` when loading. Never log in to Hugging Face.
 - A message change needs: the `.msg` comments, `convert.py`, the field pins
