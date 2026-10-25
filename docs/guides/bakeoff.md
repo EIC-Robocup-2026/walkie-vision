@@ -490,7 +490,7 @@ Why these values:
 The verdict does not change walkie-database by itself. Its
 [ADR-0007](https://eic-robocup-2026.github.io/walkie-database/architecture/database/)
 keeps one `vec0` table per model, named `<what>_<model>`. Its migration 0002,
-which is not merged yet, adds the rule that `<model>` names the weights, and
+merged in a099e21, adds the rule that `<model>` names the weights, and
 renames the face and appearance tables to follow it. `object_clip_vit_b16` and
 `room_clip_vit_b16` came before that rule and name only the network, so they
 need a migration anyway. Make it one migration, after the bake-off, and use

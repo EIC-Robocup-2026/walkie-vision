@@ -33,10 +33,6 @@ cd walkie-vision
 pixi install
 ```
 
-!!! warning "Not on GitHub yet"
-    The repository exists only on a team laptop for now. Until it is
-    published, get a copy from a team member.
-
 `pixi install` downloads everything listed in `pixi.toml` into a hidden
 `.pixi/` folder inside the project. Nothing is installed system-wide. The
 environment is about 9.6 GB, most of it CUDA libraries and PyTorch, so the
@@ -73,7 +69,7 @@ change a file in `ros2_ws/src/walkie_vision_msgs/`.
 pixi run check-env
 ```
 
-`check-env` runs `fetch-models` first, then 16 checks, each in its own
+`check-env` runs `fetch-models` first, then 18 checks, each in its own
 process: the GPU architectures compiled into PyTorch and ONNX Runtime, every
 model on the GPU, and rclpy next to the models. It prints one line per
 check:
@@ -81,7 +77,7 @@ check:
 ```text
 c01_fatbins            PASS     8.8 s  exit 0  checks/output/c01_fatbins.log
 ...
-16 of 16 checks passed
+18 of 18 checks passed
 ```
 
 The full output of each check, with its timings and GPU memory, is in
@@ -122,8 +118,9 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 pixi run ros2 topic list
 ```
 
-There are no vision nodes to run yet. Until then, this is how to see the
-robot's topics, such as the camera images, from this environment.
+This is how to see the robot's topics, such as the camera images, from
+this environment. To run the vision node itself, see
+[step 8](#8-run-the-vision-node).
 
 !!! tip "Use the same domain in every terminal"
     Nodes on different `ROS_DOMAIN_ID`s never see each other. Use the
@@ -133,7 +130,32 @@ robot's topics, such as the camera images, from this environment.
 `check-env` needs no router. Its ROS check starts a private router on a free
 port, so it never joins the robot's ROS graph.
 
-## 8. Open the docs locally
+## 8. Run the vision node
+
+```bash
+pixi run vision
+```
+
+This starts the vision node with the HRI task's classes. It publishes
+`/walkie_vision/people` and `/walkie_vision/objects` from the head camera,
+and the launch starts it again whenever it exits. It needs:
+
+- the model files from step 3 and the messages from step 4;
+- OSNet's checkpoint in the Hugging Face cache, which needs the internet
+  once:
+  `pixi run python -c "from walkie_vision.reid import load_osnet; load_osnet('cpu')"`;
+- a Zenoh router and the right `ROS_DOMAIN_ID`, as in step 7.
+
+In simulation, add `sim:=true`. The node then uses sim time and publishes
+on `/walkie_vision/sim/people` and `/walkie_vision/sim/objects`, because
+walkie-agent-ros's `oracle_perception` owns the normal topics there.
+
+On an RTX 50-series GPU the first start compiles the face models' kernels
+and can take minutes, like the first `check-env`. See
+[Run the vision node](guides/vision-node.md) for the launch arguments, the
+log lines and troubleshooting.
+
+## 9. Open the docs locally
 
 ```bash
 pixi run docs
@@ -146,6 +168,9 @@ you edit a file in `docs/`. Press ++ctrl+c++ to stop.
 
 - [Setup Log](setup/index.md): how this repository was built, one step at a
   time.
-- [Vision](architecture/vision.md): the processes, topics and messages.
+- [Vision](architecture/vision.md): the node, its contract, topics and
+  messages.
+- [Run the vision node](guides/vision-node.md): the launch arguments, the
+  log lines and troubleshooting.
 - [Writing Docs](setup/03-documentation.md#writing-a-new-page): how to add
   your own page.

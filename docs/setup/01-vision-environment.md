@@ -7,6 +7,15 @@ ROS messages.
 
 ## Background
 
+!!! note "Superseded: one process"
+
+    The two-process design below is from ADR-0004.
+    [ADR-0010](../architecture/decisions/0010-one-vision-process.md)
+    replaced it: every model, the face models among them, now runs in the
+    one vision node. See [The vision node](../architecture/vision.md#the-vision-node).
+    The environment itself is unchanged, so the rest of this page still
+    applies.
+
 walkie-vision runs the robot's vision models in at most two processes
 ([ADR-0004](../architecture/decisions/0004-one-environment-two-processes.md)):
 
@@ -339,6 +348,8 @@ check to `checks/output/summary.txt`:
 | `c08_face`     | SCRFD and ArcFace on CUDA, against the boxes InsightFace finds and the CPU embeddings |
 | `c09_osnet`    | OSNet on person crops                                                          |
 | `c10_*`        | rclpy on Zenoh next to every ML library, imported in both orders, through a private router |
+| `c11_providers` | Each of the vision node's model wrappers on the GPU: YOLOE-26, YOLO26 pose with tracking (and a camera pan), faces from head crops, OSNet |
+| `c12_vision_node` | The vision node's start path and 20 HD2K frames through every model in one process, with latency and GPU memory |
 
 `cuda-cuobjdump` is pinned to 12.8 because a 13.x `cuobjdump` pulls in
 conda's `cuda-version` 13, which declares that it needs a CUDA 13 driver.
@@ -348,10 +359,11 @@ it.
 
 ## Measured on the RTX 2060
 
-All 16 checks passed on the laptop (RTX 2060, driver 595.91). Each check
-runs one model in its own process. The time is the median after warm-up
-unless noted. The memory is what `nvidia-smi` reports for the process at the
-end of the check, CUDA context included (98 MiB on its own).
+All 18 checks passed on the laptop (RTX 2060, driver 595.91, 2026-10-26).
+Each check runs one model in its own process, except `c11` and `c12`, which
+load the vision node's four models together. The time is the median after
+warm-up unless noted. The memory is what `nvidia-smi` reports for the process
+at the end of the check, CUDA context included (98 MiB on its own).
 
 | Model                                  | Time                                          | GPU memory |
 | -------------------------------------- | --------------------------------------------- | ---------- |
@@ -364,6 +376,8 @@ end of the check, CUDA context included (98 MiB on its own).
 | SCRFD + ArcFace                        | 27.7 ms (`zidane.jpg`) and 26.1 ms (`bus.jpg`), detection plus one embedding per face. Creating both sessions takes 0.6 s | 550 MiB |
 | OSNet x1.0, 6 crops of 256 x 128       | 12.5 ms; 0.81 s for the first call            | 226 MiB    |
 | rclpy on Zenoh                         | A 1280 x 720 `bgra8` image (3.7 MB): deserialise 2.1 ms, then to RGB on the GPU 0.6 ms | |
+| The node's model wrappers (`c11`)      | YOLOE-26 18.7 ms and YOLO26 pose with BoT-SORT 16.8 ms (`bus.jpg`); faces from head crops 35.4 ms (`zidane.jpg`, 2 faces); OSNet 13.0 ms (4 crops) | 878 MiB |
+| The vision node, 20 HD2K frames (`c12`) | `process()` p50 86.6 ms, p95 108.2 ms. Loading every model takes 4.9 s. Details in [The vision node](../architecture/vision.md#gpu) | 862 MiB |
 
 The ZED camera publishes HD2K images, 2208 x 1242: about 11 MB each in
 `bgra8`, three times the image in the last row.
@@ -377,9 +391,10 @@ cosine of 1.000000.
     Every model in the table together, with the CUDA context counted once,
     adds up to about 5.2 GiB, too close to the RTX 2060's 6 GB. Only one
     object embedder runs on the robot, so the real total is lower: with
-    SigLIP 2, roughly 2.6 GiB over the two processes. Both figures are sums
-    of single-model measurements. Measure the real total on the robot, with
-    the processes as they will run.
+    SigLIP 2, roughly 2.6 GiB over ADR-0004's two processes. Both figures
+    are sums of single-model measurements. `c12` measured the vision node's
+    four models in one process at 862 MiB, without an object embedder.
+    Measure the real total on the robot, next to the ZED SDK.
 
 The RTX 2060 has no native bfloat16 and gains little from fp16 at these
 sizes. Measure again on the robot's GPU before choosing a precision.
