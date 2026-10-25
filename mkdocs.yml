@@ -89,4 +89,5 @@ nav:
       - architecture/index.md
       - Vision: architecture/vision.md
   - Guides:
+      - Run the vision node: guides/vision-node.md
       - Embedding bake-off: guides/bakeoff.md

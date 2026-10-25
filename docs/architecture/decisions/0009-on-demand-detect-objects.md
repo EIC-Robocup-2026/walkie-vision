@@ -12,10 +12,10 @@ by its noun in what the head camera sees now, then ranks the detections by
 their embeddings against the spoken description. Its `detect_objects` tool
 needs to say "look for `mug` now" and get detections back.
 
-Nothing in walkie-vision's design answers that. The planned torch process
-([ADR-0004](/architecture/decisions/0004-one-environment-two-processes.md))
-will run YOLOE-26 on every processed image, with a list of text prompts set
-per task, and publish the result on `/walkie_vision/objects`. A noun that
+Nothing in walkie-vision's design answers that. The vision node
+([ADR-0010](/architecture/decisions/0010-one-vision-process.md))
+runs YOLOE-26 on every processed image, with a list of text prompts set
+per task, and publishes the result on `/walkie_vision/objects`. A noun that
 is not in the list is never detected. We considered three ways to close the
 gap:
 
@@ -51,7 +51,7 @@ gap:
 **Decision**
 
 - Add a service type `DetectObjects` to `walkie_vision_msgs`, served by the
-  torch process at `/walkie_vision/detect_objects` (proposed name).
+  vision node at `/walkie_vision/detect_objects` (proposed name).
 - The request names the classes to look for: the nouns, at least one. The
   response says whether it worked, why not, and holds one
   `ObjectDetectionArray` for the newest image. Its `classes` are the
@@ -68,7 +68,8 @@ gap:
     ```
 
 - The service runs on the newest RGB image, depth image and `camera_info`
-  that the torch process will hold. It adds no subscriber to the camera.
+  that the vision node holds. The node does not subscribe to the depth
+  image yet. The service adds no subscriber to the camera.
   It keeps no image and no detection after it answers, and returns no id
   for the image. Only the on-demand model's last class list stays loaded,
   as a cache. The array's `header` gives the image's stamp and frame, as on
@@ -107,8 +108,8 @@ same with its latest depth image, for `/get_3d_poses`.
 - walkie-agent-ros keeps the response in its own handle store and shows
   its LLM only labels, scores and handle ids. walkie-vision does not need
   to know about handles.
-- In simulation, walkie-agent-ros's planned `oracle_perception` node
-  publishes detections from the scenario spec in the same message types.
+- In simulation, walkie-agent-ros's `oracle_perception` node publishes
+  detections from the scenario spec in the same message types.
   Whether it, or something else, also answers `DetectObjects` and
   `EmbedText` there is not decided ([open questions](/architecture/vision.md#open-questions)).
 - This ADR becomes Accepted once the service is built and its latency and

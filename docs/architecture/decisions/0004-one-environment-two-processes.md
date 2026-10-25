@@ -1,7 +1,7 @@
 # ADR-0004: Run the models in one Pixi environment and two processes
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-19
+**Status:** Superseded by [ADR-0010](/architecture/decisions/0010-one-vision-process.md) · **Date:** 2026-10-19
 
 **Context**
 

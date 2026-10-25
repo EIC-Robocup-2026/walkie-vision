@@ -7,7 +7,7 @@ costs later.
 
 | Page                | What it covers                                                                         |
 | ------------------- | -------------------------------------------------------------------------------------- |
-| [Vision](vision.md) | The two processes, the topics and the service, the messages, the model code, and every decision |
+| [Vision](vision.md) | The vision node and its contract, the topics and the service, the messages, the model code, and every decision |
 
 ## Architecture Decision Records
 

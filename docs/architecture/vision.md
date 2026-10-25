@@ -3,10 +3,11 @@
 This page explains how walkie-vision runs the robot's vision models, what
 it publishes, and why it is built this way.
 
-!!! note "Work in progress"
-    The environment, the messages, the model interfaces and their tests
-    exist. The ROS nodes do not yet: they come with the port of the model
-    code from walkie-ai-server. The topic names below are the proposed ones.
+!!! note "What runs today"
+    The vision node publishes objects and people from the head camera
+    ([The vision node](#the-vision-node), [Contract](#contract)). The
+    `EmbedText` service, object embeddings, points, crops, room vectors and
+    `DetectObjects` are not built yet.
 
 ## Summary
 
@@ -17,9 +18,12 @@ it publishes, and why it is built this way.
 - Its messages are in `walkie_vision_msgs`, a package in this repository
   that holds only messages. walkie-database and walkie-agent-ros must build
   it too ([ADR-0003](decisions/0003-messages-in-this-repository.md)).
-- All models share one Pixi environment, in two processes: one for the
-  PyTorch models, one for the face models on ONNX Runtime
-  ([ADR-0004](decisions/0004-one-environment-two-processes.md)).
+- All models share one Pixi environment and run in one process, the vision
+  node ([ADR-0010](decisions/0010-one-vision-process.md), which supersedes
+  ADR-0004).
+- The node's promises to its consumers, such as one people array and one
+  object array per image and track ids that a restart never reuses, are in
+  the [Contract](#contract).
 - The environment uses CUDA 12 builds that run on the laptops' RTX 2060 and
   the robot's RTX 50-series GPU
   ([ADR-0005](decisions/0005-cuda-12-sm75-sm120.md)).
@@ -40,56 +44,428 @@ it publishes, and why it is built this way.
 flowchart LR
   zed["ZED 2i<br/>(walkie-ros)"]
   subgraph vision["walkie-vision"]
-    torch["Torch process<br/>YOLOE-26, embedder,<br/>YOLO26 pose, OSNet"]
-    face["Face process<br/>SCRFD, ArcFace"]
+    node["Vision node<br/>YOLOE-26, YOLO26 pose,<br/>SCRFD + ArcFace, OSNet"]
   end
   db[("walkie-database")]
   agent["walkie-agent-ros"]
 
-  zed -- "RGB and depth images" --> torch
-  torch -. "person images (open)" .-> face
-  face -. "faces" .-> torch
-  torch -- "/walkie_vision/objects" --> db
-  torch -- "/walkie_vision/people" --> db
-  agent -- "/walkie_vision/embed_text" --> torch
-  agent -. "/walkie_vision/detect_objects (proposed)" .-> torch
+  zed -- "RGB image and camera_info" --> node
+  node -- "/walkie_vision/objects" --> db
+  node -- "/walkie_vision/people" --> db
+  node -- "/walkie_vision/objects" --> agent
+  node -- "/walkie_vision/people" --> agent
+  agent -. "/walkie_vision/embed_text (not built)" .-> node
+  agent -. "/walkie_vision/detect_objects (proposed)" .-> node
   agent <--> db
 ```
 
 ## Processes
 
-| Process       | Models                                                                                     | Runtime                    |
-| ------------- | ------------------------------------------------------------------------------------------ | -------------------------- |
-| Torch process | YOLOE-26 segmentation with tracking, in text-prompt mode; the object and room embedder and the `EmbedText` service; YOLO26 pose; OSNet | PyTorch                    |
-| Face process  | SCRFD face detection and ArcFace face embeddings, InsightFace's `buffalo_l`                 | ONNX Runtime on CUDA       |
+| Process                            | Models                                                                                                                                  | Runtime                                |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| Vision node (`walkie_vision.node`) | YOLOE-26 segmentation with tracking, in text-prompt mode; YOLO26 pose with tracking; SCRFD and ArcFace (InsightFace's `buffalo_l`); OSNet | PyTorch and ONNX Runtime, both on CUDA |
 
-The torch process is the only subscriber to the raw camera image: an HD2K
-image in `bgra8` is about 11 MB, 15 times a second. The face process is
-separate so that a crash in ONNX Runtime does not stop object detection.
-How it gets its images, and how its faces reach `PersonDetection`, is still
-open ([ADR-0004](decisions/0004-one-environment-two-processes.md)).
+The `EmbedText` server and the `DetectObjects` service join this process
+when they are built.
+
+Why one process ([ADR-0010](decisions/0010-one-vision-process.md)):
+
+- **One copy of the image.** The node is the only subscriber to the raw
+  camera image. An HD2K image in `bgra8` is about 11 MB, 15 times a second.
+- **One CUDA context.** The models share one context instead of paying for
+  two.
+- **Faces at native resolution.** SCRFD runs on a crop around each
+  person's head. The head position comes from the pose model, which runs
+  just before it in the same process.
+- **No merge step.** Each face goes into its person's `PersonDetection`
+  before the array is published, so there is never a second, partial
+  people array for one image.
+
+The check `c12` runs every model in one process, the way the node loads
+them, for 20 HD2K frames.
+
+The cost: a crash in ONNX Runtime's native code stops objects and people
+too, until the launch has started the node again and its models have
+loaded.
 
 Speech-to-text and text-to-speech stay in walkie-agent-ros. GraspNet,
 `yolo_node` and `obb3d` stay in walkie-ros.
 
+## The vision node
+
+`walkie_vision.node` runs every model on the newest camera image and
+publishes one people array and one object array for it. The model code
+does not know about ROS: `walkie_vision.pipeline` runs the providers and
+builds the messages, and the node feeds it images and publishes what it
+returns. The tests run the same node with the fakes.
+
+```mermaid
+flowchart LR
+  mailbox["Mailbox<br/>(newest image only)"] --> convert["Convert<br/>to BGR"]
+  convert --> yoloe["YOLOE-26<br/>with ByteTrack"]
+  yoloe --> pose["YOLO26 pose<br/>with BoT-SORT"]
+  pose --> floor["Score floors,<br/>person dedupe"]
+  floor --> crops["Head crops<br/>from keypoints"]
+  crops --> scrfd["SCRFD"]
+  scrfd --> arcface["ArcFace"]
+  arcface --> osnet["OSNet"]
+  osnet --> build["Build the<br/>two arrays"]
+  build --> publish["Publish people,<br/>then objects"]
+```
+
+### Threads
+
+- **The main thread** spins the ROS callbacks, and they do almost nothing.
+    - The image callback counts the image and puts it in a one-slot
+      mailbox. A waiting image that has not been processed yet is replaced,
+      so the node never works through a queue of old images.
+    - The `camera_info` callback keeps the newest message.
+    - The latency timer logs one summary line every 10 s. It runs on wall
+      time, so it also fires under `use_sim_time` when `/clock` stops. It
+      warns when the node processes under 5 Hz while the camera delivers
+      more, and when another node publishes on the output topics.
+    - Every 0.5 s, `main()` checks that the worker is alive and that no
+      image has taken longer than `process_timeout_s`.
+- **The worker thread** is the only thread that touches a model. It takes
+  the newest image, waits for the rate cap (`max_rate_hz`), checks that the
+  newest `camera_info` matches the image's size, converts the image, runs
+  the pipeline, and publishes.
+- **Exit codes.** The node exits 1 when it fails while running: 30 failed
+  images in a row, one image that takes over 60 s, or a worker that stopped.
+  It exits 2 when it cannot start. A bad parameter, a missing model file,
+  or OSNet not cached while offline logs one FATAL line, in about a second,
+  before any model loads. A model that fails to load, for example on CUDA
+  out of memory, also exits 2, and logs its traceback. The launch starts
+  the node again after either.
+
+### Parameters
+
+All parameters are read-only, so `classes` and the topics cannot change
+during a run. `config/vision.yaml` holds the defaults. `classes` has no
+default: it comes from the task's file in `config/tasks/`, and a missing
+list stops the node at start. `config/sim.yaml` sets `use_sim_time` and the
+sim output topics. Write every double with a decimal point (`10.0`, not
+`10`): rclpy rejects an integer for a double parameter.
+
+| Name                       | Type     | Default                                  | Meaning                                                                                       |
+| -------------------------- | -------- | ---------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `image_topic`              | string   | `/zed_head/zed_node/rgb/color/rect/image` | The RGB image. On the robot: `bgra8`, 2208 x 1242, 15 Hz                                     |
+| `camera_info_topic`        | string   | `/zed_head/zed_node/depth/camera_info`   | The calibration of those pixels. walkie-ros documents this topic, the sim publishes it, and `oracle_perception` reads it. The node checks its size against each image |
+| `people_topic`             | string   | `/walkie_vision/people`                  | `PersonDetectionArray`                                                                        |
+| `objects_topic`            | string   | `/walkie_vision/objects`                 | `ObjectDetectionArray`                                                                        |
+| `classes`                  | string[] | none; from `config/tasks/<task>.yaml`    | YOLOE's text prompts for the whole run                                                        |
+| `device`                   | string   | `cuda:0`                                 | The PyTorch and Ultralytics device: `cpu`, `cuda` or `cuda:N`. ONNX Runtime's face models always use GPU 0 |
+| `objects_weights`          | string   | `yoloe-26s-seg.pt`                       | A file in `models/ultralytics/`, or an absolute path. `mobileclip2_b.ts` must be next to it  |
+| `objects_imgsz`            | int      | 640                                      | A multiple of 32                                                                              |
+| `objects_conf`             | double   | 0.1                                      | The detector's threshold, fed to the tracker                                                  |
+| `objects_agnostic_nms`     | bool     | true                                     | One label per box                                                                             |
+| `objects_tracker`          | string   | `bytetrack.yaml`                         | An Ultralytics tracker file, by name or absolute path                                         |
+| `objects_min_score`        | double   | 0.25                                     | Objects under it are not published                                                            |
+| `pose_weights`             | string   | `yolo26s-pose.pt`                        | Like `objects_weights`                                                                        |
+| `pose_imgsz`               | int      | 640                                      | A multiple of 32                                                                              |
+| `pose_conf`                | double   | 0.1                                      | The pose model's threshold, fed to the tracker                                                |
+| `pose_tracker`             | string   | `botsort.yaml`                           | BoT-SORT with camera-motion compensation and no re-ID model                                   |
+| `people_min_score`         | double   | 0.25                                     | People under it are not published                                                             |
+| `people_dedupe_iou`        | double   | 0.5                                      | A person whose box has an IoU above this with a higher-scoring person's box is not published. 1.0 publishes every box |
+| `face_det_thresh`          | double   | 0.5                                      | SCRFD's threshold. walkie-agent-ros trusts a face from 0.5                                    |
+| `face_input_sizes`         | int[]    | [160, 256, 384, 640]                     | SCRFD's input sizes for the head crops                                                        |
+| `face_max_people`          | int      | 6                                        | Only this many of the largest people get a face search                                        |
+| `face_max_offset`          | double   | 0.25                                     | A face's centre must be within this share of the head crop's side from the head keypoints     |
+| `reid_min_crop_px`         | int      | 16                                       | People with a smaller box get no appearance vector                                            |
+| `reid_batch_size`          | int      | 16                                       | OSNet's batch size                                                                            |
+| `max_rate_hz`              | double   | 10.0                                     | At most this many images a second; 0 means as fast as the GPU allows (bench only). Leaves GPU time for the ZED's depth |
+| `max_consecutive_failures` | int      | 30                                       | Then the node exits 1, and the launch starts it again                                         |
+| `process_timeout_s`        | double   | 60.0                                     | One image taking longer means the GPU hangs: the node exits 1                                 |
+| `latency_log_period_s`     | double   | 10.0                                     | How often the latency line is logged, in seconds of wall time                                 |
+| `stale_warn_s`             | double   | 0.5                                      | Warn when an array is older than this when it is published                                    |
+
+Why 0.25 for both score floors: it is Ultralytics' own `predict` default,
+and the trackers' `new_track_thresh` and `track_high_thresh`. A track can
+only start from a box at 0.25 or more. The floor stops a track that has
+started from being published while its matches score as low as
+`track_low_thresh`, 0.1. walkie-agent-ros filters neither people nor seats
+by score. The floors need tuning on the robot.
+
+Why the person dedupe: YOLO26 pose is end-to-end. It has no NMS, so no IoU
+setting removes overlapping boxes. Now and then it gives one person a
+second, partial box, and the tracker confirms that box as its own track.
+In `c11` such a box scored 0.38 to 0.41, above the 0.25 floor, with an IoU
+of 0.60 to 0.65 with the real person's box. Published, it would be a third
+guest for two: `find_people` would count it, `find_seats` could mark a free
+seat as taken, and it could take the real person's face for that image. So
+the pipeline goes through the people from the highest score down and
+leaves out a person whose box has an IoU above `people_dedupe_iou` (0.5)
+with a person it kept. This runs after the score floor and before the face
+search. The latency line counts these as `duplicates`. A higher
+`people_min_score` would also hide that box, but it would hide real people
+far away or partly hidden too.
+
+### QoS
+
+| Topics                    | Reliability | History     | Durability |
+| ------------------------- | ----------- | ----------- | ---------- |
+| Image and `camera_info`   | BEST_EFFORT | KEEP_LAST 1 | VOLATILE   |
+| People and objects        | RELIABLE    | KEEP_LAST 5 | VOLATILE   |
+
+RELIABLE outputs match both RELIABLE and BEST_EFFORT subscribers.
+walkie-agent-ros's `VisionFeed` subscribes BEST_EFFORT.
+
+### The latency line
+
+Every 10 s the node logs one line like this:
+
+```text
+processed 52 in 10.0 s (5.2 Hz); received 150, replaced 98, skipped 0, failed 0, dropped 0, duplicates 0 | ms p50/p95: wait 3/9 convert 6/8 objects 21/30 pose 18/25 faces 12/40 reid 9/15 build 1/2 publish 1/2 | age 95/160
+```
+
+- **The counts** are for that period. `received` counts images that
+  arrived, and `replaced` those that a newer image replaced before the
+  worker took them. `skipped` counts images with no matching `camera_info`
+  or an unsupported encoding. `failed` counts images on which a model
+  raised. `dropped` counts single bad fields left out, such as a face with
+  a broken vector. `duplicates` counts second boxes of one person that
+  the dedupe left out. They are the pose model's normal behaviour, so the
+  node does not warn about them.
+- **The stages** are in milliseconds, as p50/p95. `wait` is the time an
+  image waited in the mailbox. `faces` covers SCRFD and ArcFace on every
+  head crop.
+- **`age`** is the time from the image's stamp to the publish, in
+  milliseconds. The contract targets under 300 at p95.
+
+### Trackers
+
+- Objects use ByteTrack (`objects_tracker`).
+- People use BoT-SORT with `gmc_method: sparseOptFlow` and no re-ID model
+  (`pose_tracker`). The base turns while the agent follows a person. The
+  camera-motion compensation shifts the tracks by the camera's motion, so a
+  person's box does not jump past the tracker's matching gate and get a new
+  id.
+- Both are parameters, so a tracker can change without a code change.
+- `c11` checks it. It pastes two people into a wide textured strip and
+  moves an HD2K window across it at 64 px a frame. At fx 1066 and 10 Hz
+  that is a base turn of 0.6 rad/s. The published people, after the score
+  floor and the dedupe, must be exactly those two in every frame, with ids
+  that never change. It also prints the same pan with ByteTrack, for
+  comparison.
+
+What `c11` measured on the laptop (RTX 2060, 2026-10-26), from frame 3 on:
+
+| Tracker   | Pan per frame | Published ids of the two people | Second boxes the dedupe left out        | Pose median, textured HD2K |
+| --------- | ------------- | ------------------------------- | --------------------------------------- | -------------------------- |
+| BoT-SORT  | 64 px (10 Hz) | 1 and 2 in every frame          | 2 frames (IoU 0.65, score 0.38 to 0.41) | 34.9 ms                    |
+| BoT-SORT  | 128 px (5 Hz) | 1 and 2 in every frame          | 2 frames (IoU 0.65)                     | 38.2 ms                    |
+| ByteTrack | 64 px (10 Hz) | 1 and 2 in every frame          | 1 frame (IoU 0.60)                      | 12.5 ms                    |
+| ByteTrack | 128 px (5 Hz) | 4 ids; neither person kept one  | 1 frame (IoU 0.60)                      | 10.7 ms                    |
+
+Without the dedupe, BoT-SORT at both rates also published a third id for
+those second boxes, and the check failed.
+
+So BoT-SORT keeps the ids at both rates, and ByteTrack loses them at 5 Hz.
+Its motion estimate costs about 22 to 28 ms more per textured HD2K frame,
+and about 11 ms more on a mostly black one (20.9 against 10.1 ms). Run
+`pixi run python checks/run_checks.py c11` to measure again; the log is in
+`checks/output/c11_providers.log`.
+
+### GPU
+
+- `device` moves only the PyTorch models. ONNX Runtime's face models
+  always use GPU 0.
+- The PyTorch models load first, then the ONNX Runtime sessions. After the
+  warm-ups the node frees PyTorch's cached GPU memory, so ONNX Runtime can
+  use it.
+- ONNX Runtime logs only errors. SCRFD's file declares its output shapes
+  for a 640 input and ArcFace's for a batch of 1, so at its default level
+  ONNX Runtime warns on every smaller head crop and every batch of faces:
+  about 190 lines a second with two guests at 10 Hz. `build_providers()`
+  sets the level before it creates the face sessions, because a session
+  takes the level when it is created.
+- On the robot the ZED SDK's depth shares the GPU, and neither memory nor
+  latency is measured there yet.
+
+What `c12` measured on the laptop (RTX 2060, 2026-10-26). It loads the
+models the way the node does and runs 20 HD2K frames of `zidane.jpg` with
+two people:
+
+| Measure                                        | Value                |
+| ---------------------------------------------- | -------------------- |
+| `build_providers()`, every model loaded and warmed up | 4.9 s         |
+| `process()`, frames 3 to 20, p50 / p95         | 86.6 / 108.2 ms      |
+| Stages p50 / p95: objects, pose, faces, reid   | 13.6 / 26.5, 22.8 / 28.4, 34.8 / 37.0, 13.8 / 16.9 ms |
+| GPU memory after the loop, nvidia-smi          | 862 MiB              |
+| PyTorch reserved / max allocated               | 198 / 173 MiB        |
+
+Run `pixi run python checks/run_checks.py c12` to measure again; the log is
+in `checks/output/c12_vision_node.log`.
+
+### First start
+
+On a GPU that ONNX Runtime has no machine code for, such as an RTX 50, the
+face warm-up compiles the kernels and can take minutes. The log says
+"warming up the face models" first. The driver keeps the compiled kernels
+in `~/.nv/ComputeCache`, so later starts are fast while that folder is
+kept.
+
+## Contract {#contract}
+
+What the vision node promises its consumers. walkie-agent-ros and
+walkie-database can cite each item by its link.
+
+### One pair per image {#contract-pairs}
+
+- For every image it processes, the node publishes exactly one
+  `PersonDetectionArray` on `people_topic` and one `ObjectDetectionArray`
+  on `objects_topic`, also when they are empty.
+- Both carry the image's own header: the same stamp and the camera's
+  optical `frame_id`.
+- Both carry a copy of the matching `camera_info` with that header.
+- People are published first. Consumers pair by exact stamp:
+  walkie-agent-ros's `find_seats` waits up to 0.5 s.
+- If a model fails on an image, neither array is published for it. There
+  is never a second or partial array for one stamp.
+- A single bad field does not fail the image. A bad face or appearance
+  vector is left out of that person, and a person or object with a bad box
+  is left out. The node logs the counts.
+
+### Who publishes {#contract-publishers}
+
+- On the robot, the vision node is the only publisher on
+  `/walkie_vision/people` and `/walkie_vision/objects`.
+- In simulation, walkie-agent-ros's `oracle_perception` owns those topics.
+  The node, if it runs there, publishes on `/walkie_vision/sim/people` and
+  `/walkie_vision/sim/objects`.
+- The node warns when another node publishes on its output topics.
+
+### Scores {#contract-scores}
+
+- Every published person scores at least `people_min_score`, and every
+  object at least `objects_min_score`. Both are 0.25.
+- No published person's box has an IoU above `people_dedupe_iou` (0.5)
+  with the box of a higher-scoring published person. A second box of one
+  person is left out. Two real people who overlap that much show as one.
+
+### Faces {#contract-faces}
+
+- Each person's face is in that person's `PersonDetection`.
+- `face_det_score` 0 means no face, with an empty `face_model` and
+  `face_embedding` and a zero `face_bbox`.
+- A face has `face_det_score >= 0.5` (SCRFD's threshold),
+  `face_model = arcface_w600k_r50`, and a unit 512-value `face_embedding`.
+- `face_bbox` is in whole-image pixels and clipped to the image. Its centre
+  is within `face_max_offset` (0.25) of the head crop's side from the
+  person's head keypoints. No face is given to two people.
+- `appearance_model = osnet_x1_0_msmt17`, with a unit 512-value vector, for
+  every person whose clipped box is at least 16 x 16 px.
+
+### Track ids {#contract-track-ids}
+
+- Every person and object from the real models has a non-zero `track_id`.
+  It stays the same while the tracker keeps the track: 30 processed frames
+  after the last match.
+- A new person or object appears one processed frame after it is first
+  seen, except on the first image after the node starts.
+- Person tracks use camera-motion compensation (BoT-SORT's
+  `sparseOptFlow`, no re-ID model), so a base turn at 0.6 rad/s at 10 Hz
+  keeps the published people's ids (`c11`, with the dedupe).
+- An object's label can change between images under the same id, for
+  example from `chair` to `armchair`.
+- Ids are `((offset + local - 1) mod (2^32 - 1)) + 1`, where `offset` is
+  the Unix time in ms at node start, mod (2^32 - 1). So a restart never
+  reuses an id, unless the system clock steps back further than the time
+  between the two starts.
+- Object ids and person ids are separate spaces.
+- Treat ids as opaque.
+- 0 still means "not tracked", for other publishers such as the fakes.
+
+### Classes {#contract-classes}
+
+- `classes` is read once from the task's parameter file and never changes
+  during a run. Changing it means restarting the node.
+- A class in `classes` without a detection was not seen.
+- HRI: `chair, sofa, armchair, stool`.
+
+### Geometry {#contract-geometry}
+
+- Boxes, keypoints and faces are in pixels of the published `camera_info`.
+  Its width and height equal the image's: the node skips an image
+  otherwise.
+- Boxes and keypoints are clipped to the image. Keypoints are scored by
+  `keypoint_scores` and are not zeroed below any score. Use a score floor:
+  the agent uses 0.3.
+- `frame_id` is the camera's optical frame (z forward, x right).
+- Headings come from `k[0]` and `k[2]`. Face size in radians comes from
+  `k[0]` and `k[4]`. Left, centre and right are thirds of
+  `camera_info.width`.
+
+### Freshness {#contract-freshness}
+
+- The node processes only the newest image. It drops images rather than
+  queueing them.
+- The targets: at least 5 Hz, and an age at publish (stamp to publish)
+  under 0.3 s at p95. Then the gap between two sightings of a person stays
+  under 2 x 0.2 + 0.3 = 0.7 s, inside the agent's 1 s.
+- The node caps itself at 10 Hz (`max_rate_hz`) to leave GPU time for the
+  ZED's depth.
+- It logs per-stage latency (p50/p95) and the age at publish every 10 s.
+  It warns when an array is older than 0.5 s at publish, and when it
+  processes under 5 Hz while the camera delivers more.
+- Consumers drop arrays older than 1 s. walkie-agent-ros's gaze loses a
+  person 1 s after the last sighting.
+- The targets are measured on the laptop (`c12`), not yet on the robot.
+
+### Face resolution {#contract-face-resolution}
+
+- SCRFD runs on a crop around each person's head, from the pose keypoints,
+  at native resolution, for the 6 largest people.
+- At fx 1066, the agent's 0.0469 rad gate is about 50 px, and
+  `FrontConfig`'s 0.10 rad is about 107 px. Both are well inside what SCRFD
+  sees in a crop.
+
+### QoS {#contract-qos}
+
+- The outputs are RELIABLE, KEEP_LAST 5, VOLATILE. BEST_EFFORT subscribers,
+  such as the agent's `VisionFeed`, match too.
+- The inputs are BEST_EFFORT, KEEP_LAST 1.
+
+## How to run
+
+1. `pixi run fetch-models` downloads the model files into `models/`.
+2. `pixi run build-msgs` builds `walkie_vision_msgs`.
+3. Run once with internet access, so OSNet's checkpoint reaches the
+   Hugging Face cache. The node checks the cache at start and fails in
+   about a second without it.
+4. A Zenoh router must run, with the same `ROS_DOMAIN_ID` as the rest of
+   the robot.
+5. `pixi run vision` starts the node with the HRI task's classes, and
+   starts it again whenever it exits. Add `task:=<task>` for another task,
+   and `sim:=true` in simulation.
+
+[Run the vision node](../guides/vision-node.md) has the details and a
+troubleshooting table.
+
 ## Topics and services
 
-Published and served (proposed names):
+Published and served:
 
 | Name                        | Type                                      | What it is                                         |
 | --------------------------- | ----------------------------------------- | -------------------------------------------------- |
 | `/walkie_vision/objects`    | `walkie_vision_msgs/ObjectDetectionArray` | Every object in each processed image, also when there is none |
 | `/walkie_vision/people`     | `walkie_vision_msgs/PersonDetectionArray` | Every person in each processed image, also when there is none |
-| `/walkie_vision/embed_text` | `walkie_vision_msgs/srv/EmbedText`        | Text embeddings in the object embedder's space, for search |
+| `/walkie_vision/sim/objects` and `/walkie_vision/sim/people` | The same types | The node's output with `sim:=true`. In simulation, walkie-agent-ros's `oracle_perception` owns the two topics above ([Who publishes](#contract-publishers)) |
+| `/walkie_vision/embed_text` | `walkie_vision_msgs/srv/EmbedText`        | Not built. Text embeddings in the object embedder's space, for search |
 | `/walkie_vision/detect_objects` | `walkie_vision_msgs/srv/DetectObjects` | Proposed, not built ([ADR-0009](decisions/0009-on-demand-detect-objects.md)). Named objects in the newest image, on request |
 
-Subscribed, from walkie-ros's ZED driver:
+Subscribed, from walkie-ros's ZED driver. Both topics are parameters:
 
-| Topic                                        | Type                       |
-| -------------------------------------------- | -------------------------- |
-| `/zed_head/zed_node/rgb/color/rect/image`    | `sensor_msgs/Image`, `bgra8`, 2208 x 1242 at 15 Hz |
-| `/zed_head/zed_node/depth/depth_registered`  | `sensor_msgs/Image`, `32FC1` |
-| `/zed_head/zed_node/depth/camera_info`       | `sensor_msgs/CameraInfo`   |
+| Parameter           | Default                                   | Type                       |
+| ------------------- | ----------------------------------------- | -------------------------- |
+| `image_topic`       | `/zed_head/zed_node/rgb/color/rect/image` | `sensor_msgs/Image`, `bgra8`, 2208 x 1242 at 15 Hz on the robot |
+| `camera_info_topic` | `/zed_head/zed_node/depth/camera_info`    | `sensor_msgs/CameraInfo`   |
+
+Both the robot and the sim publish `depth/camera_info`. The robot's
+`rgb/color/rect/camera_info` is not checked yet. The node skips any image
+whose size does not match the `camera_info`, so a wrong topic shows as
+skipped images in the latency line. The node does not subscribe to the
+depth image yet.
 
 ## Messages
 
@@ -157,16 +533,22 @@ searches the table that `embedding_model` names.
 
 | Module                      | What it holds                                                                     |
 | --------------------------- | --------------------------------------------------------------------------------- |
-| `walkie_vision.providers`   | The interfaces every model implements (`ObjectDetector`, `Embedder`, `PoseEstimator`, `ReIdentifier`, `FaceRecognizer`), their result types, and the model names |
-| `walkie_vision.fakes`       | A fake for each interface, with deterministic vectors, for tests without a GPU    |
+| `walkie_vision.providers`   | The interfaces every model implements (`ObjectDetector`, `Embedder`, `PoseEstimator`, `ReIdentifier`, `FaceRecognizer`, `PersonFaceRecognizer`), their result types, and the model names |
+| `walkie_vision.fakes`       | A fake for each interface, with deterministic vectors, for tests without a GPU (`FakePersonFaceRecognizer` among them) |
 | `walkie_vision.convert`     | Model results to messages, with the checks the message comments state             |
+| `walkie_vision.yolo`        | YOLOE-26 and YOLO26 pose with their trackers (`YoloeTracker`, `YoloPoseTracker`)  |
 | `walkie_vision.face`        | SCRFD and ArcFace on ONNX Runtime (`FaceAnalyzer`, a `FaceRecognizer`)            |
+| `walkie_vision.face.heads`  | Faces from crops around each person's head (`HeadFaceRecognizer`, a `PersonFaceRecognizer`) |
 | `walkie_vision.reid`        | OSNet x1.0 and its weights (`load_osnet`)                                         |
+| `walkie_vision.reid.identifier` | OSNet on person crops (`OSNetReIdentifier`, a `ReIdentifier`)                 |
 | `walkie_vision.models`      | Every model file and Hugging Face commit, with its checksum and licence           |
+| `walkie_vision.image`       | `sensor_msgs/Image` to a BGR array, and the `camera_info` size check              |
+| `walkie_vision.pipeline`    | One image through every provider to the two arrays, with the score floors, the person dedupe (`dedupe_poses`) and the track id base. No ROS node |
+| `walkie_vision.node`        | The vision node: parameters, threads, publishing, health checks and `build_providers` |
 
-A node will hold one provider for each model, and use `convert` to publish
-what they return. The tests run the same path with the fakes, so a node can
-be tested without a GPU.
+The node holds one provider for each model, and `pipeline` uses `convert`
+to build what they return into messages. The tests run the same path with
+the fakes, so the node is tested without a GPU.
 
 ## The Restaurant constraint
 
@@ -225,7 +607,7 @@ walkie-vision:
 sequenceDiagram
   participant A as walkie-agent-ros
   participant D as walkie-database
-  participant V as walkie-vision torch process
+  participant V as walkie-vision vision node
   A->>D: find_objects for mug, memory first
   D-->>A: not remembered here
   A->>V: DetectObjects with classes mug
@@ -280,9 +662,10 @@ implementation ([ADR-0009](decisions/0009-on-demand-detect-objects.md)).
 
 How it would run:
 
-- **On the newest image.** The planned torch process will be the only
-  subscriber to the camera, and will hold only the newest RGB image, depth
-  image and `camera_info`. The service reads those and adds no subscriber.
+- **On the newest image.** The vision node is the only subscriber to the
+  camera, and holds only the newest RGB image and `camera_info`. For this
+  service it would also hold the newest depth image, which it does not
+  subscribe to yet. The service reads those and adds no subscriber.
   It keeps no image and no detection after it answers. Only the on-demand
   model's last class list stays loaded, as a cache. It returns no id for
   the image.
@@ -365,18 +748,18 @@ search only, and a new object embedder never touches the tool index.
 
 ### In simulation
 
-The walkie-vision nodes do not exist yet. walkie-agent-ros's sim harvest
-runs its agent in MuJoCo (walkie-agent-ros `docs/architecture/harvest.md`,
-Proposed). There, a planned `oracle_perception` node in walkie-agent-ros
+walkie-agent-ros's sim harvest runs its agent in MuJoCo (walkie-agent-ros
+`docs/architecture/harvest.md`, Proposed). There, walkie-agent-ros's
+`oracle_perception` node (`src/walkie_agent/sim/oracle_perception.py`)
 publishes detections from the scenario's spec, with configurable noise and
 dropout, in `walkie_vision_msgs` types. People come only from that node,
 because the sim world has no person bodies. Whether that node, or
 something else, also answers `DetectObjects` and `EmbedText` in sim is not
 decided (open question 7).
 
-walkie-agent-ros's planned unit-test mocks will use the same `hash_vector`
-as `walkie_vision.fakes`, so their ranking is deterministic. A scene file
-drives a mock detector and a mock text embedder. `hash_vector` then becomes
+walkie-agent-ros copies `hash_vector` into
+`src/walkie_agent/sim/fake_vectors.py`. Its `oracle_perception` and its
+tests use it, so their ranking is deterministic. `hash_vector` is now
 something another repository relies on. A change to how it derives vectors
 must be matched in walkie-agent-ros, or the rankings in its tests change
 without an error.
@@ -390,16 +773,19 @@ a minimum-score check would always answer `NOT_FOUND`. For a sim search to
 find anything, the detection embeddings must be hashed from the same key
 as the query text.
 
-Later, a smaller share of harvest runs is planned to use the real
-walkie-vision detectors on rendered MuJoCo frames, once the nodes exist.
+The vision node can run on the rendered MuJoCo frames with
+`pixi run vision sim:=true`. It then publishes on `/walkie_vision/sim/people`
+and `/walkie_vision/sim/objects`, so its arrays never mix with
+`oracle_perception`'s. The agent does not read those topics: they are for
+looking at the node's output on rendered frames. MuJoCo has no person
+bodies, so the node finds no people there.
 
 ### What walkie-agent-ros builds against
 
-- **The message package.** walkie-agent-ros will pin `walkie_vision_msgs`
-  in its `ros2_ws.repos` and add it to the `--packages-select` allow-list
-  of its `build-ros2` task, as it does for `walkie_database_msgs` today.
-  That waits until this repository is on GitHub (walkie-agent-ros
-  ADR-0034).
+- **The message package.** walkie-agent-ros pins this repository in its
+  `ros2_ws.repos` (b050ea1 when this was written) and builds
+  `walkie_vision_msgs` in `build-ros2`, as it does `walkie_database_msgs`
+  (walkie-agent-ros ADR-0034).
 - **The real clients.** `DetectObjects` and `EmbedText` clients are a
   parallel track, from phase 2 of the agent's roadmap, and the agent's
   bundle tests are rerun against them. Until then its presets stay backed
@@ -435,10 +821,9 @@ walkie-vision detectors on rendered MuJoCo frames, once the nodes exist.
 | Its entry in `rosidl_generate_interfaces`                | `ros2_ws/src/walkie_vision_msgs/CMakeLists.txt`             | Changed |
 | Field pins for its request and response                  | `test_message_fields` in `tests/test_convert.py`            | Changed |
 | Filling the response                                     | `walkie_vision.convert`. `to_object_detection_array` fills `objects`. The `success` and `message` handling is new, like `fill_embed_text_response` for `EmbedText`. | New |
-| The `DetectObjects` server, with its own YOLOE instance and no tracker | The torch-process node                        | New, with the node |
-| The `EmbedText` server                                   | The torch-process node                                      | Already designed. Built with the node, with no change to its type. |
-| `hash_vector`                                            | `walkie_vision.fakes`                                       | Unchanged. walkie-agent-ros's mocks will rely on it. |
-| Publishing the repository on GitHub                      | None                                                        | Needed before walkie-agent-ros can pin the package. See "Not on GitHub" in [Open problems](#open-problems). |
+| The `DetectObjects` server, with its own YOLOE instance and no tracker | The vision node (`walkie_vision.node`)        | New |
+| The `EmbedText` server                                   | The vision node (`walkie_vision.node`)                      | Already designed, not built. No change to its type. |
+| `hash_vector`                                            | `walkie_vision.fakes`                                       | Unchanged. walkie-agent-ros copies it. |
 
 ### Open questions
 
@@ -502,30 +887,58 @@ walkie-vision detectors on rendered MuJoCo frames, once the nodes exist.
 - **The robot's GPU is not verified.** Its model, memory and driver are
   unknown, and the ONNX Runtime compile time on `sm_120` is not measured.
   See [On the robot](../setup/01-vision-environment.md#on-the-robot).
-- **GPU memory.** All the models together need about 5.2 GiB on the
-  laptop's 6 GB. The real total of both processes is not measured.
-- **The face process interface.** How the face process gets images, and
-  which process puts the faces into `PersonDetection`, is not decided.
+- **GPU memory.** All the models run in one process. `c12` measures its
+  GPU memory on the laptop. On the robot, the ZED SDK's NEURAL_PLUS depth
+  shares the GPU, and neither memory nor latency is measured there. ONNX
+  Runtime has no memory limit set. Adding one needs a backward-compatible
+  change to `FaceAnalyzer`, which now compares provider names only.
+- **Robot latency.** The node's rate and age at publish on HD2K images are
+  measured on the laptop (`c12`), not on the robot.
+- **The score floors.** `people_min_score` and `objects_min_score` are 0.25
+  from Ultralytics' defaults, not from robot data. They need tuning on the
+  robot.
+- **The person dedupe.** `people_dedupe_iou` 0.5 comes from the second
+  boxes in `c11` (IoU 0.60 to 0.65), not from robot data. It compares
+  boxes only. A second box with an IoU of 0.5 or less, such as a small box
+  inside a person's box, is still published. Two real people who overlap
+  above 0.5, one behind the other, show as one. It needs tuning on the
+  robot.
+- **Who starts the node on the robot.** Whether `pixi run vision` runs by
+  hand, from walkie-ros's bringup or from a service is not decided.
+- **The respawn gap.** After a crash, nothing is published until the
+  launch has started the node again and its models have loaded: several
+  seconds, or minutes on a GPU whose kernels are not compiled yet.
+- **Empty fields.** Object embeddings, points and crops are empty in every
+  published object. `EmbedText` is not built.
+- **The trackers count processed frames.** A lost track is kept for 30
+  processed frames, 3 s at 10 Hz but 6 s at 5 Hz. A slower node keeps lost
+  ids longer.
+- **Labels under one id.** An object's label can change between images
+  under the same track id, for example from `chair` to `armchair`.
+  Consumers must not take the label of one image as the track's label.
+- **A clock step back.** The track id base comes from the wall clock at
+  start. If the clock steps back further than the time between two starts,
+  the second run can reuse ids of the first.
+- **An Ultralytics upgrade** could change how the trackers give ids. Run
+  `c11` and the tracker tests in `tests/test_yolo.py` again after one.
 - **Room vectors.** Which node embeds whole images for walkie-database's
   room table is not decided.
 - **Captions.** Florence-2 runs, but there is no message or service for
   captions yet.
 - **Depth and crops.** The code that cuts a `PointCloud2` out of the depth
-  image with a mask, and that compresses a crop, belongs to the nodes and
-  is not written. Which `camera_info` goes with the RGB image must be
-  checked on the robot.
+  image with a mask, and that compresses a crop, belongs to the node and
+  is not written. The default camera_info topic is `depth/camera_info`,
+  which walkie-ros documents. Check on the robot that its size matches the
+  RGB image, and whether `rgb/color/rect/camera_info` exists.
 - **walkie-database.** Its object memory design (Proposed) has its own
   detection message and a `/walkie_database/detections` topic, without
   `bbox` or `track_id`. It must build `walkie_vision_msgs`, which needs
   `ros-jazzy-vision-msgs`, and subscribe to this repository's topics.
 - **Vector table names.** `arcface_w600k_r50` and `osnet_x1_0_msmt17` follow
-  walkie-database's migration 0002, which renames its face and appearance
-  tables after their weights. That migration is not merged yet. A
-  walkie-database without it still has `face_arcface` and
-  `appearance_osnet`, which no `face_model` or `appearance_model` value
-  matches.
-- **Ultralytics' working directory.** YOLOE loads `mobileclip2_b.ts` by bare
-  file name, so the torch process must run in `models/ultralytics/`.
+  walkie-database's migration 0002, merged in a099e21, which names its
+  face and appearance tables after their weights. A walkie-database from
+  before it still has `face_arcface` and `appearance_osnet`, which no
+  `face_model` or `appearance_model` value matches.
 - **Licences.** `buffalo_l` is non-commercial research only, Ultralytics is
   AGPL-3.0, and the CLIP mirror's model card disagrees with OpenAI's MIT
   licence. The repository itself has no licence yet, and `package.xml` says
@@ -541,8 +954,6 @@ walkie-vision detectors on rendered MuJoCo frames, once the nodes exist.
   is normal for torchvision wheels and has caused no problem so far.
 - **Zenoh warnings.** Every node prints deprecated-setting warnings from
   rmw_zenoh's built-in configuration.
-- **Not on GitHub.** The clone URL and the site URL are placeholders until
-  the repository is published.
 
 ## Decisions
 
@@ -558,7 +969,7 @@ walkie-vision detectors on rendered MuJoCo frames, once the nodes exist.
 
     --8<-- "architecture/decisions/0003-messages-in-this-repository.md:body"
 
-??? success "ADR-0004: Run the models in one Pixi environment and two processes · Accepted"
+??? quote "ADR-0004: Run the models in one Pixi environment and two processes · Superseded by ADR-0010"
 
     --8<-- "architecture/decisions/0004-one-environment-two-processes.md:body"
 
@@ -581,3 +992,7 @@ walkie-vision detectors on rendered MuJoCo frames, once the nodes exist.
 ??? note "ADR-0009: Add an on-demand DetectObjects service for detecting by name · Proposed"
 
     --8<-- "architecture/decisions/0009-on-demand-detect-objects.md:body"
+
+??? success "ADR-0010: Run every vision model in one process · Accepted"
+
+    --8<-- "architecture/decisions/0010-one-vision-process.md:body"
