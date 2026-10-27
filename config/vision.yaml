@@ -14,6 +14,9 @@ walkie_vision:
     # PersonDetectionArray and ObjectDetectionArray, one of each per image.
     people_topic: /walkie_vision/people
     objects_topic: /walkie_vision/objects
+    # GetPersonCrop: one person's crop and colour shares from the next image,
+    # by the track id in people_topic (ADR-0011).
+    person_crop_service: /walkie_vision/get_person_crop
 
     # The device of the PyTorch models: cpu, cuda or cuda:N. ONNX Runtime's
     # face models always use GPU 0.

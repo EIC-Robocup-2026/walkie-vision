@@ -20,7 +20,7 @@ fills it land in one commit.
 
 ## Step 1: Design the messages
 
-The package `walkie_vision_msgs` has four messages and one service:
+The package `walkie_vision_msgs` has four messages and two services:
 
 | Type                   | What it is                                                                                     |
 | ---------------------- | ---------------------------------------------------------------------------------------------- |
@@ -29,6 +29,7 @@ The package `walkie_vision_msgs` has four messages and one service:
 | `PersonDetectionArray` | Every person found in one camera image, with the image's `header` and `camera_info`             |
 | `PersonDetection`      | One person: body `bbox` and 17 keypoints, the face box and face embedding, and an appearance embedding |
 | `EmbedText` (service)  | Embeds texts with the object embedder, so that a text can be searched against stored object vectors |
+| `GetPersonCrop` (service) | One tracked person's crop from the next image, with other people greyed and the colour shares of the person's top and bottom ([Person crops](../architecture/vision.md#person-crops)) |
 
 Every field is commented in its `.msg` file. The rules behind them:
 
@@ -75,7 +76,8 @@ ros2_ws/
         │   ├── PersonDetection.msg
         │   └── PersonDetectionArray.msg
         └── srv/
-            └── EmbedText.srv
+            ├── EmbedText.srv
+            └── GetPersonCrop.srv
 ```
 
 `package.xml` declares the packages the messages use, and joins the
@@ -104,6 +106,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PersonDetection.msg"
   "msg/PersonDetectionArray.msg"
   "srv/EmbedText.srv"
+  "srv/GetPersonCrop.srv"
   DEPENDENCIES std_msgs sensor_msgs vision_msgs
 )
 ```
@@ -182,6 +185,7 @@ checks them on the way:
 | `to_object_detection`, `to_object_detection_array` | One `ObjectDetection` per detector result. Refuses a label that is not in `classes`. |
 | `to_person_detection`, `to_person_detection_array` | One `PersonDetection` per pose result, with an optional face and appearance embedding. |
 | `fill_embed_text_response`                    | Answers an `EmbedText` request. An embedder error gives `success = False` and the error in `message`, so the service never crashes. |
+| `pose_from_person_detection`, `fill_person_crop_response` | A published person back to a pose result, and a `GetPersonCrop` response from `walkie_vision.crop`'s result, with the crop and the shares only for OK. |
 | `vectors_from_response`                       | The client side: the response's vectors as an `(n, dim)` array.      |
 | `box_to_bbox`, `bbox_to_box`, `unit_vector`   | The conversions they share. `box_to_bbox` refuses a box that is not finite or is inverted, and `unit_vector` a vector that is empty, not finite or zero. |
 

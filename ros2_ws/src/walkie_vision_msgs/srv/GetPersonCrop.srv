@@ -1,0 +1,90 @@
+# One person's crop from the next image the vision node processes, with the
+# share of each colour in the person's top and bottom, for describing that
+# person. The crop, its keypoints, the shares and the person all come from
+# one image: the first image whose detections are done after the request
+# arrives. The node keeps no image after it answers.
+
+# The person's track id, as in PersonDetection.track_id. 0 is refused.
+uint32 track_id
+# Each side of the person's box grows by this share of the box's width (left
+# and right) or height (top and bottom), before the crop is clipped to the
+# image. From 0 to 1.
+float32 padding 0.10
+# The crop's longer side is scaled down to at most this many pixels. A smaller
+# crop is not scaled up. At least 1.
+uint16 max_side 512
+# Grey every other detected person's box inside the crop, except where it
+# overlaps this person's own box.
+bool mask_others true
+# A keypoint under this score counts as hidden: a region whose keypoints are
+# not all at or above it gets no colour shares. When both this person's box
+# and another's are cut off by the image's bottom edge, the other person is
+# nearer only if they hide one of this person's torso keypoints. From 0 to 1.
+float32 min_keypoint_score 0.5
+# How long the node waits for an image to answer from, in seconds of wall
+# time. More than 0, at most 5. The node answers one request at a time.
+float32 timeout_s 1.0
+---
+# The crop and the shares are filled only when status is OK.
+uint8 OK=0
+# The track is not among the people in the image.
+uint8 NOT_IN_VIEW=1
+# A person nearer to the camera hides this one: see max_overlap and
+# torso_cover.
+uint8 OCCLUDED=2
+# The person's box is under 160 pixels tall.
+uint8 TOO_SMALL=3
+# Images arrived, but none was processed within timeout_s.
+uint8 TIMEOUT=4
+# No image arrived within timeout_s.
+uint8 NO_IMAGE=5
+# The request was refused, the node is shutting down, or the crop could not
+# be made; message says why.
+uint8 FAILED=6
+uint8 status
+# What happened, for the log. Empty when status is OK.
+string message
+
+# The stamp and camera frame of the image that answered: the same header as
+# the PersonDetectionArray of that image. Empty for TIMEOUT, NO_IMAGE and
+# FAILED.
+std_msgs/Header header
+# The person in that image, as published in its PersonDetectionArray, in
+# pixels of the whole image. Empty unless status is OK, OCCLUDED or
+# TOO_SMALL.
+walkie_vision_msgs/PersonDetection person
+
+# The crop as a JPEG at quality 90, with header's stamp and frame.
+sensor_msgs/CompressedImage crop
+# The 17 COCO keypoints of person, x0, y0, x1, y1, and so on, in pixels of
+# the crop. Their scores are in person.keypoint_scores.
+float32[] crop_keypoints
+# The greyed rectangles, x0, y0, x1, y1 each, in pixels of the crop. Empty
+# when mask_others is false or nobody else is in the crop.
+float32[] masked_boxes
+
+# The largest IoU of a nearer person's box with this person's box. 0 when
+# nobody is nearer. OCCLUDED above 0.3.
+float32 max_overlap
+# The largest share of this person's torso box, from the shoulder and hip
+# keypoints, that a nearer person's box covers. OCCLUDED above 0.3.
+float32 torso_cover
+
+# The colour names that the shares are in, in order: black, white, grey, red,
+# orange, yellow, green, blue, purple, pink, brown and beige.
+string[] color_names
+# The share of each colour in the torso, summing to 1. The torso is the
+# polygon through the shoulders and the hips, shrunk by 20% towards its
+# centre, clipped to the person's box and without the greyed pixels. The
+# shares come from the image's own pixels, before scaling and JPEG. Empty
+# when one of those four keypoints is hidden, or when fewer than 50 pixels
+# are left.
+float32[] top_shares
+# The same for the thighs: the polygon through the hips and the knees, not
+# shrunk.
+float32[] bottom_shares
+# The share of each region's pixels that is left after clipping to the
+# person's box and removing the greyed pixels, from 0 to 1. 0 when the region
+# has no shares.
+float32 top_left
+float32 bottom_left

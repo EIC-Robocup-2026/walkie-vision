@@ -3,17 +3,24 @@
 For every image it processes, the node publishes one PersonDetectionArray
 and one ObjectDetectionArray, both with the image's header and a copy of
 its camera_info. The contract that consumers rely on is in
-docs/architecture/vision.md#contract.
+docs/architecture/vision.md#contract. It also serves GetPersonCrop: one
+person's crop and colour shares from the next image (ADR-0011).
 
 Threads:
 
-- The main thread spins the executor. The image callback only puts the
-  message in a one-slot mailbox, so a newer image replaces one that waits.
-  The camera_info callback keeps the newest message. A timer on wall time
-  logs the latency summary.
+- The main thread spins a MultiThreadedExecutor with EXECUTOR_THREADS
+  threads. The image callback only puts the message in a one-slot mailbox,
+  so a newer image replaces one that waits. The camera_info callback keeps
+  the newest message. A timer on wall time logs the latency summary. These
+  three stay in the node's default callback group, so they still run one
+  at a time.
+- The GetPersonCrop callback has its own callback group. It leaves the
+  request in a one-slot mailbox and waits for the worker's answer, while
+  the executor's other thread runs the callbacks above.
 - One worker thread takes the newest image, runs walkie_vision.pipeline on
   it and publishes the two arrays. It is the only thread that touches a
-  model.
+  model. When a GetPersonCrop request waits, the worker answers it from
+  that image and its people (walkie_vision.crop), and then drops both.
 - main() checks the worker's health on every loop. A failure while running
   exits with EXIT_FATAL (1), and the launch file starts the node again. A
   failure before the worker starts, such as a missing model file or a bad
@@ -27,6 +34,7 @@ from __future__ import annotations
 
 import collections
 import logging
+import math
 import os
 import re
 import sys
@@ -41,9 +49,10 @@ from typing import Any, Protocol
 import numpy as np
 import rclpy
 from rcl_interfaces.msg import ParameterDescriptor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.clock import Clock, ClockType
 from rclpy.exceptions import NameValidationException, ParameterException
-from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.logging import get_logger
 from rclpy.node import Node
 from rclpy.parameter import Parameter
@@ -52,7 +61,10 @@ from rclpy.validate_full_topic_name import validate_full_topic_name
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
+from walkie_vision_msgs.srv import GetPersonCrop
 
+from . import convert, crop
+from .crop import CropStatus
 from .image import camera_info_problem, image_to_bgr
 from .pipeline import Providers, TrackIdBase, VisionPipeline
 
@@ -82,6 +94,10 @@ EXIT_FATAL = 1
 """A failure while running. The launch file starts the node again."""
 EXIT_STARTUP = 2
 """A failure before the worker started: a missing file, a bad parameter, a model that did not load."""
+EXECUTOR_THREADS = 2
+"""One thread for the GetPersonCrop callback while it waits, one for every other callback."""
+MAX_CROP_TIMEOUT_S = 5.0
+"""The longest timeout_s a GetPersonCrop request may ask for: the service answers one request at a time."""
 
 # Ultralytics' own tracker files, by name. The same names as
 # walkie_vision.yolo.TRACKER_NAMES, which this module does not import.
@@ -121,6 +137,7 @@ class VisionConfig:
     camera_info_topic: str = "/zed_head/zed_node/depth/camera_info"
     people_topic: str = "/walkie_vision/people"
     objects_topic: str = "/walkie_vision/objects"
+    person_crop_service: str = "/walkie_vision/get_person_crop"
     device: str = "cuda:0"
     objects_weights: str = "yoloe-26s-seg.pt"
     objects_imgsz: int = 640
@@ -165,6 +182,12 @@ class VisionConfig:
                 validate_full_topic_name(topic)
             except NameValidationException as e:
                 raise ValueError(f"{name} must be an absolute, valid topic name, not {topic!r}: {e}") from e
+        try:
+            validate_full_topic_name(self.person_crop_service, is_service=True)
+        except NameValidationException as e:
+            raise ValueError(
+                f"person_crop_service must be an absolute, valid service name, not {self.person_crop_service!r}: {e}"
+            ) from e
 
         if not _DEVICE.match(self.device):
             raise ValueError(f"device must be cpu, cuda or cuda:N, not {self.device!r}")
@@ -275,6 +298,100 @@ class NewestFrame:
     @property
     def closed(self) -> bool:
         return self._closed
+
+
+def _crop_answer(status: CropStatus, message: str) -> GetPersonCrop.Response:
+    """A GetPersonCrop response with only a status and a message."""
+    return GetPersonCrop.Response(status=int(status), message=message)
+
+
+class CropJob:
+    """One GetPersonCrop request, from the service callback to the worker and back.
+
+    The job gets one answer: the worker's through finish(), or none when
+    wait() stops waiting first. A lock decides which comes first.
+    """
+
+    def __init__(self, request: GetPersonCrop.Request, frames_received: int) -> None:
+        self.request = request
+        self.frames_received = frames_received
+        """The node's frames_received when the request arrived, to tell NO_IMAGE from TIMEOUT."""
+        self._lock = threading.Lock()
+        self._done = threading.Event()
+        self._response: GetPersonCrop.Response | None = None
+        self._given_up = False
+
+    def finish(self, response: GetPersonCrop.Response) -> bool:
+        """Answer the job. False when it has an answer already, or nobody waits for one."""
+        with self._lock:
+            if self._given_up or self._response is not None:
+                return False
+            self._response = response
+        self._done.set()
+        return True
+
+    def wait(self, timeout: float) -> GetPersonCrop.Response | None:
+        """Return the answer, waiting up to timeout seconds; None when there is none, and then no answer is taken."""
+        self._done.wait(timeout)
+        with self._lock:
+            if self._response is None:
+                self._given_up = True
+            return self._response
+
+
+class CropMailbox:
+    """A one-slot mailbox for the GetPersonCrop job that waits for the next image.
+
+    The service's callback group is mutually exclusive, so at most one job
+    waits at a time.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._job: CropJob | None = None
+        self._closed = False
+
+    def put(self, job: CropJob) -> bool:
+        """Leave a job for the worker. False when the mailbox is closed."""
+        with self._lock:
+            if self._closed:
+                return False
+            self._job = job
+            return True
+
+    def take(self) -> CropJob | None:
+        """Return the waiting job without waiting; None when there is none."""
+        with self._lock:
+            job, self._job = self._job, None
+            return job
+
+    def withdraw(self, job: CropJob) -> None:
+        """Remove job if it still waits."""
+        with self._lock:
+            if self._job is job:
+                self._job = None
+
+    def close(self) -> None:
+        """Refuse new jobs, and answer the waiting one with FAILED."""
+        with self._lock:
+            self._closed = True
+            job, self._job = self._job, None
+        if job is not None:
+            job.finish(_crop_answer(CropStatus.FAILED, "the node is shutting down"))
+
+
+def crop_request_problem(request: GetPersonCrop.Request) -> str | None:
+    """Return why a GetPersonCrop request is refused, or None when it is valid."""
+    if request.track_id == 0:
+        return "track_id 0 is not a track"
+    timeout = float(request.timeout_s)
+    if not (math.isfinite(timeout) and 0.0 < timeout <= MAX_CROP_TIMEOUT_S):
+        return f"timeout_s must be more than 0 and at most {MAX_CROP_TIMEOUT_S:g}, not {timeout}"
+    try:
+        crop.check_options(float(request.padding), int(request.max_side), float(request.min_keypoint_score))
+    except ValueError as e:
+        return str(e)
+    return None
 
 
 class LatencyLog:
@@ -484,6 +601,8 @@ class VisionNode(Node):
         self.duplicates = 0
         """Poses left out as a second box of a person; YOLO26 pose makes them now and then."""
         self.consecutive_failures = 0
+        self.crop_requests = 0
+        """GetPersonCrop requests that reached the worker's mailbox."""
         self.fatal: str | None = None
         self.latency = LatencyLog()
 
@@ -491,6 +610,7 @@ class VisionNode(Node):
         self._warned_at: dict[str, float] = {}
         self._warn_lock = threading.Lock()
         self._mailbox = NewestFrame()
+        self._crops = CropMailbox()
         self._rate_replaced = 0
         self._camera_info: CameraInfo | None = None
         self._camera_info_lock = threading.Lock()
@@ -508,12 +628,20 @@ class VisionNode(Node):
         self._latency_timer = self.create_timer(
             cfg.latency_log_period_s, self._on_latency_timer, clock=Clock(clock_type=ClockType.STEADY_TIME)
         )
+        # Its own group: the callback waits for the worker, and the image
+        # callback must run in the meantime.
+        self._crop_service = self.create_service(
+            GetPersonCrop,
+            cfg.person_crop_service,
+            self._on_get_person_crop,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
         self._worker = threading.Thread(target=self._work, daemon=True, name="walkie_vision_worker")
         self._worker.start()
         self.get_logger().info(
             f"classes {list(cfg.classes)}; image {cfg.image_topic}, camera_info {cfg.camera_info_topic}; "
-            f"publishing {cfg.people_topic} and {cfg.objects_topic}; trackers: objects {cfg.objects_tracker}, "
-            f"people {cfg.pose_tracker}; track id offset {track_ids.offset}"
+            f"publishing {cfg.people_topic} and {cfg.objects_topic}; serving {cfg.person_crop_service}; "
+            f"trackers: objects {cfg.objects_tracker}, people {cfg.pose_tracker}; track id offset {track_ids.offset}"
         )
 
     # --- counters and state --------------------------------------------
@@ -548,6 +676,7 @@ class VisionNode(Node):
             return True
         self._stop.set()
         self._mailbox.close()
+        self._crops.close()
         self._worker.join(timeout=_JOIN_TIMEOUT_S)
         if self._worker.is_alive():
             return False
@@ -555,7 +684,7 @@ class VisionNode(Node):
         self.destroy_node()
         return True
 
-    # --- callbacks on the executor thread -------------------------------
+    # --- callbacks on the executor threads ------------------------------
 
     def _on_image(self, msg: Image) -> None:
         self.frames_received += 1
@@ -564,6 +693,38 @@ class VisionNode(Node):
     def _on_camera_info(self, msg: CameraInfo) -> None:
         with self._camera_info_lock:
             self._camera_info = msg
+
+    def _on_get_person_crop(
+        self, request: GetPersonCrop.Request, response: GetPersonCrop.Response
+    ) -> GetPersonCrop.Response:
+        started = time.perf_counter()
+        answer = self._person_crop(request)
+        ms = (time.perf_counter() - started) * 1000.0
+        line = f"person crop for track {request.track_id}: {CropStatus(answer.status).name} in {ms:.0f} ms"
+        if answer.status == CropStatus.OK:
+            line += f", {len(answer.crop.data) / 1024:.0f} KB"
+        if answer.message:
+            line += f"; {answer.message}"
+        self.get_logger().info(line)
+        return answer
+
+    def _person_crop(self, request: GetPersonCrop.Request) -> GetPersonCrop.Response:
+        """Leave the request for the worker and wait for its answer, up to timeout_s of wall time."""
+        problem = crop_request_problem(request)
+        if problem is not None:
+            return _crop_answer(CropStatus.FAILED, problem)
+        job = CropJob(request, self.frames_received)
+        if not self._crops.put(job):
+            return _crop_answer(CropStatus.FAILED, "the node is shutting down")
+        self.crop_requests += 1
+        timeout = float(request.timeout_s)
+        answer = job.wait(timeout)
+        if answer is not None:
+            return answer
+        self._crops.withdraw(job)
+        if self.frames_received == job.frames_received:
+            return _crop_answer(CropStatus.NO_IMAGE, f"no image arrived on {self.config.image_topic} in {timeout:g} s")
+        return _crop_answer(CropStatus.TIMEOUT, f"images arrived, but none was processed in {timeout:g} s")
 
     def _on_latency_timer(self) -> None:
         now = time.monotonic()
@@ -676,6 +837,10 @@ class VisionNode(Node):
             return True
         finally:
             self._busy_since = None
+        # Taken as soon as this image's people are known, so a request that
+        # arrived while they were found is answered from this image, and one
+        # that arrives after their array is published waits for the next.
+        job = self._crops.take()
         self.consecutive_failures = 0
         if result.duplicates:
             # Counted in the latency line only: a second box is the model's
@@ -689,6 +854,8 @@ class VisionNode(Node):
             self._warn_throttled("dropped", f"left out bad fields: {counts}")
 
         if self._stop.is_set():
+            if job is not None:
+                job.finish(_crop_answer(CropStatus.FAILED, "the node is shutting down"))
             return False
         t = time.perf_counter()
         try:
@@ -696,6 +863,8 @@ class VisionNode(Node):
             self._people_pub.publish(result.people)
             self._objects_pub.publish(result.objects)
         except Exception:
+            if job is not None:
+                job.finish(_crop_answer(CropStatus.FAILED, "the arrays of the image could not be published"))
             if self._stop.is_set():
                 return False  # the context is shutting down
             raise
@@ -721,7 +890,32 @@ class VisionNode(Node):
                 "stale",
                 f"arrays are {age_s:.2f} s old when published; walkie-agent-ros drops arrays older than 1 s",
             )
+        # After the arrays, so a crop never delays them.
+        if job is not None:
+            self._answer_crop(job, image, result.people)
         return True
+
+    def _answer_crop(self, job: CropJob, image: np.ndarray, people: PersonDetectionArray) -> None:
+        """Answer a GetPersonCrop job from one image and its published people.
+
+        A crop that fails answers FAILED; the worker goes on.
+        """
+        request = job.request
+        try:
+            found = crop.crop_person(
+                image,
+                [convert.pose_from_person_detection(p) for p in people.people],
+                int(request.track_id),
+                padding=float(request.padding),
+                max_side=int(request.max_side),
+                mask_others=bool(request.mask_others),
+                min_keypoint_score=float(request.min_keypoint_score),
+            )
+            response = convert.fill_person_crop_response(GetPersonCrop.Response(), people, found)
+        except Exception as e:
+            self.get_logger().error(f"a person crop failed:\n{traceback.format_exc()}")
+            response = _crop_answer(CropStatus.FAILED, f"{type(e).__name__}: {e}")
+        job.finish(response)
 
 
 def _log_startup_failure(logger: Any, error: BaseException) -> None:
@@ -750,6 +944,7 @@ def main(args: list[str] | None = None) -> int:
     """Run the node until Ctrl-C, a fatal failure (exit 1) or a startup failure (exit 2)."""
     logger = get_logger(NODE_NAME)
     node: VisionNode | None = None
+    executor: MultiThreadedExecutor | None = None
     code = 0
     stopped = True
     try:
@@ -762,7 +957,9 @@ def main(args: list[str] | None = None) -> int:
             _log_startup_failure(logger, e)
             code = EXIT_STARTUP
         else:
-            executor = SingleThreadedExecutor()
+            # Two threads, so the image callback runs while the GetPersonCrop
+            # callback waits for the worker (ADR-0011).
+            executor = MultiThreadedExecutor(num_threads=EXECUTOR_THREADS)
             executor.add_node(node)
             while rclpy.ok() and node.fatal is None:
                 executor.spin_once(timeout_sec=0.5)
@@ -783,6 +980,10 @@ def main(args: list[str] | None = None) -> int:
         logger.warning("the worker did not stop in time; exiting without cleanup")
         _flush()
         os._exit(code)
+    if executor is not None:
+        # Joins the executor's threads. close() has answered a waiting
+        # GetPersonCrop request, so none of them waits for long.
+        executor.shutdown()
     rclpy.try_shutdown()
     return code
 

@@ -28,8 +28,9 @@ from walkie_vision_msgs.msg import (
     PersonDetection,
     PersonDetectionArray,
 )
-from walkie_vision_msgs.srv import EmbedText
+from walkie_vision_msgs.srv import EmbedText, GetPersonCrop
 
+from .crop import COLOR_NAMES, CropStatus, PersonCrop
 from .providers import Detection, Embedder, Face, PersonPose
 
 
@@ -177,6 +178,49 @@ def to_person_detection_array(
     msg.camera_info = camera_info
     msg.people = list(people)
     return msg
+
+
+def pose_from_person_detection(msg: PersonDetection) -> PersonPose:
+    """Return a published person as a PersonPose, with its published track id."""
+    return PersonPose(
+        box=bbox_to_box(msg.bbox),
+        score=float(msg.score),
+        keypoints=np.asarray(msg.keypoints, dtype=np.float64).reshape(17, 2),
+        keypoint_scores=np.asarray(msg.keypoint_scores, dtype=np.float64),
+        track_id=int(msg.track_id),
+    )
+
+
+def fill_person_crop_response(
+    response: GetPersonCrop.Response, people: PersonDetectionArray, found: PersonCrop
+) -> GetPersonCrop.Response:
+    """Fill a GetPersonCrop response from walkie_vision.crop.crop_person()'s result.
+
+    people is the published array of the image that found came from. The
+    header is set for every status that found can have; the person and the
+    overlaps once the track is found; the crop and the shares only for OK.
+    """
+    response.status = int(found.status)
+    response.message = found.message
+    response.header = people.header
+    if found.index < 0:
+        return response
+    response.person = people.people[found.index]
+    response.max_overlap = float(found.max_overlap)
+    response.torso_cover = float(found.torso_cover)
+    if found.status != CropStatus.OK:
+        return response
+    response.crop = CompressedImage(header=people.header, format="jpeg", data=found.jpeg)
+    response.crop_keypoints = _float32_array(np.asarray(found.keypoints).reshape(-1))
+    response.masked_boxes = _float32_array(np.asarray(found.masked).reshape(-1))
+    response.color_names = list(COLOR_NAMES)
+    if found.top_shares is not None:
+        response.top_shares = _float32_array(found.top_shares)
+        response.top_left = float(found.top_left)
+    if found.bottom_shares is not None:
+        response.bottom_shares = _float32_array(found.bottom_shares)
+        response.bottom_left = float(found.bottom_left)
+    return response
 
 
 def fill_embed_text_response(

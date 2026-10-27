@@ -5,9 +5,10 @@ it publishes, and why it is built this way.
 
 !!! note "What runs today"
     The vision node publishes objects and people from the head camera
-    ([The vision node](#the-vision-node), [Contract](#contract)). The
-    `EmbedText` service, object embeddings, points, crops, room vectors and
-    `DetectObjects` are not built yet.
+    ([The vision node](#the-vision-node), [Contract](#contract)), and
+    serves one person's crop on request ([Person crops](#person-crops)).
+    The `EmbedText` service, object embeddings, points, object crops, room
+    vectors and `DetectObjects` are not built yet.
 
 ## Summary
 
@@ -39,6 +40,11 @@ it publishes, and why it is built this way.
   without touching the streaming detector
   ([ADR-0009](decisions/0009-on-demand-detect-objects.md), and
   [the proposed section](#proposed-on-demand-detectobjects-for-the-self-evolving-agent)).
+- `GetPersonCrop` returns one tracked person's crop from the next image,
+  with other people masked and the colour shares of their top and bottom,
+  for walkie-agent-ros's description of a guest
+  ([ADR-0011](decisions/0011-serve-one-person-crop.md),
+  [Person crops](#person-crops)).
 
 ```mermaid
 flowchart LR
@@ -54,6 +60,7 @@ flowchart LR
   node -- "/walkie_vision/people" --> db
   node -- "/walkie_vision/objects" --> agent
   node -- "/walkie_vision/people" --> agent
+  agent -- "/walkie_vision/get_person_crop" --> node
   agent -. "/walkie_vision/embed_text (not built)" .-> node
   agent -. "/walkie_vision/detect_objects (proposed)" .-> node
   agent <--> db
@@ -65,8 +72,8 @@ flowchart LR
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
 | Vision node (`walkie_vision.node`) | YOLOE-26 segmentation with tracking, in text-prompt mode; YOLO26 pose with tracking; SCRFD and ArcFace (InsightFace's `buffalo_l`); OSNet | PyTorch and ONNX Runtime, both on CUDA |
 
-The `EmbedText` server and the `DetectObjects` service join this process
-when they are built.
+The node also serves `GetPersonCrop`. The `EmbedText` server and the
+`DetectObjects` service join this process when they are built.
 
 Why one process ([ADR-0010](decisions/0010-one-vision-process.md)):
 
@@ -115,7 +122,8 @@ flowchart LR
 
 ### Threads
 
-- **The main thread** spins the ROS callbacks, and they do almost nothing.
+- **The main thread** spins the ROS callbacks on a `MultiThreadedExecutor`
+  with two threads, and the callbacks do almost nothing.
     - The image callback counts the image and puts it in a one-slot
       mailbox. A waiting image that has not been processed yet is replaced,
       so the node never works through a queue of old images.
@@ -124,12 +132,19 @@ flowchart LR
       time, so it also fires under `use_sim_time` when `/clock` stops. It
       warns when the node processes under 5 Hz while the camera delivers
       more, and when another node publishes on the output topics.
+    - These three stay in the node's default callback group, so they still
+      run one at a time.
+    - The `GetPersonCrop` callback has its own callback group. It leaves the
+      request in a second one-slot mailbox and waits for the worker's
+      answer, while the executor's other thread keeps running the callbacks
+      above ([Person crops](#person-crops)).
     - Every 0.5 s, `main()` checks that the worker is alive and that no
       image has taken longer than `process_timeout_s`.
 - **The worker thread** is the only thread that touches a model. It takes
   the newest image, waits for the rate cap (`max_rate_hz`), checks that the
   newest `camera_info` matches the image's size, converts the image, runs
-  the pipeline, and publishes.
+  the pipeline, and publishes. When a crop request waits, the worker then
+  answers it from that image and its people, and drops both.
 - **Exit codes.** The node exits 1 when it fails while running: 30 failed
   images in a row, one image that takes over 60 s, or a worker that stopped.
   It exits 2 when it cannot start. A bad parameter, a missing model file,
@@ -143,8 +158,8 @@ flowchart LR
 All parameters are read-only, so `classes` and the topics cannot change
 during a run. `config/vision.yaml` holds the defaults. `classes` has no
 default: it comes from the task's file in `config/tasks/`, and a missing
-list stops the node at start. `config/sim.yaml` sets `use_sim_time` and the
-sim output topics. Write every double with a decimal point (`10.0`, not
+list stops the node at start. `config/sim.yaml` sets `use_sim_time`, the
+sim output topics and the sim crop service. Write every double with a decimal point (`10.0`, not
 `10`): rclpy rejects an integer for a double parameter.
 
 | Name                       | Type     | Default                                  | Meaning                                                                                       |
@@ -153,6 +168,7 @@ sim output topics. Write every double with a decimal point (`10.0`, not
 | `camera_info_topic`        | string   | `/zed_head/zed_node/depth/camera_info`   | The calibration of those pixels. walkie-ros documents this topic, the sim publishes it, and `oracle_perception` reads it. The node checks its size against each image |
 | `people_topic`             | string   | `/walkie_vision/people`                  | `PersonDetectionArray`                                                                        |
 | `objects_topic`            | string   | `/walkie_vision/objects`                 | `ObjectDetectionArray`                                                                        |
+| `person_crop_service`      | string   | `/walkie_vision/get_person_crop`         | The `GetPersonCrop` service ([Person crops](#person-crops))                                   |
 | `classes`                  | string[] | none; from `config/tasks/<task>.yaml`    | YOLOE's text prompts for the whole run                                                        |
 | `device`                   | string   | `cuda:0`                                 | The PyTorch and Ultralytics device: `cpu`, `cuda` or `cuda:N`. ONNX Runtime's face models always use GPU 0 |
 | `objects_weights`          | string   | `yoloe-26s-seg.pt`                       | A file in `models/ultralytics/`, or an absolute path. `mobileclip2_b.ts` must be next to it  |
@@ -206,8 +222,10 @@ far away or partly hidden too.
 | ------------------------- | ----------- | ----------- | ---------- |
 | Image and `camera_info`   | BEST_EFFORT | KEEP_LAST 1 | VOLATILE   |
 | People and objects        | RELIABLE    | KEEP_LAST 5 | VOLATILE   |
+| The `GetPersonCrop` service | RELIABLE  | KEEP_LAST 10 | VOLATILE  |
 
-RELIABLE outputs match both RELIABLE and BEST_EFFORT subscribers.
+RELIABLE outputs match both RELIABLE and BEST_EFFORT subscribers. The
+service uses rclpy's default profile for services.
 walkie-agent-ros's `VisionFeed` subscribes BEST_EFFORT.
 
 ### The latency line
@@ -426,6 +444,190 @@ walkie-database can cite each item by its link.
   such as the agent's `VisionFeed`, match too.
 - The inputs are BEST_EFFORT, KEEP_LAST 1.
 
+## Person crops {#person-crops}
+
+`GetPersonCrop` returns one tracked person's crop from the next image, with
+other people greyed and the colour shares of the person's top and bottom
+([ADR-0011](decisions/0011-serve-one-person-crop.md)). walkie-agent-ros
+plans to use it to describe the first guest to the second guest. The crop
+is the "compressed snapshot on request" of walkie-agent-ros ADR-0028, so the
+agent never subscribes to the camera image. The pure code is in
+`walkie_vision.crop`, with no ROS and no model.
+
+### Serving
+
+- The node serves `GetPersonCrop` on `person_crop_service`:
+  `/walkie_vision/get_person_crop` on the robot, and
+  `/walkie_vision/sim/get_person_crop` with `sim:=true`. In simulation,
+  walkie-agent-ros's track ids come from `oracle_perception`, not from this
+  node, so the node leaves `/walkie_vision/get_person_crop` to the
+  simulation.
+- The request names a track id from `/walkie_vision/people`. The service
+  callback checks the request, leaves it in a one-slot mailbox and waits up
+  to `timeout_s` of wall time. It never runs a model or touches an image.
+- The worker takes the request as soon as an image's people are found. It
+  publishes that image's two arrays first, and then answers from that image
+  and the people it published for it. So the crop, its keypoints, the
+  colour shares and the person all come from one image, and the response's
+  `header` is that image's header, the same as its people array's. A
+  request that arrives while the worker is on an image, before its people
+  are found, is answered from that image.
+- The node answers one request at a time. `timeout_s` must be more than 0
+  and at most 5 s, so a waiting request never holds the next one for long.
+- Nothing is kept after the answer
+  ([ADR-0002](decisions/0002-ros2-only-stateless.md)): the worker drops the
+  image and its people as soon as it has answered.
+- Every answer logs one line like this, with the status, the time from the
+  request to the answer, and for OK the JPEG's size:
+
+```text
+person crop for track 1761234567: OK in 84 ms, 41 KB
+```
+
+### Statuses
+
+The status constants are on `GetPersonCrop.Response`. Only OK fills the
+crop, its keypoints, `masked_boxes` and the colour shares.
+
+| Status        | When                                                              | Also filled                           |
+| ------------- | ----------------------------------------------------------------- | ------------------------------------- |
+| `OK`          | The crop was made                                                 | Everything                            |
+| `NOT_IN_VIEW` | The track is not among the image's people                         | `header`                              |
+| `OCCLUDED`    | A nearer person hides this one ([Occlusion](#occlusion))          | `header`, `person`, `max_overlap`, `torso_cover` |
+| `TOO_SMALL`   | The person's box is under 160 px tall                             | `header`, `person`, `max_overlap`, `torso_cover` |
+| `TIMEOUT`     | Images arrived, but none was processed within `timeout_s`         | Nothing                               |
+| `NO_IMAGE`    | No image arrived within `timeout_s`                               | Nothing                               |
+| `FAILED`      | A refused request (track id 0, an option out of range), a node that is shutting down, or a crop that raised | Nothing |
+
+`message` says why for every status but OK. The checks run in the order of
+the table: a person who is both hidden and small is `OCCLUDED`.
+
+### Occlusion {#occlusion}
+
+Box overlap alone cannot tell a person in front from a person behind. In
+walkie-agent-ros's HRI scenario, a bystander stands behind the guest's spot
+in the door view. With the guest at rest, the bystander's box covers about
+37% of the guest's torso width, at its full height, and while the guest
+paces the cover stays above 30% for about half of the cycle. A plain
+overlap gate would mark most views as occluded. So only a nearer person
+counts:
+
+- **Nearer.** Another person is nearer when their box ends lower in the
+  image than this person's by at least 3% of the image height, because
+  their feet are closer to the camera. A box cut off by the image's bottom
+  edge is nearer than one that is not.
+- **Both cut off.** When both boxes are cut off at the bottom, the other
+  person is nearer only when one of this person's four torso keypoints
+  inside their box scores under `min_keypoint_score`: they hide it.
+- **OCCLUDED** when a nearer person's box has an IoU above 0.3 with this
+  person's box (`max_overlap`), or covers more than 30% of this person's
+  torso box, the box around the shoulder and hip keypoints
+  (`torso_cover`). The second test catches a smaller person in front, whose
+  IoU stays low.
+- People behind are only masked.
+
+The test reads only box bottoms and keypoint scores. It assumes that
+people stand on one floor in front of the camera.
+
+### The mask
+
+- With `mask_others`, every other detected person's box inside the crop,
+  minus this person's own box, is filled with grey (128 in every channel).
+  A box minus a box is up to 4 rectangles. `masked_boxes` lists them, in
+  pixels of the crop.
+- This person's own box is never greyed, so a person behind does not cut
+  into their pixels.
+- The residual: another person's pixels inside this person's box, and
+  people the detector missed, stay in the crop. Keypoint silhouettes of the
+  other people could tighten the mask later.
+
+### Colour shares
+
+The node measures the colours on the robot, on the image's own pixels
+before the crop is scaled and compressed. That is more accurate than
+measuring them on the JPEG, and it works without the network.
+
+- **Regions.** The top is the polygon through the shoulders and the hips,
+  shrunk by 20% towards its centre, away from the arms and the background.
+  The bottom is the polygon through the hips and the knees. Both are
+  clipped to this person's box, and greyed pixels are left out, not counted
+  as grey.
+- **Gates.** A region gets no shares when one of its four keypoints scores
+  under `min_keypoint_score`, or when fewer than 50 of its pixels are left.
+  There is no fallback to a share of the box.
+- **`top_left` and `bottom_left`** are the share of each region's pixels
+  left after clipping and masking.
+- **`color_names`** are the 12 colours of walkie-agent-ros's schema,
+  without `unknown`: black, white, grey, red, orange, yellow, green, blue,
+  purple, pink, brown and beige. The shares follow that order and sum to 1.
+- **The bins.** Each pixel goes to the first rule that holds, on OpenCV's
+  HSV with the hue in degrees and saturation and value from 0 to 1:
+
+| Rule                                         | Colour |
+| -------------------------------------------- | ------ |
+| v < 0.22                                     | black  |
+| s < 0.18 and v ≥ 0.75                        | white  |
+| s < 0.18                                     | grey   |
+| hue under 15 or from 345, s < 0.45 and v ≥ 0.60 | pink |
+| hue under 15 or from 345                     | red    |
+| hue 15 to 45 and v < 0.65                    | brown  |
+| hue 15 to 45 and s < 0.45                    | beige  |
+| hue 15 to 45                                 | orange |
+| hue 45 to 70 and s < 0.45                    | beige  |
+| hue 45 to 70 and v < 0.65                    | brown  |
+| hue 45 to 70                                 | yellow |
+| hue 70 to 165                                | green  |
+| hue 165 to 260                               | blue   |
+| hue 260 to 300                               | purple |
+| hue 300 to 345 and v < 0.55                  | purple |
+| anything else                                | pink   |
+
+Each hue range includes its lower end and excludes its upper end.
+
+### The crop
+
+The crop is the person's box, padded on each side by `padding` (0.10) of
+its width or height and clipped to the image. It is scaled down with
+`INTER_AREA` so that its longer side is at most `max_side` (512 px), never
+up, and encoded as a JPEG at quality 90. `crop_keypoints` are the 17
+keypoints in pixels of that crop.
+
+### Off the robot
+
+This repository sends nothing off the robot. walkie-agent-ros sends the
+crop to a cloud vision-language model (VLM) for enum answers, such as the
+type of the top, and cross-checks the colours against these shares. Under
+[the Restaurant constraint](#the-restaurant-constraint) the shares alone
+must do when the network is down.
+
+The cloud VLM is External Computing. It is declared to the Technical
+Committee one month ahead, with all External Computing
+(`ExternalDevices.tex:18`), and shown at Robot Inspection in addition.
+
+`GetPersonCrop` is not the service of
+[open question 6](#open-questions), which stays open. This is a deviation
+from that question: question 6 asks for one annotated full image, with
+numbered boxes, and its text regions masked at Competition level.
+`GetPersonCrop` uploads one masked crop of one person, for enum answers
+only, without text masking.
+
+### Not measured yet
+
+The thresholds are first values: the 3% margin, the two 0.3 gates, the
+160 px floor, the 20% shrink, the 50-pixel floor and the HSV bins. They are
+to be tuned on photos from the robot. On the robot, with HD2K images at
+15 Hz, the checks are:
+
+- the time from request to answer is at most 300 ms, and the JPEG at most
+  80 KB;
+- the colour shares are returned;
+- the image rate does not drop during requests: the crop runs on the
+  worker after the arrays are published, and the next image waits for it;
+- the head camera sees the lower-body keypoints at door distance, so the
+  bottom region is not gated;
+- with one person behind the guest and one in front, only the one in front
+  gives `OCCLUDED`.
+
 ## How to run
 
 1. `pixi run fetch-models` downloads the model files into `models/`.
@@ -451,6 +653,8 @@ Published and served:
 | `/walkie_vision/objects`    | `walkie_vision_msgs/ObjectDetectionArray` | Every object in each processed image, also when there is none |
 | `/walkie_vision/people`     | `walkie_vision_msgs/PersonDetectionArray` | Every person in each processed image, also when there is none |
 | `/walkie_vision/sim/objects` and `/walkie_vision/sim/people` | The same types | The node's output with `sim:=true`. In simulation, walkie-agent-ros's `oracle_perception` owns the two topics above ([Who publishes](#contract-publishers)) |
+| `/walkie_vision/get_person_crop` | `walkie_vision_msgs/srv/GetPersonCrop` | One tracked person's crop and colour shares from the next image ([Person crops](#person-crops)) |
+| `/walkie_vision/sim/get_person_crop` | `walkie_vision_msgs/srv/GetPersonCrop` | The same service with `sim:=true`, for this node's own track ids |
 | `/walkie_vision/embed_text` | `walkie_vision_msgs/srv/EmbedText`        | Not built. Text embeddings in the object embedder's space, for search |
 | `/walkie_vision/detect_objects` | `walkie_vision_msgs/srv/DetectObjects` | Proposed, not built ([ADR-0009](decisions/0009-on-demand-detect-objects.md)). Named objects in the newest image, on request |
 
@@ -529,12 +733,40 @@ walkie-database does not run models (walkie-database ADR-0006), so a text
 search such as "a red mug" asks this service for the vector first, then
 searches the table that `embedding_model` names.
 
+### GetPersonCrop
+
+The status constants, `OK` to `FAILED`, are on the response
+([Statuses](#statuses)).
+
+| Part     | Field                | Type                          | What it is                                                     |
+| -------- | -------------------- | ----------------------------- | -------------------------------------------------------------- |
+| Request  | `track_id`           | `uint32`                      | The person's track id, as published. 0 is refused.             |
+| Request  | `padding`            | `float32`                     | Each side of the box grows by this share of its size. 0.10, from 0 to 1. |
+| Request  | `max_side`           | `uint16`                      | The crop's longer side at most, in pixels. 512, at least 1.    |
+| Request  | `mask_others`        | `bool`                        | Grey the other people's boxes. True.                           |
+| Request  | `min_keypoint_score` | `float32`                     | A keypoint under it counts as hidden. 0.5, from 0 to 1.        |
+| Request  | `timeout_s`          | `float32`                     | How long to wait for an image, in seconds of wall time. 1.0, more than 0 and at most 5. |
+| Response | `status`             | `uint8`                       | One of the status constants                                    |
+| Response | `message`            | `string`                      | Why, for every status but OK                                   |
+| Response | `header`             | `std_msgs/Header`             | The header of the image that answered, as on its people array  |
+| Response | `person`             | `PersonDetection`             | The person as published for that image                         |
+| Response | `crop`               | `sensor_msgs/CompressedImage` | The crop, a JPEG at quality 90                                 |
+| Response | `crop_keypoints`     | `float32[]`                   | The 17 keypoints, x and y, in pixels of the crop               |
+| Response | `masked_boxes`       | `float32[]`                   | The greyed rectangles, x0, y0, x1, y1, in pixels of the crop   |
+| Response | `max_overlap`        | `float32`                     | The largest IoU of a nearer person's box with the person's box |
+| Response | `torso_cover`        | `float32`                     | The largest share of the person's torso box that a nearer person covers |
+| Response | `color_names`        | `string[]`                    | The 12 colour names, in the shares' order                      |
+| Response | `top_shares`         | `float32[]`                   | The share of each colour in the torso. Empty when gated.       |
+| Response | `bottom_shares`      | `float32[]`                   | The same for the thighs                                        |
+| Response | `top_left`           | `float32`                     | The share of the torso's pixels left after clipping and masking |
+| Response | `bottom_left`        | `float32`                     | The same for the thighs                                        |
+
 ## The model code
 
 | Module                      | What it holds                                                                     |
 | --------------------------- | --------------------------------------------------------------------------------- |
 | `walkie_vision.providers`   | The interfaces every model implements (`ObjectDetector`, `Embedder`, `PoseEstimator`, `ReIdentifier`, `FaceRecognizer`, `PersonFaceRecognizer`), their result types, and the model names |
-| `walkie_vision.fakes`       | A fake for each interface, with deterministic vectors, for tests without a GPU (`FakePersonFaceRecognizer` among them) |
+| `walkie_vision.fakes`       | A fake for each interface, with deterministic vectors, for tests without a GPU (`FakePersonFaceRecognizer` among them), and painted figures for the crop tests (`figure_pose`, `paint_figure`) |
 | `walkie_vision.convert`     | Model results to messages, with the checks the message comments state             |
 | `walkie_vision.yolo`        | YOLOE-26 and YOLO26 pose with their trackers (`YoloeTracker`, `YoloPoseTracker`)  |
 | `walkie_vision.face`        | SCRFD and ArcFace on ONNX Runtime (`FaceAnalyzer`, a `FaceRecognizer`)            |
@@ -544,6 +776,7 @@ searches the table that `embedding_model` names.
 | `walkie_vision.models`      | Every model file and Hugging Face commit, with its checksum and licence           |
 | `walkie_vision.image`       | `sensor_msgs/Image` to a BGR array, and the `camera_info` size check              |
 | `walkie_vision.pipeline`    | One image through every provider to the two arrays, with the score floors, the person dedupe (`dedupe_poses`) and the track id base. No ROS node |
+| `walkie_vision.crop`        | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. No ROS node and no model |
 | `walkie_vision.node`        | The vision node: parameters, threads, publishing, health checks and `build_providers` |
 
 The node holds one provider for each model, and `pipeline` uses `convert`
@@ -862,7 +1095,9 @@ bodies, so the node finds no people there.
    answer must be an enum, such as which numbered box, never caption text,
    and text regions in the image are masked first, so that a sign held up
    to the camera cannot instruct the robot. Blocks: only that online
-   fallback, which is never on the critical path.
+   fallback, which is never on the critical path. `GetPersonCrop` does not
+   answer this question: it sends one masked crop of one person for enum
+   answers, without text masking ([Off the robot](#off-the-robot)).
 7. **What stands in for `DetectObjects` and `EmbedText` in sim.** It is not
    decided whether `oracle_perception` answers them, and how it derives
    detection embeddings so that `search_detections` can return a match:
@@ -925,9 +1160,16 @@ bodies, so the node finds no people there.
   room table is not decided.
 - **Captions.** Florence-2 runs, but there is no message or service for
   captions yet.
-- **Depth and crops.** The code that cuts a `PointCloud2` out of the depth
-  image with a mask, and that compresses a crop, belongs to the node and
-  is not written. The default camera_info topic is `depth/camera_info`,
+- **Person crops are not measured.** `GetPersonCrop`'s latency, JPEG size
+  and cost to the image rate, the nearer test and the colour bins are not
+  checked on the robot yet ([Not measured yet](#not-measured-yet)).
+- **The mask's residual.** Another person's pixels inside the guest's box,
+  and people the detector missed, are sent with a person crop
+  ([The mask](#the-mask)).
+- **Depth and object crops.** The code that cuts a `PointCloud2` out of
+  the depth image with a mask, and that compresses an object's crop into
+  `ObjectDetection.crop`, belongs to the node and is not written. The
+  default camera_info topic is `depth/camera_info`,
   which walkie-ros documents. Check on the robot that its size matches the
   RGB image, and whether `rgb/color/rect/camera_info` exists.
 - **walkie-database.** Its object memory design (Proposed) has its own
@@ -996,3 +1238,7 @@ bodies, so the node finds no people there.
 ??? success "ADR-0010: Run every vision model in one process · Accepted"
 
     --8<-- "architecture/decisions/0010-one-vision-process.md:body"
+
+??? success "ADR-0011: Serve one person crop on request · Accepted"
+
+    --8<-- "architecture/decisions/0011-serve-one-person-crop.md:body"

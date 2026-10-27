@@ -8,8 +8,9 @@ and talk to the rest of the robot over ROS 2 only. They remember nothing:
 walkie-database keeps the memory. [Pixi](https://pixi.sh) installs all of
 it, ROS 2 Jazzy, PyTorch and ONNX Runtime included.
 
-The vision node (`pixi run vision`) publishes objects and people. The
-`EmbedText` service is not built yet.
+The vision node (`pixi run vision`) publishes objects and people, and
+serves one person's crop on request (`GetPersonCrop`). The `EmbedText`
+service is not built yet.
 
 **Documentation:** <https://eic-robocup-2026.github.io/walkie-vision/>
 
@@ -71,12 +72,13 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 
 | Path                                | What it holds                                                    |
 | ----------------------------------- | ---------------------------------------------------------------- |
-| `ros2_ws/src/walkie_vision_msgs/`   | The messages and the service, built with colcon                  |
+| `ros2_ws/src/walkie_vision_msgs/`   | The messages and the services, built with colcon                 |
 | `src/walkie_vision/node.py`         | The vision node: parameters, threads, publishing and health checks |
 | `src/walkie_vision/pipeline.py`     | One image through every model to the two arrays, without ROS     |
 | `src/walkie_vision/image.py`        | Camera images to BGR arrays, and the `camera_info` size check    |
 | `src/walkie_vision/providers.py`    | The interfaces every model implements, and their result types    |
 | `src/walkie_vision/convert.py`      | Model results to messages, with checks                           |
+| `src/walkie_vision/crop.py`         | One person's crop, mask and colour shares for `GetPersonCrop`    |
 | `src/walkie_vision/fakes.py`        | Fake models for tests                                            |
 | `src/walkie_vision/yolo.py`         | YOLOE-26 and YOLO26 pose with their trackers                     |
 | `src/walkie_vision/face/`           | SCRFD and ArcFace on ONNX Runtime (vendored InsightFace code, MIT) |

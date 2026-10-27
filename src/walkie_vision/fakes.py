@@ -8,6 +8,10 @@ that are nearly orthogonal.
 
 The fakes' model names start with fake_. No walkie-database vector table has
 such a name, so a fake's vectors cannot be stored next to a real model's.
+
+figure_pose() and paint_figure() make a synthetic person: the keypoints of
+a figure standing in a box, and its top and bottom painted in known
+colours, for the tests of walkie_vision.crop.
 """
 
 from __future__ import annotations
@@ -16,9 +20,34 @@ import copy
 import hashlib
 from collections.abc import Sequence
 
+import cv2
 import numpy as np
 
-from .providers import Detection, Face, PersonPose
+from .providers import COCO_KEYPOINTS, Detection, Face, PersonPose
+
+# Where figure_pose() puts each keypoint, as shares of the box's width and
+# height, for a person facing the camera: their left is on the image's right.
+_FIGURE_KEYPOINTS = {
+    "nose": (0.50, 0.08),
+    "left_eye": (0.55, 0.06),
+    "right_eye": (0.45, 0.06),
+    "left_ear": (0.60, 0.07),
+    "right_ear": (0.40, 0.07),
+    "left_shoulder": (0.75, 0.20),
+    "right_shoulder": (0.25, 0.20),
+    "left_elbow": (0.85, 0.38),
+    "right_elbow": (0.15, 0.38),
+    "left_wrist": (0.88, 0.52),
+    "right_wrist": (0.12, 0.52),
+    "left_hip": (0.65, 0.52),
+    "right_hip": (0.35, 0.52),
+    "left_knee": (0.65, 0.75),
+    "right_knee": (0.35, 0.75),
+    "left_ankle": (0.65, 0.97),
+    "right_ankle": (0.35, 0.97),
+}
+_FIGURE_TOP = ("left_shoulder", "right_shoulder", "right_hip", "left_hip")
+_FIGURE_BOTTOM = ("left_hip", "right_hip", "right_knee", "left_knee")
 
 
 def hash_vector(data: bytes | str, dim: int) -> np.ndarray:
@@ -178,3 +207,53 @@ class FakePersonFaceRecognizer:
                     break
             out.append(chosen)
         return out
+
+
+def figure_pose(
+    box: Sequence[float], track_id: int = 0, score: float = 0.9, keypoint_score: float = 0.9
+) -> PersonPose:
+    """Return the pose of a figure standing in an x1, y1, x2, y2 box, facing the camera.
+
+    Every keypoint is at a fixed share of the box (_FIGURE_KEYPOINTS) and
+    scores keypoint_score; a test lowers single scores to hide keypoints.
+    """
+    x1, y1, x2, y2 = (float(v) for v in box)
+    shares = np.array([_FIGURE_KEYPOINTS[name] for name in COCO_KEYPOINTS])
+    keypoints = np.column_stack([x1 + shares[:, 0] * (x2 - x1), y1 + shares[:, 1] * (y2 - y1)])
+    return PersonPose(
+        box=np.array([x1, y1, x2, y2]),
+        score=score,
+        keypoints=keypoints,
+        keypoint_scores=np.full(len(COCO_KEYPOINTS), keypoint_score),
+        track_id=track_id,
+    )
+
+
+def paint_figure(
+    image: np.ndarray,
+    pose: PersonPose,
+    top: Sequence[int],
+    bottom: Sequence[int],
+    *,
+    top_stripe: Sequence[int] | None = None,
+    bottom_stripe: Sequence[int] | None = None,
+    stripe_px: int = 4,
+) -> None:
+    """Paint a pose's top and bottom on a BGR image, in place.
+
+    The top is the polygon through the shoulders and hips, and the bottom
+    the polygon through the hips and knees, painted after the top. Each
+    part is painted 1 px wider than its polygon, so a region drawn through
+    the same keypoints has only that part's colours, however its edge is
+    rounded. A stripe colour paints every other band of stripe_px rows of
+    that part.
+    """
+    rows = np.arange(image.shape[0])[:, None] // stripe_px % 2 == 1
+    for names, colour, stripe in ((_FIGURE_TOP, top, top_stripe), (_FIGURE_BOTTOM, bottom, bottom_stripe)):
+        corners = np.asarray(pose.keypoints, dtype=np.float64)[[COCO_KEYPOINTS.index(n) for n in names]]
+        part = np.zeros(image.shape[:2], dtype=np.uint8)
+        cv2.fillPoly(part, [np.round(corners).astype(np.int32)], 1)
+        part = cv2.dilate(part, np.ones((3, 3), dtype=np.uint8))
+        image[part > 0] = colour
+        if stripe is not None:
+            image[(part > 0) & rows] = stripe

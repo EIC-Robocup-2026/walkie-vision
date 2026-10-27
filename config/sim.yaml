@@ -1,8 +1,11 @@
 # In simulation walkie-agent-ros's oracle_perception owns /walkie_vision/people
 # and /walkie_vision/objects. MuJoCo has no person bodies, so this node would
 # publish other people at the same stamps. It publishes on its own topics instead.
+# Its service moves too: the agent's track ids there come from oracle_perception,
+# and this node's people have other ids.
 walkie_vision:
   ros__parameters:
     use_sim_time: true
     people_topic: /walkie_vision/sim/people
     objects_topic: /walkie_vision/sim/objects
+    person_crop_service: /walkie_vision/sim/get_person_crop

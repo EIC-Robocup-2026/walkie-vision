@@ -6,12 +6,15 @@ from rclpy.serialization import deserialize_message, serialize_message
 from sensor_msgs.msg import CameraInfo, CompressedImage
 from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray, PersonDetection, PersonDetectionArray
-from walkie_vision_msgs.srv import EmbedText
+from walkie_vision_msgs.srv import EmbedText, GetPersonCrop
 
+from walkie_vision import crop
 from walkie_vision.convert import (
     bbox_to_box,
     box_to_bbox,
     fill_embed_text_response,
+    fill_person_crop_response,
+    pose_from_person_detection,
     to_object_detection,
     to_object_detection_array,
     to_person_detection,
@@ -19,7 +22,8 @@ from walkie_vision.convert import (
     unit_vector,
     vectors_from_response,
 )
-from walkie_vision.fakes import FakeEmbedder, FakeObjectDetector
+from walkie_vision.crop import COLOR_NAMES, crop_person
+from walkie_vision.fakes import FakeEmbedder, FakeObjectDetector, figure_pose, paint_figure
 from walkie_vision.providers import CLIP_VIT_B16, Detection, Face, PersonPose
 
 # HD2K, the ZED 2i's resolution on the robot.
@@ -114,10 +118,50 @@ def _pose(track_id: int = 2) -> PersonPose:
                 "vectors": "sequence<float>",
             },
         ),
+        (
+            GetPersonCrop.Request,
+            {
+                "track_id": "uint32",
+                "padding": "float",
+                "max_side": "uint16",
+                "mask_others": "boolean",
+                "min_keypoint_score": "float",
+                "timeout_s": "float",
+            },
+        ),
+        (
+            GetPersonCrop.Response,
+            {
+                "status": "uint8",
+                "message": "string",
+                "header": "std_msgs/Header",
+                "person": "walkie_vision_msgs/PersonDetection",
+                "crop": "sensor_msgs/CompressedImage",
+                "crop_keypoints": "sequence<float>",
+                "masked_boxes": "sequence<float>",
+                "max_overlap": "float",
+                "torso_cover": "float",
+                "color_names": "sequence<string>",
+                "top_shares": "sequence<float>",
+                "bottom_shares": "sequence<float>",
+                "top_left": "float",
+                "bottom_left": "float",
+            },
+        ),
     ],
 )
 def test_message_fields(msg_type, fields):
     assert msg_type.get_fields_and_field_types() == fields
+
+
+def test_get_person_crop_request_defaults():
+    request = GetPersonCrop.Request()
+    assert request.track_id == 0
+    assert request.padding == pytest.approx(0.10)
+    assert request.max_side == 512
+    assert request.mask_others is True
+    assert request.min_keypoint_score == pytest.approx(0.5)
+    assert request.timeout_s == pytest.approx(1.0)
 
 
 def test_box_round_trip():
@@ -280,6 +324,90 @@ def test_person_detection_rejects_bad_input():
 def test_empty_person_array():
     msg = to_person_detection_array(_header(), _camera_info(), [])
     assert msg.people == [] and msg.header.frame_id == "camera_optical_frame"
+
+
+def test_a_published_person_back_to_a_pose():
+    pose = _pose(track_id=7)
+    back = pose_from_person_detection(to_person_detection(pose))
+    np.testing.assert_allclose(back.box, pose.box)
+    np.testing.assert_allclose(back.keypoints, pose.keypoints)
+    np.testing.assert_allclose(back.keypoint_scores, pose.keypoint_scores, rtol=1e-6)
+    assert back.track_id == 7 and back.score == pytest.approx(0.93)
+
+
+def _crop_scene():
+    """A 2208 x 1242 image with the guest, track 7, and a person behind, track 8."""
+    image = np.full((1242, 2208, 3), 60, dtype=np.uint8)
+    guest = figure_pose((800.0, 200.0, 1100.0, 1000.0), track_id=7)
+    behind = figure_pose((1050.0, 150.0, 1300.0, 900.0), track_id=8)
+    paint_figure(image, guest, (0, 0, 255), (255, 0, 0))
+    people = to_person_detection_array(_header(), _camera_info(), [to_person_detection(p) for p in (behind, guest)])
+    return image, people
+
+
+def test_person_crop_round_trip():
+    image, people = _crop_scene()
+    poses = [pose_from_person_detection(p) for p in people.people]
+    found = crop_person(image, poses, 7)
+    response = fill_person_crop_response(GetPersonCrop.Response(), people, found)
+    back = deserialize_message(serialize_message(response), GetPersonCrop.Response)
+    assert back.status == GetPersonCrop.Response.OK and back.message == ""
+    assert back.header == people.header and back.crop.header == people.header
+    assert back.person.track_id == 7
+    assert back.crop.format == "jpeg" and bytes(back.crop.data) == found.jpeg
+    assert max(found.pixels.shape[:2]) == 512
+    np.testing.assert_allclose(np.asarray(back.crop_keypoints).reshape(17, 2), found.keypoints, rtol=1e-5)
+    masked = np.asarray(back.masked_boxes).reshape(-1, 4)
+    assert len(masked) == 2
+    np.testing.assert_allclose(masked, found.masked, rtol=1e-5)
+    assert list(back.color_names) == list(COLOR_NAMES)
+    assert len(back.top_shares) == len(back.bottom_shares) == len(COLOR_NAMES)
+    assert back.top_shares[COLOR_NAMES.index("red")] == pytest.approx(1.0)
+    assert back.bottom_shares[COLOR_NAMES.index("blue")] == pytest.approx(1.0)
+    assert back.top_left == pytest.approx(1.0) and back.bottom_left == pytest.approx(1.0)
+
+
+def test_a_gated_region_gives_empty_shares_in_the_response():
+    image, people = _crop_scene()
+    poses = [pose_from_person_detection(p) for p in people.people]
+    poses[1].keypoint_scores[13] = 0.1  # the guest's left knee
+    found = crop_person(image, poses, 7)
+    response = fill_person_crop_response(GetPersonCrop.Response(), people, found)
+    assert response.status == GetPersonCrop.Response.OK
+    assert len(response.top_shares) == len(COLOR_NAMES)
+    assert len(response.bottom_shares) == 0 and response.bottom_left == 0.0
+
+
+def test_an_occluded_person_crop_gives_the_person_and_the_overlaps():
+    image, people = _crop_scene()
+    # Its box ends 100 px lower than the guest's: nearer.
+    nearer = to_person_detection(figure_pose((850.0, 300.0, 1150.0, 1100.0), track_id=9))
+    people.people.append(nearer)
+    found = crop_person(image, [pose_from_person_detection(p) for p in people.people], 7)
+    response = fill_person_crop_response(GetPersonCrop.Response(), people, found)
+    assert response.status == GetPersonCrop.Response.OCCLUDED and "nearer" in response.message
+    assert response.header == people.header and response.person.track_id == 7
+    assert response.max_overlap == pytest.approx(found.max_overlap) and response.max_overlap > 0.3
+    assert response.torso_cover == pytest.approx(found.torso_cover)
+    assert len(response.crop.data) == 0 and len(response.masked_boxes) == 0
+    assert len(response.color_names) == 0 and len(response.top_shares) == 0
+
+
+@pytest.mark.parametrize(
+    ("track_id", "status"),
+    [(9, GetPersonCrop.Response.NOT_IN_VIEW), (8, GetPersonCrop.Response.TOO_SMALL)],
+)
+def test_a_person_crop_without_a_crop(track_id, status, monkeypatch):
+    image, people = _crop_scene()
+    # Track 8 is 750 px tall: too small only when the floor is above that.
+    monkeypatch.setattr(crop, "MIN_BOX_HEIGHT_PX", 800.0)
+    found = crop_person(image, [pose_from_person_detection(p) for p in people.people], track_id)
+    response = fill_person_crop_response(GetPersonCrop.Response(), people, found)
+    assert response.status == status and response.message
+    assert response.header == people.header
+    assert response.person.track_id == (0 if status == GetPersonCrop.Response.NOT_IN_VIEW else 8)
+    assert len(response.crop.data) == 0 and len(response.crop_keypoints) == 0
+    assert len(response.color_names) == 0 and len(response.top_shares) == 0
 
 
 def test_embed_text_round_trip():

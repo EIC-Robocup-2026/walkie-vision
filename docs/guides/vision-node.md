@@ -47,8 +47,9 @@ The node needs a Zenoh router, like every `pixi run`
     pixi run vision
     ```
 
-    The node reads the ZED's image and `camera_info`, and publishes on
-    `/walkie_vision/people` and `/walkie_vision/objects`.
+    The node reads the ZED's image and `camera_info`, publishes on
+    `/walkie_vision/people` and `/walkie_vision/objects`, and serves
+    `/walkie_vision/get_person_crop`.
 
 === "In simulation"
 
@@ -58,12 +59,14 @@ The node needs a Zenoh router, like every `pixi run`
     pixi run vision sim:=true
     ```
 
-    The node then uses sim time, and publishes on
-    `/walkie_vision/sim/people` and `/walkie_vision/sim/objects`. In
-    simulation, walkie-agent-ros's `oracle_perception` owns the normal
-    topics, so the two never mix. The agent does not read the sim topics:
-    they are for looking at the node's output on rendered frames. MuJoCo
-    has no person bodies, so expect no people.
+    The node then uses sim time, publishes on `/walkie_vision/sim/people`
+    and `/walkie_vision/sim/objects`, and serves
+    `/walkie_vision/sim/get_person_crop`. In simulation,
+    walkie-agent-ros's `oracle_perception` owns the normal topics, so the
+    two never mix. The crop service moves too, because the agent's track
+    ids there come from `oracle_perception`. The agent does not read the
+    sim topics: they are for looking at the node's output on rendered
+    frames. MuJoCo has no person bodies, so expect no people.
 
 !!! warning "One vision node per ROS graph"
     Do not start the node on a computer that is joined to someone else's
@@ -89,7 +92,7 @@ runs. In a container, mount it as a volume. A driver update empties it.
 | Argument              | Default | What it does                                                         |
 | --------------------- | ------- | -------------------------------------------------------------------- |
 | `task`                | `hri`   | The task whose classes the detector looks for: a file in `config/tasks/` |
-| `sim`                 | `false` | Use sim time and publish on the sim topics (`config/sim.yaml`)       |
+| `sim`                 | `false` | Use sim time, and publish and serve on the sim names (`config/sim.yaml`) |
 | `respawn_delay`       | `3.0`   | Seconds before the node starts again after it exits                  |
 | `respawn_max_retries` | `-1`    | How many times it starts again. -1 means no limit                    |
 
@@ -120,11 +123,24 @@ list:
 When the models have loaded, the node logs one line with what it runs:
 
 ```text
-classes ['chair', 'sofa', 'armchair', 'stool']; image /zed_head/zed_node/rgb/color/rect/image, camera_info /zed_head/zed_node/depth/camera_info; publishing /walkie_vision/people and /walkie_vision/objects; trackers: objects bytetrack.yaml, people botsort.yaml; track id offset 1234567890
+classes ['chair', 'sofa', 'armchair', 'stool']; image /zed_head/zed_node/rgb/color/rect/image, camera_info /zed_head/zed_node/depth/camera_info; publishing /walkie_vision/people and /walkie_vision/objects; serving /walkie_vision/get_person_crop; trackers: objects bytetrack.yaml, people botsort.yaml; track id offset 1234567890
 ```
 
 The track id offset comes from the clock at start. It differs on every
 start, so a restarted node never reuses an id.
+
+Every `GetPersonCrop` request logs one line when it is answered, with the
+status, the time from the request to the answer, and for OK the JPEG's
+size:
+
+```text
+person crop for track 1234567893: OK in 84 ms, 41 KB
+```
+
+Any status but OK ends with the reason, for example
+`NOT_IN_VIEW in 70 ms; track 1234567893 is not in the image, which has tracks [1234567891]`.
+[Person crops](../architecture/vision.md#person-crops) explains each
+status.
 
 Every 10 s it logs the latency line:
 
@@ -160,6 +176,8 @@ processed 52 in 10.0 s (5.2 Hz); received 150, replaced 98, skipped 0, failed 0,
 | People get new ids while the robot turns   | `pose_tracker` is not `botsort.yaml`                                                                    |
 | One person published twice                 | Two boxes with an IoU of 0.5 or less; lower `people_dedupe_iou`, which can merge real people who overlap |
 | GPU out of memory                          | Other GPU users, such as the ZED SDK's depth                                                            |
+| Person crops answer `NO_IMAGE`             | No image arrives on `image_topic`: the camera, the router or the domain                                 |
+| Person crops answer `TIMEOUT`              | Images arrive but none is processed in `timeout_s`: skipped or failed images, see the latency line      |
 
 When images are skipped, the node warns every 5 s with the reason, for
 example "camera_info is 640x360 but the image is 2208x1242". The camera

@@ -5,7 +5,8 @@
   <version>0.1.0</version>
   <description>
     Messages and services of Walkie's vision: object and person detections
-    with their embeddings, and text embeddings for searching them.
+    with their embeddings, text embeddings for searching them, and one
+    person's crop on request.
   </description>
   <maintainer email="robloxplay41@gmail.com">natapol2547</maintainer>
   <!-- The repository has no licence yet (docs/setup/01-vision-environment.md). -->

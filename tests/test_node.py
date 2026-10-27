@@ -7,29 +7,43 @@ shared memory carries them.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
+import gc
 import os
 import subprocess
 import sys
 import threading
 import time
 import uuid
+import weakref
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 import rclpy
 import yaml
 from builtin_interfaces.msg import Time
-from rclpy.executors import SingleThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
+from walkie_vision_msgs.srv import GetPersonCrop
 
+from walkie_vision import crop
 from walkie_vision import node as node_module
-from walkie_vision.fakes import FakeObjectDetector, FakePersonFaceRecognizer, FakePoseEstimator, FakeReIdentifier
-from walkie_vision.node import IMAGE_QOS, NODE_NAME, VisionConfig, VisionNode
+from walkie_vision.convert import bbox_to_box
+from walkie_vision.fakes import (
+    FakeObjectDetector,
+    FakePersonFaceRecognizer,
+    FakePoseEstimator,
+    FakeReIdentifier,
+    figure_pose,
+)
+from walkie_vision.node import IMAGE_QOS, NODE_NAME, CropJob, CropMailbox, VisionConfig, VisionNode
 from walkie_vision.pipeline import Providers, TrackIdBase
 from walkie_vision.providers import Detection, Face, PersonPose
 
@@ -126,7 +140,11 @@ def ctx():
 
 
 class Harness:
-    """A VisionNode on unique topics, a node that feeds it, and collectors of its arrays."""
+    """A VisionNode on unique topics, a node that feeds it, collectors of its arrays and a crop client.
+
+    The executor is main()'s: a GetPersonCrop callback that waits must not
+    stop the image callback.
+    """
 
     def __init__(self, ctx, providers: Providers, overrides, track_ids: TrackIdBase | None) -> None:
         prefix = f"/t_{uuid.uuid4().hex[:10]}"
@@ -135,6 +153,7 @@ class Harness:
             "camera_info_topic": f"{prefix}/camera_info",
             "people_topic": f"{prefix}/people",
             "objects_topic": f"{prefix}/objects",
+            "person_crop_service": f"{prefix}/get_person_crop",
         }
         params = [Parameter("classes", value=CLASSES), Parameter("max_rate_hz", value=0.0)]
         params += [Parameter(k, value=v) for k, v in self.topics.items()]
@@ -143,11 +162,12 @@ class Harness:
             providers, track_ids=track_ids or TrackIdBase(start_ns=0), context=ctx, parameter_overrides=params
         )
         self.helper = rclpy.create_node(f"test_{uuid.uuid4().hex[:10]}", context=ctx)
-        self.executor = SingleThreadedExecutor(context=ctx)
+        self.executor = MultiThreadedExecutor(num_threads=node_module.EXECUTOR_THREADS, context=ctx)
         self.executor.add_node(self.node)
         self.executor.add_node(self.helper)
         self.image_pub = self.helper.create_publisher(Image, self.topics["image_topic"], IMAGE_QOS)
         self.info_pub = self.helper.create_publisher(CameraInfo, self.topics["camera_info_topic"], IMAGE_QOS)
+        self.crop_client = self.helper.create_client(GetPersonCrop, self.topics["person_crop_service"])
         self.got: dict[str, list] = {"people agent": [], "people reliable": [], "objects agent": [], "objects reliable": []}
         self.subs = []
         for kind, msg_type in (("people", PersonDetectionArray), ("objects", ObjectDetectionArray)):
@@ -172,8 +192,18 @@ class Harness:
     def wait_matched(self) -> None:
         pubs, subs = [self.image_pub, self.info_pub], self.subs
         assert self.spin_until(
-            lambda: all(p.get_subscription_count() >= 1 for p in pubs) and all(s.get_publisher_count() >= 1 for s in subs)
+            lambda: all(p.get_subscription_count() >= 1 for p in pubs)
+            and all(s.get_publisher_count() >= 1 for s in subs)
+            and self.crop_client.service_is_ready()
         ), "discovery did not finish"
+
+    def request_crop(self, track_id: int, **fields):
+        """Send a GetPersonCrop request and return its future."""
+        return self.crop_client.call_async(GetPersonCrop.Request(track_id=track_id, **fields))
+
+    def answer(self, future) -> GetPersonCrop.Response:
+        assert self.spin_until(future.done), "no GetPersonCrop answer"
+        return future.result()
 
     def camera_info(self, sec: int, width: int = WIDTH, height: int = HEIGHT) -> CameraInfo:
         info = CameraInfo()
@@ -416,6 +446,7 @@ def test_an_empty_classes_list_fails_at_construction(ctx):
         ("face_input_sizes", [100]),
         ("device", "gpu"),
         ("people_topic", "no_slash"),
+        ("person_crop_service", "no_slash"),
         ("objects_tracker", "relative/tracker.yaml"),
         ("objects_imgsz", 100),
         ("face_det_thresh", 0.0),
@@ -457,6 +488,7 @@ def test_the_real_parameter_files(ctx):
         assert node.config.classes == ("chair", "sofa", "armchair", "stool")
         assert node.get_parameter("use_sim_time").value is False
         assert node.config.people_topic == "/walkie_vision/people"
+        assert node.config.person_crop_service == "/walkie_vision/get_person_crop"
     finally:
         assert node.close()
 
@@ -465,6 +497,7 @@ def test_the_real_parameter_files(ctx):
         assert node.get_parameter("use_sim_time").value is True
         assert node.config.people_topic == "/walkie_vision/sim/people"
         assert node.config.objects_topic == "/walkie_vision/sim/objects"
+        assert node.config.person_crop_service == "/walkie_vision/sim/get_person_crop"
         assert node.config.classes == ("chair", "sofa", "armchair", "stool")
     finally:
         assert node.close()
@@ -626,3 +659,193 @@ def test_missing_model_files_exit_2_before_any_model_loads(tmp_path):
     assert result.returncode == node_module.EXIT_STARTUP, output
     assert "pixi run fetch-models" in output
     assert "Traceback" not in output
+
+
+# --- 12. person crops ------------------------------------------------------------
+
+OK = GetPersonCrop.Response.OK
+
+
+class PosesByImage:
+    """A pose fake that finds the people given for each image's stamp, and nobody in other images.
+
+    It keeps a weak reference to every image it gets, so a test can check
+    that the node drops them.
+    """
+
+    def __init__(self, people_by_sec: dict[int, list[PersonPose]]) -> None:
+        self.people_by_sec = people_by_sec
+        self.images: list[weakref.ref] = []
+
+    def estimate(self, image):
+        self.images.append(weakref.ref(image))
+        return copy.deepcopy(self.people_by_sec.get(int(image[0, 0, 0]), []))
+
+
+@pytest.fixture
+def small_boxes(monkeypatch):
+    # The test images are 48 px tall; a real crop needs a 160 px box.
+    monkeypatch.setattr(crop, "MIN_BOX_HEIGHT_PX", 10.0)
+
+
+def test_the_crop_service_has_its_own_callback_group(harness):
+    h = harness()
+    group = h.node._crop_service.callback_group
+    assert isinstance(group, MutuallyExclusiveCallbackGroup)
+    assert group is not h.node.default_callback_group
+    assert node_module.EXECUTOR_THREADS == 2
+
+
+def test_a_person_crop_comes_from_the_next_image(harness, small_boxes):
+    # Track 3 moves from the right to the left between images 1 and 2.
+    pose = PosesByImage({1: [figure_pose(RIGHT, track_id=3)], 2: [figure_pose(LEFT, track_id=3)]})
+    h = harness(fake_providers(pose=pose))
+    h.wait_matched()
+    h.publish_frame(1)
+    assert h.spin_until(lambda: 1 in h.stamps("people reliable"))
+    future = h.request_crop(3)
+    assert h.spin_until(lambda: h.node.crop_requests == 1)
+    h.publish_frame(2)
+    response = h.answer(future)
+    assert response.status == OK, response.message
+    assert response.message == ""
+    assert response.header.stamp.sec == 2 and response.header.frame_id == FRAME
+    assert h.spin_until(lambda: 2 in h.stamps("people reliable"))
+    (published,) = [m for m in h.got["people reliable"] if m.header.stamp.sec == 2]
+    assert response.person == published.people[0]
+    np.testing.assert_allclose(bbox_to_box(response.person.bbox), LEFT)
+    assert response.crop.header == response.header and response.crop.format == "jpeg"
+    # LEFT padded by 10% and clipped to the 64 x 48 image.
+    decoded = cv2.imdecode(np.frombuffer(bytes(response.crop.data), dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert decoded.shape == (48, 44, 3)
+    assert len(response.crop_keypoints) == 34 and len(response.masked_boxes) == 0
+    assert list(response.color_names) == list(crop.COLOR_NAMES)
+    # Image 2 is filled with 2: black.
+    assert response.top_shares[crop.COLOR_NAMES.index("black")] == pytest.approx(1.0)
+    assert response.bottom_shares[crop.COLOR_NAMES.index("black")] == pytest.approx(1.0)
+
+
+def test_a_request_during_an_image_is_answered_from_that_image(harness, small_boxes):
+    pose = BlockingPose()
+    h = harness(fake_providers(pose=pose))
+    h.wait_matched()
+    h.publish_frame(1)
+    assert h.spin_until(pose.entered.is_set)
+    future = h.request_crop(3)
+    assert h.spin_until(lambda: h.node.crop_requests == 1)
+    pose.release.set()
+    response = h.answer(future)
+    assert response.status == OK, response.message
+    assert response.header.stamp.sec == 1
+
+
+def test_a_track_that_is_not_in_the_next_image_is_not_in_view(harness):
+    h = harness()
+    h.wait_matched()
+    future = h.request_crop(9)
+    assert h.spin_until(lambda: h.node.crop_requests == 1)
+    h.publish_frame(1)
+    response = h.answer(future)
+    assert response.status == GetPersonCrop.Response.NOT_IN_VIEW
+    assert response.header.stamp.sec == 1
+    assert response.person.track_id == 0 and len(response.crop.data) == 0
+
+
+def test_a_person_under_160_px_is_too_small(harness):
+    h = harness()
+    h.wait_matched()
+    future = h.request_crop(3)
+    assert h.spin_until(lambda: h.node.crop_requests == 1)
+    h.publish_frame(1)
+    response = h.answer(future)
+    assert response.status == GetPersonCrop.Response.TOO_SMALL
+    assert response.person.track_id == 3 and response.header.stamp.sec == 1
+    assert len(response.crop.data) == 0 and len(response.top_shares) == 0
+
+
+def test_no_image_within_the_timeout_is_no_image(harness):
+    h = harness()
+    h.wait_matched()
+    started = time.monotonic()
+    response = h.answer(h.request_crop(3, timeout_s=0.3))
+    assert response.status == GetPersonCrop.Response.NO_IMAGE
+    assert h.topics["image_topic"] in response.message
+    assert time.monotonic() - started >= 0.3
+    assert response.header.stamp.sec == 0 and response.person.track_id == 0
+
+
+def test_the_image_callback_runs_while_a_request_waits_and_then_times_out(harness):
+    pose = BlockingPose()
+    h = harness(fake_providers(pose=pose))
+    h.wait_matched()
+    h.publish_frame(1)
+    assert h.spin_until(pose.entered.is_set)
+    future = h.request_crop(3, timeout_s=2.0)
+    assert h.spin_until(lambda: h.node.crop_requests == 1)
+    received = h.node.frames_received
+    for sec in (2, 3):
+        h.publish_image(sec)
+    assert h.node.frames_received == received + 2
+    assert not future.done()
+    response = h.answer(future)
+    assert response.status == GetPersonCrop.Response.TIMEOUT
+    assert response.header.stamp.sec == 0
+    # The request is withdrawn before the worker, still in image 1, takes
+    # it, so image 1 does not answer it later.
+    assert h.node._crops.take() is None
+    pose.release.set()
+    assert h.spin_until(lambda: 1 in h.stamps("people reliable"))
+
+
+def test_no_frame_is_kept_after_an_answer(harness, small_boxes):
+    pose = PosesByImage({1: [figure_pose(LEFT, track_id=3)]})
+    h = harness(fake_providers(pose=pose))
+    h.wait_matched()
+    future = h.request_crop(3)
+    assert h.spin_until(lambda: h.node.crop_requests == 1)
+    h.publish_frame(1)
+    assert h.answer(future).status == OK
+
+    def dropped() -> bool:
+        gc.collect()
+        return all(ref() is None for ref in pose.images)
+
+    assert pose.images and h.spin_until(dropped), "the node still holds an image"
+    assert h.node._crops.take() is None
+
+
+@pytest.mark.parametrize(
+    "fields, reason",
+    [
+        ({"track_id": 0}, "track_id"),
+        ({"timeout_s": 0.0}, "timeout_s"),
+        ({"timeout_s": 6.0}, "timeout_s"),
+        ({"padding": 1.5}, "padding"),
+        ({"max_side": 0}, "max_side"),
+        ({"min_keypoint_score": -0.5}, "min_keypoint_score"),
+    ],
+)
+def test_a_bad_request_fails_at_once(harness, fields, reason):
+    h = harness()
+    h.wait_matched()
+    response = h.answer(h.request_crop(**{"track_id": 3, **fields}))
+    assert response.status == GetPersonCrop.Response.FAILED
+    assert reason in response.message
+    assert h.node.crop_requests == 0
+
+
+def test_closing_the_mailbox_answers_the_waiting_job():
+    mailbox = CropMailbox()
+    job = CropJob(GetPersonCrop.Request(track_id=3), frames_received=0)
+    assert mailbox.put(job)
+    mailbox.close()
+    answer = job.wait(0.0)
+    assert answer.status == GetPersonCrop.Response.FAILED and "shutting down" in answer.message
+    assert not mailbox.put(CropJob(GetPersonCrop.Request(track_id=3), frames_received=0))
+
+
+def test_a_job_given_up_takes_no_answer():
+    job = CropJob(GetPersonCrop.Request(track_id=3), frames_received=0)
+    assert job.wait(0.0) is None
+    assert not job.finish(GetPersonCrop.Response(status=OK))
+    assert job.wait(0.0) is None
