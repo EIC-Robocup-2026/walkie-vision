@@ -46,11 +46,14 @@ workspaces ([ADR-0003](/architecture/decisions/0003-messages-in-this-repository.
   someone a copy, they must be able to get its source (sections 4 to 6). If
   you modify it and let people use it over a network, you must offer them
   its source (section 13). Keeping the code that runs on the robot pushed
-  to this repository covers both.
-- A change of licence needs the agreement of everyone whose code is in the
-  repository. Moving to "or any later version" stays possible later. Code
-  released under "or any later version" cannot be taken back to version 3
-  only.
+  to this repository makes its source available. If you modify it and let
+  others use it over a network, or give someone a copy, also point them to
+  this repository.
+- A change of licence needs the agreement of everyone who holds copyright
+  in the team's own code. The vendored MIT files do not need it, because
+  MIT allows sublicensing. Moving to "or any later version" stays possible
+  later. Once a version is released under "or any later version", that
+  grant cannot be withdrawn for that version.
 - walkie-database and walkie-agent-ros build `walkie_vision_msgs`, so their
   workspaces contain AGPL-3.0-only interface files. If they must stay clear
   of AGPL, the message package can get a licence of its own in a new ADR.

@@ -401,9 +401,10 @@ sizes. Measure again on the robot's GPU before choosing a precision.
 
 ## Licences
 
-The code in this repository is licensed under the GNU Affero General Public
-License, version 3 only (`AGPL-3.0-only`). The text is in `LICENSE` at the
-repository root. The team chose AGPL-3.0 on 2026-10-28 to match Ultralytics,
+Everything in this repository, code and documentation, is licensed under the
+GNU Affero General Public License, version 3 only (`AGPL-3.0-only`), except
+the vendored MIT files below. The text is in `LICENSE` at the repository
+root. The team chose AGPL-3.0 on 2026-10-28 to match Ultralytics,
 which the vision node depends on. Why AGPL-3.0, and why version 3 only:
 [ADR-0012](../architecture/decisions/0012-license-agpl-3-0-only.md).
 
@@ -436,7 +437,8 @@ AGPL-3.0 has two source rules. Section 13: if you modify an AGPL program and
 let people use it over a network, you must offer them its source. Sections 4
 to 6: if you give someone a copy, they must be able to get its source.
 Keeping the code that runs on the robot pushed to this public repository
-covers both.
+makes its source available. If you modify it and let others use it over a
+network, or give someone a copy, also point them to this repository.
 
 ## On the robot
 

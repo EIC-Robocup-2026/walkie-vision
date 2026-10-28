@@ -97,7 +97,9 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 
 ## Licence
 
-The code in this repository is licensed under the GNU Affero General Public
-License, version 3 only (`AGPL-3.0-only`): see [LICENSE](LICENSE). It matches
+Everything in this repository, code and documentation, is licensed under the
+GNU Affero General Public License, version 3 only (`AGPL-3.0-only`): see
+[LICENSE](LICENSE). The vendored files in `src/walkie_vision/face/` and
+`src/walkie_vision/reid/` keep their MIT licence. AGPL-3.0 matches
 Ultralytics, which the vision node depends on. The models it downloads keep
 their own licences: see [Licences](https://eic-robocup-2026.github.io/walkie-vision/setup/01-vision-environment/#licences).
