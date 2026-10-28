@@ -401,13 +401,23 @@ sizes. Measure again on the robot's GPU before choosing a precision.
 
 ## Licences
 
-This repository has no licence of its own yet. The models and libraries it
-uses have these:
+The code in this repository is licensed under the GNU Affero General Public
+License, version 3 only (`AGPL-3.0-only`). The text is in `LICENSE` at the
+repository root. The team chose AGPL-3.0 on 2026-10-28 to match Ultralytics,
+which the vision node depends on. Why AGPL-3.0, and why version 3 only:
+[ADR-0012](../architecture/decisions/0012-license-agpl-3-0-only.md).
+
+The vendored files in `src/walkie_vision/face/` and `src/walkie_vision/reid/`
+keep their MIT licence headers. MIT code may be part of an AGPL-3.0 project.
+
+`LICENSE` does not cover the models. The models and libraries this
+repository uses keep their own licences:
 
 | What                                                         | Licence                          |
 | ------------------------------------------------------------ | -------------------------------- |
 | InsightFace `buffalo_l` models (SCRFD, ArcFace)              | **Non-commercial research only** |
-| Ultralytics: the library, YOLOE-26, YOLO26 and `mobileclip2_b.ts` | **AGPL-3.0**                |
+| Ultralytics: the library, YOLOE-26, YOLO26                   | **AGPL-3.0**                     |
+| `mobileclip2_b.ts`, Apple's MobileCLIP2-B text encoder, re-hosted by Ultralytics | **Apple ML Research Model licence: non-commercial research only** |
 | The vendored InsightFace code in `src/walkie_vision/face/`   | MIT                              |
 | SigLIP 2                                                     | Apache-2.0                       |
 | EmbeddingGemma 2                                             | Apache-2.0                       |
@@ -415,11 +425,18 @@ uses have these:
 | OSNet, the vendored code and the weights                     | MIT                              |
 | CLIP ViT-B/16, OpenAI's weights                              | MIT (the timm mirror's model card says Apache-2.0) |
 
-!!! danger "Check before you publish or share"
-    `buffalo_l` may be used for non-commercial research only. AGPL-3.0
-    requires that anyone who uses a modified Ultralytics over a network can
-    get its source. The team must confirm that both are acceptable for
-    RoboCup and for this repository's own licence before it is published.
+!!! danger "Two models are for non-commercial research only"
+    `buffalo_l` (SCRFD, ArcFace) and `mobileclip2_b.ts`, the text encoder
+    that YOLOE-26 uses for its class names, may be used for non-commercial
+    research only. Ultralytics re-hosts `mobileclip2_b.ts`, but that does not
+    change Apple's licence. The team uses both for RoboCup, a research
+    competition. Do not use them for anything commercial.
+
+AGPL-3.0 has two source rules. Section 13: if you modify an AGPL program and
+let people use it over a network, you must offer them its source. Sections 4
+to 6: if you give someone a copy, they must be able to get its source.
+Keeping the code that runs on the robot pushed to this public repository
+covers both.
 
 ## On the robot
 

@@ -111,8 +111,11 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 )
 ```
 
-The `<license>` is `TODO`, because the repository has no licence yet
-([Licences](01-vision-environment.md#licences)).
+The `<license>` is `AGPL-3.0-only`, the SPDX identifier of the repository's
+licence ([Licences](01-vision-environment.md#licences)). Package format 3
+accepts any text there. `ros2 pkg create` knows only nine ament licence
+identifiers, none of them AGPL, so it would warn about this one.
+The licence text is in `LICENSE` at the repository root, not in the package.
 
 ## Step 3: Build it with colcon
 

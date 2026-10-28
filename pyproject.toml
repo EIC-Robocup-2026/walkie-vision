@@ -3,12 +3,14 @@ name = "walkie-vision"
 version = "0.1.0"
 description = "Walkie's vision: object detection, pose, face recognition and person re-identification on ROS 2 (EIC RoboCup 2026)"
 requires-python = ">=3.12,<3.13"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 # Runtime dependencies (ROS 2, PyTorch, ONNX Runtime, the model libraries) are
 # declared in pixi.toml.
 dependencies = []
 
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

@@ -9,8 +9,8 @@
     person's crop on request.
   </description>
   <maintainer email="robloxplay41@gmail.com">natapol2547</maintainer>
-  <!-- The repository has no licence yet (docs/setup/01-vision-environment.md). -->
-  <license>TODO</license>
+  <!-- The repository's licence, as an SPDX identifier. The text is in LICENSE at the repository root. -->
+  <license>AGPL-3.0-only</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>rosidl_default_generators</buildtool_depend>

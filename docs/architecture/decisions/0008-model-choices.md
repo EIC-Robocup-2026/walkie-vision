@@ -39,9 +39,11 @@ measured on the robot.
   walkie-database, and either new vectors for every stored object or a fresh
   memory. The model name in every message stops a vector from reaching the
   wrong table.
-- `buffalo_l` is for non-commercial research only, and Ultralytics (YOLOE,
-  YOLO26) is AGPL-3.0. Both must be acceptable before the repository is
-  published under a licence.
+- `buffalo_l` and `mobileclip2_b.ts`, the text encoder YOLOE uses, are for
+  non-commercial research only, and Ultralytics (YOLOE, YOLO26) is AGPL-3.0.
+  The repository is AGPL-3.0-only
+  ([ADR-0012](/architecture/decisions/0012-license-agpl-3-0-only.md)), and
+  the models keep their own licences.
 - The m models are not in `pixi run fetch-models` yet.
 - This ADR becomes Accepted, with the measured numbers, once the bake-off
   and the robot measurement are done.

@@ -95,5 +95,9 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `models/`                           | The model files. Not in Git.                                     |
 | `docs/`                             | The documentation site (MkDocs)                                  |
 
-The repository has no licence yet. The models it downloads have their own:
-see [Licences](https://eic-robocup-2026.github.io/walkie-vision/setup/01-vision-environment/#licences).
+## Licence
+
+The code in this repository is licensed under the GNU Affero General Public
+License, version 3 only (`AGPL-3.0-only`): see [LICENSE](LICENSE). It matches
+Ultralytics, which the vision node depends on. The models it downloads keep
+their own licences: see [Licences](https://eic-robocup-2026.github.io/walkie-vision/setup/01-vision-environment/#licences).

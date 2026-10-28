@@ -45,6 +45,8 @@ it publishes, and why it is built this way.
   for walkie-agent-ros's description of a guest
   ([ADR-0011](decisions/0011-serve-one-person-crop.md),
   [Person crops](#person-crops)).
+- The code is AGPL-3.0-only, to match Ultralytics. The models keep their
+  own licences ([ADR-0012](decisions/0012-license-agpl-3-0-only.md)).
 
 ```mermaid
 flowchart LR
@@ -1181,10 +1183,12 @@ bodies, so the node finds no people there.
   face and appearance tables after their weights. A walkie-database from
   before it still has `face_arcface` and `appearance_osnet`, which no
   `face_model` or `appearance_model` value matches.
-- **Licences.** `buffalo_l` is non-commercial research only, Ultralytics is
-  AGPL-3.0, and the CLIP mirror's model card disagrees with OpenAI's MIT
-  licence. The repository itself has no licence yet, and `package.xml` says
-  `TODO`.
+- **Licences.** The code is AGPL-3.0-only, like Ultralytics
+  ([ADR-0012](decisions/0012-license-agpl-3-0-only.md),
+  [Licences](../setup/01-vision-environment.md#licences)). The models keep
+  their own licences: `buffalo_l` and `mobileclip2_b.ts` are non-commercial
+  research only, and the CLIP mirror's model card disagrees with OpenAI's
+  MIT licence.
 - **Hugging Face models** are not in `pixi run fetch-models`. They download
   on first use, so the robot must be online once.
 - **No test workflow.** GitHub Actions builds only the docs. A test workflow
@@ -1242,3 +1246,7 @@ bodies, so the node finds no people there.
 ??? success "ADR-0011: Serve one person crop on request · Accepted"
 
     --8<-- "architecture/decisions/0011-serve-one-person-crop.md:body"
+
+??? success "ADR-0012: License the repository under AGPL-3.0-only · Accepted"
+
+    --8<-- "architecture/decisions/0012-license-agpl-3-0-only.md:body"

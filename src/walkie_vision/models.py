@@ -82,7 +82,7 @@ DOWNLOADS = (
         sha256="35d7f213e4d75f38514e4656ad3cb91158bd33e3805d8ac349f23b186f66982f",
         size=253_794_476,
         dest=f"{ULTRALYTICS_DIR}/mobileclip2_b.ts",
-        licence="AGPL-3.0 (Ultralytics)",
+        licence="Apple ML Research Model licence (MobileCLIP2-B): non-commercial research only",
     ),
 )
 
