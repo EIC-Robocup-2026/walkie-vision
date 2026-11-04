@@ -2,10 +2,13 @@
 
 image_to_bgr() turns a sensor_msgs/Image into the BGR array every provider
 takes (walkie_vision.providers). camera_info_problem() says whether a
-CameraInfo belongs to an image of that size.
+CameraInfo belongs to an image of that size. calibration_problem() is the
+stricter check for geometry: walkie_vision.depth lifts pixels with it.
 """
 
 from __future__ import annotations
+
+import math
 
 import cv2
 import numpy as np
@@ -53,4 +56,20 @@ def camera_info_problem(info: CameraInfo | None, width: int, height: int) -> str
         return f"camera_info is {info.width}x{info.height} but the image is {width}x{height}"
     if float(info.k[0]) == 0.0 or float(info.k[4]) == 0.0:
         return "camera_info has no focal length (k[0] or k[4] is 0)"
+    return None
+
+
+def calibration_problem(info: CameraInfo) -> str | None:
+    """Return why a camera_info cannot be used to lift pixels, or None when it can.
+
+    The intrinsics must be finite with positive focal lengths, and any
+    distortion coefficient must be zero: the input is a rectified image.
+    """
+    fx, fy, cx, cy = float(info.k[0]), float(info.k[4]), float(info.k[2]), float(info.k[5])
+    if not all(math.isfinite(v) for v in (fx, fy, cx, cy)):
+        return f"the intrinsics are not finite: fx {fx}, fy {fy}, cx {cx}, cy {cy}"
+    if fx <= 0.0 or fy <= 0.0:
+        return f"the focal lengths must be positive, not fx {fx}, fy {fy}"
+    if any(float(d) != 0.0 for d in info.d):
+        return "the distortion coefficients are not zero: the image is not rectified"
     return None

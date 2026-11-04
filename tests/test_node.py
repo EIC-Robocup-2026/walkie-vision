@@ -36,6 +36,7 @@ from walkie_vision_msgs.srv import GetPersonCrop
 from walkie_vision import crop
 from walkie_vision import node as node_module
 from walkie_vision.convert import bbox_to_box
+from walkie_vision.depth import RgbdBuffer
 from walkie_vision.fakes import (
     FakeObjectDetector,
     FakePersonFaceRecognizer,
@@ -154,7 +155,10 @@ class Harness:
             "people_topic": f"{prefix}/people",
             "objects_topic": f"{prefix}/objects",
             "person_crop_service": f"{prefix}/get_person_crop",
+            "depth_topic": f"{prefix}/depth",
+            "depth_camera_info_topic": f"{prefix}/depth_camera_info",
         }
+        self.topics.update({k: v for k, v in overrides.items() if k in self.topics})
         params = [Parameter("classes", value=CLASSES), Parameter("max_rate_hz", value=0.0)]
         params += [Parameter(k, value=v) for k, v in self.topics.items()]
         params += [Parameter(k, value=v) for k, v in overrides.items()]
@@ -167,6 +171,8 @@ class Harness:
         self.executor.add_node(self.helper)
         self.image_pub = self.helper.create_publisher(Image, self.topics["image_topic"], IMAGE_QOS)
         self.info_pub = self.helper.create_publisher(CameraInfo, self.topics["camera_info_topic"], IMAGE_QOS)
+        self.depth_pub = self.helper.create_publisher(Image, self.topics["depth_topic"], IMAGE_QOS)
+        self.depth_info_pub = self.helper.create_publisher(CameraInfo, self.topics["depth_camera_info_topic"], IMAGE_QOS)
         self.crop_client = self.helper.create_client(GetPersonCrop, self.topics["person_crop_service"])
         self.got: dict[str, list] = {"people agent": [], "people reliable": [], "objects agent": [], "objects reliable": []}
         self.subs = []
@@ -191,6 +197,8 @@ class Harness:
 
     def wait_matched(self) -> None:
         pubs, subs = [self.image_pub, self.info_pub], self.subs
+        if self.node.config.geometry_enabled:
+            pubs += [self.depth_pub, self.depth_info_pub]
         assert self.spin_until(
             lambda: all(p.get_subscription_count() >= 1 for p in pubs)
             and all(s.get_publisher_count() >= 1 for s in subs)
@@ -245,6 +253,31 @@ class Harness:
             if (held is not None and held.header.stamp.sec == sec) or time.monotonic() > deadline:
                 break
         self.publish_image(sec)
+
+    def hold_infos(self, sec: int = 1, depth_info: CameraInfo | None = None) -> None:
+        """Publish both camera_infos until the node holds them. BEST_EFFORT: an early one can be lost."""
+        color_info, depth_info = self.camera_info(sec), depth_info or self.camera_info(sec)
+
+        def held() -> bool:
+            with self.node._camera_info_lock:
+                return self.node._camera_info is not None and self.node._depth_camera_info is not None
+
+        deadline = time.monotonic() + DEADLINE_S
+        while not held() and time.monotonic() < deadline:
+            self.info_pub.publish(color_info)
+            self.depth_info_pub.publish(depth_info)
+            self.spin_for(0.05)
+        assert held(), "the camera_infos did not arrive"
+
+    def freeze_pair_clock(self) -> None:
+        """Stop the pairing's wall clock, so a slow test machine cannot run out the wait."""
+        self.node._mailbox._clock = lambda: 0.0
+
+    def publish_depth(self, msg: Image) -> None:
+        """Publish one depth image and spin until the node has received it."""
+        before = self.node.depth_received
+        self.depth_pub.publish(msg)
+        assert self.spin_until(lambda: self.node.depth_received > before), "the depth image did not arrive"
 
     def stamps(self, key: str) -> list[int]:
         return [m.header.stamp.sec for m in self.got[key]]
@@ -454,6 +487,14 @@ def test_an_empty_classes_list_fails_at_construction(ctx):
         ("max_rate_hz", -1.0),
         # The wrong type: an integer for a double parameter.
         ("process_timeout_s", 60),
+        ("depth_topic", "no_slash"),
+        ("depth_camera_info_topic", "no_slash"),
+        ("max_pair_gap_s", -0.001),
+        ("max_pair_gap_s", 0.2),
+        ("max_pair_gap_s", float("nan")),
+        ("pair_wait_s", 0.0),
+        ("pair_wait_s", 0.2),
+        ("require_depth", True),
     ],
 )
 def test_a_bad_parameter_fails_at_construction(ctx, name, value):
@@ -849,3 +890,191 @@ def test_a_job_given_up_takes_no_answer():
     assert job.wait(0.0) is None
     assert not job.finish(GetPersonCrop.Response(status=OK))
     assert job.wait(0.0) is None
+
+
+# --- depth pairing --------------------------------------------------------------
+
+
+def _depth_msg(sec: int, value: float = 1.0, *, encoding: str = "32FC1", frame: str = FRAME) -> Image:
+    msg = Image()
+    msg.header.stamp = Time(sec=sec)
+    msg.header.frame_id = frame
+    msg.height, msg.width = HEIGHT, WIDTH
+    msg.encoding = encoding
+    array = np.full((HEIGHT, WIDTH), value, dtype=np.float32 if encoding == "32FC1" else np.uint16)
+    msg.step = WIDTH * array.dtype.itemsize
+    msg.data = array.tobytes()
+    return msg
+
+
+def _subscribed(h: Harness) -> list[str]:
+    return sorted(s.topic_name for s in h.node.subscriptions)
+
+
+def test_the_default_config_adds_no_depth_subscription_or_buffer(harness):
+    h = harness()
+    assert h.node.config.geometry_enabled is False
+    assert _subscribed(h) == sorted([h.topics["image_topic"], h.topics["camera_info_topic"]])
+    assert isinstance(h.node._mailbox, node_module.NewestFrame)
+    h.wait_matched()
+    assert h.depth_pub.get_subscription_count() == 0
+    h.publish_frame(1)
+    assert h.spin_until(lambda: len(h.got["objects reliable"]) >= 1)
+    h.node._on_latency_timer()
+    assert list(h.node.latency.last_deltas) == ["received", "replaced", "skipped", "failed", "dropped", "duplicates"]
+
+
+def test_geometry_subscribes_to_depth_and_its_own_camera_info(harness):
+    h = harness(geometry_enabled=True)
+    assert _subscribed(h) == sorted(
+        [h.topics["image_topic"], h.topics["camera_info_topic"], h.topics["depth_topic"], h.topics["depth_camera_info_topic"]]
+    )
+    assert isinstance(h.node._mailbox, RgbdBuffer)
+
+
+def test_one_camera_info_subscription_when_the_topics_coincide(harness):
+    shared = f"/t_{uuid.uuid4().hex[:10]}/camera_info"
+    h = harness(geometry_enabled=True, camera_info_topic=shared, depth_camera_info_topic=shared)
+    assert _subscribed(h) == sorted([h.topics["image_topic"], shared, h.topics["depth_topic"]])
+    h.wait_matched()
+    h.freeze_pair_clock()
+    h.publish_frame(1)
+    h.publish_depth(_depth_msg(1))
+    assert h.spin_until(lambda: h.node.depth_paired == 1)
+    assert h.spin_until(lambda: len(h.got["objects reliable"]) == 1)
+    assert not h.node.no_depth
+
+
+@pytest.mark.parametrize("depth_first", [True, False])
+def test_a_paired_image_is_published_in_either_arrival_order(harness, depth_first):
+    h = harness(geometry_enabled=True, require_depth=True)
+    h.wait_matched()
+    h.hold_infos()
+    h.freeze_pair_clock()
+    if depth_first:
+        h.publish_depth(_depth_msg(1))
+        h.publish_image(1)
+    else:
+        h.publish_image(1)
+        h.publish_depth(_depth_msg(1))
+    assert h.spin_until(lambda: len(h.got["objects reliable"]) == 1 and len(h.got["people reliable"]) == 1)
+    assert h.node.depth_paired == 1
+    assert not h.node.skipped
+    h.node._on_latency_timer()
+    assert h.node.latency.last_deltas["depth"] == 1
+    assert h.node.latency.last_deltas["paired"] == 1
+    assert h.node.latency.last_deltas["no_depth"] == 0
+
+
+def test_require_depth_skips_and_counts_an_unpaired_image(harness):
+    h = harness(geometry_enabled=True, require_depth=True)
+    h.wait_matched()
+    h.hold_infos()
+    h.publish_image(1)
+    assert h.spin_until(lambda: h.node.skipped["unpaired"] == 1)
+    h.spin_for(0.2)
+    assert all(not v for v in h.got.values())
+    assert h.node.frames_processed == 0
+
+
+def test_without_require_depth_an_unpaired_image_is_published(harness):
+    h = harness(geometry_enabled=True)
+    h.wait_matched()
+    h.hold_infos()
+    h.publish_image(1)
+    assert h.spin_until(lambda: len(h.got["objects reliable"]) == 1)
+    assert h.node.no_depth["unpaired"] == 1
+    assert not h.node.skipped
+    assert len(h.got["objects reliable"][0].detections) == 1
+
+
+@pytest.mark.parametrize("value", [float("nan"), 50.0, -1.0, 0.0])
+def test_a_paired_image_with_invalid_depth_values_is_still_published(harness, value):
+    h = harness(geometry_enabled=True, require_depth=True)
+    h.wait_matched()
+    h.hold_infos()
+    h.freeze_pair_clock()
+    h.publish_depth(_depth_msg(1, value))
+    h.publish_image(1)
+    assert h.spin_until(lambda: len(h.got["objects reliable"]) == 1)
+    assert h.node.depth_paired == 1
+    assert not h.node.skipped
+    cloud = h.got["objects reliable"][0].detections[0].points
+    assert cloud.width == 0 and len(cloud.data) == 0
+
+
+@pytest.mark.parametrize(
+    ("depth_msg", "depth_info_change", "reason"),
+    [
+        (_depth_msg(1, encoding="16UC1", frame="other"), {}, "depth_frame"),
+        (_depth_msg(1, encoding="16UC1"), {"frame": "other"}, "depth_camera_info"),
+        (_depth_msg(1, encoding="16UC1"), {"size": (WIDTH * 2, HEIGHT * 2)}, "depth_camera_info"),
+        (_depth_msg(1, encoding="16UC1"), {"k": [90.0, 0.0, 32.0, 0.0, 50.0, 24.0, 0.0, 0.0, 1.0]}, "depth_calibration"),
+        (_depth_msg(1, encoding="16UC1"), {"d": [0.1, 0.0, 0.0, 0.0, 0.0]}, "depth_calibration"),
+    ],
+)
+@pytest.mark.parametrize("require_depth", [True, False])
+def test_a_refused_pair_follows_require_depth(harness, depth_msg, depth_info_change, reason, require_depth):
+    h = harness(geometry_enabled=True, require_depth=require_depth)
+    h.wait_matched()
+    info = h.camera_info(1)
+    if "frame" in depth_info_change:
+        info.header.frame_id = depth_info_change["frame"]
+    if "size" in depth_info_change:
+        info.width, info.height = depth_info_change["size"]
+    if "k" in depth_info_change:
+        info.k = depth_info_change["k"]
+    if "d" in depth_info_change:
+        info.d = depth_info_change["d"]
+    h.hold_infos(depth_info=info)
+    h.freeze_pair_clock()
+    h.publish_depth(depth_msg)
+    h.publish_image(1)
+    if require_depth:
+        assert h.spin_until(lambda: h.node.skipped[reason] == 1)
+        h.spin_for(0.2)
+        assert all(not v for v in h.got.values())
+    else:
+        assert h.spin_until(lambda: len(h.got["objects reliable"]) == 1)
+        assert h.node.no_depth[reason] == 1
+    assert h.node.depth_paired == 0
+
+
+def test_a_wrong_encoding_is_counted_with_its_reason(harness):
+    h = harness(geometry_enabled=True, require_depth=True)
+    h.wait_matched()
+    h.hold_infos()
+    h.freeze_pair_clock()
+    bad = _depth_msg(1)
+    bad.encoding = "mono8"
+    h.publish_depth(bad)
+    h.publish_image(1)
+    assert h.spin_until(lambda: h.node.skipped["depth_encoding"] == 1)
+
+
+def test_a_paused_sim_clock_does_not_hang_the_pairing(harness):
+    # Sim time without a /clock: the node's clock stands still at 0, and the wait still ends.
+    h = harness(geometry_enabled=True, use_sim_time=True)
+    assert h.node.get_clock().now().nanoseconds == 0
+    h.wait_matched()
+    h.hold_infos()
+    h.publish_image(1)
+    assert h.spin_until(lambda: len(h.got["objects reliable"]) == 1)
+    assert h.node.no_depth["unpaired"] == 1
+
+
+def test_a_depth_is_not_paired_with_a_second_image(harness):
+    h = harness(geometry_enabled=True)
+    h.wait_matched()
+    h.hold_infos()
+    h.freeze_pair_clock()
+    h.publish_depth(_depth_msg(1))
+    h.publish_image(1)
+    assert h.spin_until(lambda: h.node.depth_paired == 1)
+    assert h.spin_until(lambda: len(h.got["objects reliable"]) == 1)
+    # The depth was used up, so the next image with the same stamp has none.
+    # The clock runs again here, so that its wait can end.
+    h.node._mailbox._clock = time.monotonic
+    h.publish_image(1)
+    assert h.spin_until(lambda: h.node.no_depth["unpaired"] == 1)
+    assert h.node.depth_paired == 1

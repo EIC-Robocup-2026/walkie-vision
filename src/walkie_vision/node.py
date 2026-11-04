@@ -12,8 +12,12 @@ Threads:
   threads. The image callback only puts the message in a one-slot mailbox,
   so a newer image replaces one that waits. The camera_info callback keeps
   the newest message. A timer on wall time logs the latency summary. These
-  three stay in the node's default callback group, so they still run one
-  at a time.
+  stay in the node's default callback group, so they still run one at a
+  time.
+- With geometry_enabled, a depth callback joins them, and the mailbox is a
+  walkie_vision.depth.RgbdBuffer that pairs each image with its depth. Its
+  wait is bounded by wall time (ADR-0014). Without it, the node does not
+  subscribe to depth at all.
 - The GetPersonCrop callback has its own callback group. It leaves the
   request in a one-slot mailbox and waits for the worker's answer, while
   the executor's other thread runs the callbacks above.
@@ -65,6 +69,7 @@ from walkie_vision_msgs.srv import GetPersonCrop
 
 from . import convert, crop
 from .crop import CropStatus
+from .depth import DepthRefused, RegisteredDepth, RgbdBuffer, read_registered_depth
 from .image import camera_info_problem, image_to_bgr
 from .pipeline import Providers, TrackIdBase, VisionPipeline
 
@@ -98,6 +103,8 @@ EXECUTOR_THREADS = 2
 """One thread for the GetPersonCrop callback while it waits, one for every other callback."""
 MAX_CROP_TIMEOUT_S = 5.0
 """The longest timeout_s a GetPersonCrop request may ask for: the service answers one request at a time."""
+MAX_PAIR_WINDOW_S = 0.1
+"""The largest max_pair_gap_s and pair_wait_s: the output must stay near 5 Hz, and a wider gap pairs other captures."""
 
 # Ultralytics' own tracker files, by name. The same names as
 # walkie_vision.yolo.TRACKER_NAMES, which this module does not import.
@@ -162,6 +169,12 @@ class VisionConfig:
     process_timeout_s: float = 60.0
     latency_log_period_s: float = 10.0
     stale_warn_s: float = 0.5
+    geometry_enabled: bool = False
+    depth_topic: str = "/zed_head/zed_node/depth/depth_registered"
+    depth_camera_info_topic: str = "/zed_head/zed_node/depth/camera_info"
+    max_pair_gap_s: float = 0.005
+    pair_wait_s: float = 0.020
+    require_depth: bool = False
 
     def __post_init__(self) -> None:
         # Lists become tuples, so the config stays hashable and immutable.
@@ -176,7 +189,14 @@ class VisionConfig:
         if len(set(self.classes)) != len(self.classes):
             raise ValueError(f"classes has duplicates: {list(self.classes)}")
 
-        for name in ("image_topic", "camera_info_topic", "people_topic", "objects_topic"):
+        for name in (
+            "image_topic",
+            "camera_info_topic",
+            "people_topic",
+            "objects_topic",
+            "depth_topic",
+            "depth_camera_info_topic",
+        ):
             topic = getattr(self, name)
             try:
                 validate_full_topic_name(topic)
@@ -235,6 +255,13 @@ class VisionConfig:
             value = getattr(self, name)
             if not value > 0:
                 raise ValueError(f"{name} must be positive, not {value}")
+        if not 0.0 <= self.max_pair_gap_s <= MAX_PAIR_WINDOW_S:
+            raise ValueError(f"max_pair_gap_s must be in [0, {MAX_PAIR_WINDOW_S:g}], not {self.max_pair_gap_s}")
+        # Zero would drop every depth that arrives before its image.
+        if not 0.0 < self.pair_wait_s <= MAX_PAIR_WINDOW_S:
+            raise ValueError(f"pair_wait_s must be in (0, {MAX_PAIR_WINDOW_S:g}], not {self.pair_wait_s}")
+        if self.require_depth and not self.geometry_enabled:
+            raise ValueError("require_depth needs geometry_enabled: without it the node does not subscribe to depth")
 
     @classmethod
     def from_node(cls, node: Node) -> VisionConfig:
@@ -605,14 +632,22 @@ class VisionNode(Node):
         """GetPersonCrop requests that reached the worker's mailbox."""
         self.fatal: str | None = None
         self.latency = LatencyLog()
+        self.depth_received = 0
+        self.depth_paired = 0
+        """Images processed with a depth raster that passed every check."""
+        self.no_depth: collections.Counter[str] = collections.Counter()
+        """Images published without geometry, by reason. With require_depth they count in skipped instead."""
 
         self._counts_lock = threading.Lock()
         self._warned_at: dict[str, float] = {}
         self._warn_lock = threading.Lock()
-        self._mailbox = NewestFrame()
+        self._mailbox: NewestFrame | RgbdBuffer = (
+            RgbdBuffer(cfg.max_pair_gap_s, cfg.pair_wait_s) if cfg.geometry_enabled else NewestFrame()
+        )
         self._crops = CropMailbox()
         self._rate_replaced = 0
         self._camera_info: CameraInfo | None = None
+        self._depth_camera_info: CameraInfo | None = None
         self._camera_info_lock = threading.Lock()
         self._busy_since: float | None = None
         self._stop = threading.Event()
@@ -624,6 +659,10 @@ class VisionNode(Node):
         # Subscribed only once the models are loaded, so nothing waits during the load.
         self.create_subscription(Image, cfg.image_topic, self._on_image, IMAGE_QOS)
         self.create_subscription(CameraInfo, cfg.camera_info_topic, self._on_camera_info, CAMERA_INFO_QOS)
+        if cfg.geometry_enabled:
+            self.create_subscription(Image, cfg.depth_topic, self._on_depth, IMAGE_QOS)
+            if cfg.depth_camera_info_topic != cfg.camera_info_topic:
+                self.create_subscription(CameraInfo, cfg.depth_camera_info_topic, self._on_depth_camera_info, CAMERA_INFO_QOS)
         # Wall time, so the summary also comes under use_sim_time when /clock stops.
         self._latency_timer = self.create_timer(
             cfg.latency_log_period_s, self._on_latency_timer, clock=Clock(clock_type=ClockType.STEADY_TIME)
@@ -643,6 +682,12 @@ class VisionNode(Node):
             f"publishing {cfg.people_topic} and {cfg.objects_topic}; serving {cfg.person_crop_service}; "
             f"trackers: objects {cfg.objects_tracker}, people {cfg.pose_tracker}; track id offset {track_ids.offset}"
         )
+        if cfg.geometry_enabled:
+            self.get_logger().info(
+                f"geometry on: depth {cfg.depth_topic}, depth camera_info {cfg.depth_camera_info_topic}; "
+                f"gap at most {cfg.max_pair_gap_s:g} s, wait at most {cfg.pair_wait_s:g} s; "
+                f"images without depth are {'skipped' if cfg.require_depth else 'published without points'}"
+            )
 
     # --- counters and state --------------------------------------------
 
@@ -694,6 +739,14 @@ class VisionNode(Node):
         with self._camera_info_lock:
             self._camera_info = msg
 
+    def _on_depth(self, msg: Image) -> None:
+        self.depth_received += 1
+        self._mailbox.put_depth(msg)
+
+    def _on_depth_camera_info(self, msg: CameraInfo) -> None:
+        with self._camera_info_lock:
+            self._depth_camera_info = msg
+
     def _on_get_person_crop(
         self, request: GetPersonCrop.Request, response: GetPersonCrop.Response
     ) -> GetPersonCrop.Response:
@@ -738,6 +791,10 @@ class VisionNode(Node):
                 "dropped": sum(self.dropped.values()),
                 "duplicates": self.duplicates,
             }
+            if self.config.geometry_enabled:
+                counts["depth"] = self.depth_received
+                counts["paired"] = self.depth_paired
+                counts["no_depth"] = sum(self.no_depth.values())
         self.get_logger().info(self.latency.summary(elapsed, counts))
         self.summaries_logged += 1
         if elapsed > 0:
@@ -791,7 +848,33 @@ class VisionNode(Node):
             self.get_logger().fatal(f"the worker stopped:\n{traceback.format_exc()}")
             self.fatal = f"the worker stopped: {type(e).__name__}: {e}"
 
-    def _process_one(self, msg: Image, received: float) -> bool:
+    def _read_depth(self, msg: Image, info: CameraInfo, depth_msg: Image | None) -> RegisteredDepth | None:
+        """Return the checked depth of an image, or None after counting why there is none.
+
+        An unpaired image and a refused pair count alike: neither can give
+        points. With require_depth they count as skipped.
+        """
+        cfg = self.config
+        if depth_msg is None:
+            reason, problem = "unpaired", f"no depth from {cfg.depth_topic} within {cfg.max_pair_gap_s:g} s of the image"
+        else:
+            with self._camera_info_lock:
+                depth_info = info if cfg.depth_camera_info_topic == cfg.camera_info_topic else self._depth_camera_info
+            try:
+                depth = read_registered_depth(depth_msg, depth_info, msg, info)
+            except DepthRefused as e:
+                reason, problem = e.reason, str(e)
+            else:
+                with self._counts_lock:
+                    self.depth_paired += 1
+                return depth
+        with self._counts_lock:
+            (self.skipped if cfg.require_depth else self.no_depth)[reason] += 1
+        action = "skipping the image" if cfg.require_depth else "publishing without points"
+        self._warn_throttled(f"depth {reason}", f"{action}: {problem}")
+        return None
+
+    def _process_one(self, msg: Image, received: float, depth_msg: Image | None = None) -> bool:
         """Process one image and publish its arrays. False when the worker should stop."""
         cfg = self.config
         start = time.perf_counter()
@@ -810,6 +893,10 @@ class VisionNode(Node):
                 "the arrays use the image's",
                 once=True,
             )
+        if cfg.geometry_enabled:
+            depth = self._read_depth(msg, info, depth_msg)
+            if depth is None and cfg.require_depth:
+                return True
         try:
             image = image_to_bgr(msg)
         except ValueError as e:

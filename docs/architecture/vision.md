@@ -10,16 +10,20 @@ it publishes, and why it is built this way.
     The types for object memory are frozen
     ([ADR-0013](decisions/0013-memory-observation-contract.md)), but the
     node does not fill them yet: object embeddings, points, object crops,
-    view quality and colour shares stay empty. The `EmbedText`,
-    `DetectObjects`, `EmbedCrop` and `DescribeCrop` services and room vectors
-    are not built yet.
+    view quality and colour shares stay empty. With `geometry_enabled`, which
+    is off by default, it pairs each image with its depth
+    ([Depth pairing](#depth-pairing)). The `EmbedText`, `DetectObjects`,
+    `EmbedCrop` and `DescribeCrop` services and room vectors are not built
+    yet.
 
 ## Summary
 
 - walkie-vision runs the vision models of the old HTTP server,
   walkie-ai-server, and talks to the rest of the robot over ROS 2 only. It
   remembers nothing: walkie-database keeps the memory
-  ([ADR-0002](decisions/0002-ros2-only-stateless.md)).
+  ([ADR-0002](decisions/0002-ros2-only-stateless.md)). It holds only the
+  newest input while it works
+  ([ADR-0014](decisions/0014-bounded-rgbd-and-service-work.md)).
 - Its messages are in `walkie_vision_msgs`, a package in this repository
   that holds only messages. walkie-database and walkie-agent-ros must build
   it too ([ADR-0003](decisions/0003-messages-in-this-repository.md)).
@@ -138,8 +142,12 @@ flowchart LR
       time, so it also fires under `use_sim_time` when `/clock` stops. It
       warns when the node processes under 5 Hz while the camera delivers
       more, and when another node publishes on the output topics.
-    - These three stay in the node's default callback group, so they still
-      run one at a time.
+    - With `geometry_enabled`, a depth callback joins them, and the mailbox
+      becomes a buffer that pairs each image with its depth
+      ([Depth pairing](#depth-pairing)). When the depth has its own
+      `camera_info` topic, a second `camera_info` callback joins too.
+    - These stay in the node's default callback group, so they still run one
+      at a time.
     - The `GetPersonCrop` callback has its own callback group. It leaves the
       request in a second one-slot mailbox and waits for the worker's
       answer, while the executor's other thread keeps running the callbacks
@@ -148,8 +156,9 @@ flowchart LR
       image has taken longer than `process_timeout_s`.
 - **The worker thread** is the only thread that touches a model. It takes
   the newest image, waits for the rate cap (`max_rate_hz`), checks that the
-  newest `camera_info` matches the image's size, converts the image, runs
-  the pipeline, and publishes. When a crop request waits, the worker then
+  newest `camera_info` matches the image's size, checks and reads the paired
+  depth with `geometry_enabled`, converts the image, runs the pipeline, and
+  publishes. When a crop request waits, the worker then
   answers it from that image and its people, and drops both.
 - **Exit codes.** The node exits 1 when it fails while running: 30 failed
   images in a row, one image that takes over 60 s, or a worker that stopped.
@@ -200,6 +209,12 @@ sim output topics and the sim crop service. Write every double with a decimal po
 | `process_timeout_s`        | double   | 60.0                                     | One image taking longer means the GPU hangs: the node exits 1                                 |
 | `latency_log_period_s`     | double   | 10.0                                     | How often the latency line is logged, in seconds of wall time                                 |
 | `stale_warn_s`             | double   | 0.5                                      | Warn when an array is older than this when it is published                                    |
+| `geometry_enabled`         | bool     | false                                    | Subscribe to depth and pair it with each image. Off for HRI: no depth subscription and no added work |
+| `depth_topic`              | string   | `/zed_head/zed_node/depth/depth_registered` | Rectified depth registered to the RGB image, 32FC1 in metres or 16UC1 in millimetres. The sim publishes the same name |
+| `depth_camera_info_topic`  | string   | `/zed_head/zed_node/depth/camera_info`   | The calibration of the depth pixels. When it equals `camera_info_topic`, the node keeps one subscription |
+| `max_pair_gap_s`           | double   | 0.005                                    | The largest stamp difference of a pair, from 0 to 0.1. An exact stamp wins                    |
+| `pair_wait_s`              | double   | 0.020                                    | How long an image waits for its depth, in seconds of wall time, over 0 and at most 0.1        |
+| `require_depth`            | bool     | false                                    | Skip an image without usable depth, instead of publishing it with empty clouds. Needs `geometry_enabled` |
 
 Why 0.25 for both score floors: it is Ultralytics' own `predict` default,
 and the trackers' `new_track_thresh` and `track_high_thresh`. A track can
@@ -222,11 +237,63 @@ search. The latency line counts these as `duplicates`. A higher
 `people_min_score` would also hide that box, but it would hide real people
 far away or partly hidden too.
 
+### Depth pairing {#depth-pairing}
+
+With `geometry_enabled`, `walkie_vision.depth.RgbdBuffer` pairs each colour
+image with one depth image
+([ADR-0014](decisions/0014-bounded-rgbd-and-service-work.md)). It holds the
+newest colour image, the newest depth image and one finished bundle. The HRI
+default leaves it off, so the node does not subscribe to depth at all.
+
+The callbacks pair on arrival:
+
+| The depth's stamp, from the image's | What happens                                              |
+| ----------------------------------- | --------------------------------------------------------- |
+| Equal                               | They pair at once, in either arrival order                |
+| Later, within 5 ms                  | They pair at once. The streams are in order, so no nearer depth can follow. If the image holds an earlier depth, the nearer of the two wins |
+| Earlier, within 5 ms                | The image holds it, and keeps waiting for an exact or later one |
+| Over 5 ms apart                     | No pair                                                   |
+
+An image waits at most 20 ms of wall time. Then it goes to the worker with the
+depth it holds, or without one. Several rules keep a pair from going stale:
+
+- The wait uses wall time, not `/clock`. A paused sim cannot hang the worker.
+- A depth image is used once.
+- A depth image that waited over 20 ms is dropped when an image arrives, so a
+  sim that restarts cannot match it to a new image with an equal stamp.
+- A zero stamp never pairs.
+- An image that a newer one replaces counts as `replaced`, as it does without
+  depth. If it held a depth, it is finished with that one instead.
+
+The worker then checks the pair, in `read_registered_depth()`. The node reads
+no TF, so all of these must already hold:
+
+- The depth and both `camera_info` messages are in the colour image's frame.
+  This turns the warning about a frame mismatch into a gate for geometry.
+- The depth's `camera_info` has the raster's size, finite intrinsics, positive
+  focal lengths and zero distortion.
+- A raster smaller than the image is fine, with a `camera_info` of its own. Its
+  rays must be within 1 px of the colour image's, scaled by the pixel-centre
+  rule `fx' = sx * fx`, `cx' = sx * (cx + 0.5) - 0.5`, and likewise for y. The
+  node does not make up intrinsics from the colour image's.
+- The encoding is 32FC1 in metres or 16UC1 in millimetres, where 0 means no
+  measurement. `step` and `is_bigendian` are honoured.
+
+An unpaired image and a refused pair count alike, by reason: `unpaired`,
+`depth_frame`, `camera_info_frame`, `depth_camera_info`, `depth_calibration`,
+`depth_encoding` or `depth_data`. With `require_depth`, the image is skipped
+and counts in `skipped`. Without it, the image is published with empty clouds
+and counts in `no_depth`. A correct pair whose values are all invalid is still
+published, with empty clouds.
+
+The gap between the depth and colour topics is not measured on the robot yet.
+The sim renders both from one camera.
+
 ### QoS
 
 | Topics                    | Reliability | History     | Durability |
 | ------------------------- | ----------- | ----------- | ---------- |
-| Image and `camera_info`   | BEST_EFFORT | KEEP_LAST 1 | VOLATILE   |
+| Image, depth and `camera_info` | BEST_EFFORT | KEEP_LAST 1 | VOLATILE |
 | People and objects        | RELIABLE    | KEEP_LAST 5 | VOLATILE   |
 | The `GetPersonCrop` service | RELIABLE  | KEEP_LAST 10 | VOLATILE  |
 | The fake publisher's objects | BEST_EFFORT | KEEP_LAST 1 | VOLATILE |
@@ -250,7 +317,10 @@ processed 52 in 10.0 s (5.2 Hz); received 150, replaced 98, skipped 0, failed 0,
   raised. `dropped` counts single bad fields left out, such as a face with
   a broken vector. `duplicates` counts second boxes of one person that
   the dedupe left out. They are the pose model's normal behaviour, so the
-  node does not warn about them.
+  node does not warn about them. With `geometry_enabled`, three more
+  follow: `depth` counts depth images that arrived, `paired` the images
+  processed with a depth that passed its checks, and `no_depth` the images
+  published without one.
 - **The stages** are in milliseconds, as p50/p95. `wait` is the time an
   image waited in the mailbox. `faces` covers SCRFD and ArcFace on every
   head crop.
@@ -681,8 +751,9 @@ Subscribed, from walkie-ros's ZED driver. Both topics are parameters:
 Both the robot and the sim publish `depth/camera_info`. The robot's
 `rgb/color/rect/camera_info` is not checked yet. The node skips any image
 whose size does not match the `camera_info`, so a wrong topic shows as
-skipped images in the latency line. The node does not subscribe to the
-depth image yet.
+skipped images in the latency line. The node subscribes to the depth image
+on `depth_topic` only with `geometry_enabled`
+([Depth pairing](#depth-pairing)).
 
 ## Messages
 
@@ -960,8 +1031,8 @@ How it would run:
 
 - **On the newest image.** The vision node is the only subscriber to the
   camera, and holds only the newest RGB image and `camera_info`. For this
-  service it would also hold the newest depth image, which it does not
-  subscribe to yet. The service reads those and adds no subscriber.
+  service it would also hold the newest depth image, which it subscribes to
+  only with `geometry_enabled`. The service reads those and adds no subscriber.
   It keeps no image and no detection after it answers. Only the on-demand
   model's last class list stays loaded, as a cache. It returns no id for
   the image.
@@ -1269,7 +1340,7 @@ bodies, so the node finds no people there.
 
     --8<-- "architecture/decisions/0001-record-architecture-decisions.md:body"
 
-??? success "ADR-0002: Serve the models over ROS 2 only, statelessly · Accepted"
+??? success "ADR-0002: Serve the models over ROS 2 only, statelessly · Accepted, partly superseded by ADR-0014"
 
     --8<-- "architecture/decisions/0002-ros2-only-stateless.md:body"
 
@@ -1316,3 +1387,7 @@ bodies, so the node finds no people there.
 ??? success "ADR-0013: Freeze the memory observation contract · Accepted"
 
     --8<-- "architecture/decisions/0013-memory-observation-contract.md:body"
+
+??? success "ADR-0014: Keep only bounded RGB-D input and service work · Accepted"
+
+    --8<-- "architecture/decisions/0014-bounded-rgbd-and-service-work.md:body"

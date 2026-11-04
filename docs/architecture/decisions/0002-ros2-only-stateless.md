@@ -1,7 +1,7 @@
 # ADR-0002: Serve the models over ROS 2 only, statelessly
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-19
+**Status:** Accepted, partly superseded by [ADR-0014](/architecture/decisions/0014-bounded-rgbd-and-service-work.md) · **Date:** 2026-10-19
 
 **Context**
 
