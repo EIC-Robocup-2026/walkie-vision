@@ -43,6 +43,17 @@ def test_sim_adds_the_sim_file_last(vision_launch):
     assert cmd[-4:] == ["--params-file", str(CONFIG / "tasks" / "hri.yaml"), "--params-file", str(CONFIG / "sim.yaml")]
 
 
+def test_the_memory_task_runs_in_sim_with_the_sim_file_last(vision_launch):
+    assert "memory" in vision_launch.task_names()
+    cmd = vision_launch.node_command("memory", True)
+    assert cmd[-4:] == [
+        "--params-file",
+        str(CONFIG / "tasks" / "memory.yaml"),
+        "--params-file",
+        str(CONFIG / "sim.yaml"),
+    ]
+
+
 def test_an_unknown_task_names_the_known_ones(vision_launch):
     assert "hri" in vision_launch.task_names()
     with pytest.raises(ValueError, match="unknown task 'cooking'.*hri"):

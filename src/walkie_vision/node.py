@@ -177,6 +177,8 @@ class VisionConfig:
     require_depth: bool = False
     depth_min_m: float = 0.2
     depth_max_m: float = 3.0
+    object_crops_enabled: bool = False
+    object_embeddings_enabled: bool = False
 
     def __post_init__(self) -> None:
         # Lists become tuples, so the config stays hashable and immutable.
@@ -496,8 +498,12 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
     sessions. Raises FileNotFoundError naming every missing file, and
     StartupError (a RuntimeError) when OSNet is not cached and cannot be
     downloaded. A model that fails to load raises its own error.
+
+    CLIP is checked and loaded only with object_embeddings_enabled, and only
+    from the cache: it never downloads here.
     """
     started = time.perf_counter()
+    from .embeddings import ClipEmbedder, clip_checkpoint
     from .models import BUFFALO_L_DIR, HUB_MODELS, OSNET_CHECKPOINT, ULTRALYTICS_DIR, models_dir
     from .yolo import MOBILECLIP_FILE
 
@@ -530,6 +536,7 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
                 f"OSNet is not in the Hugging Face cache and could not be downloaded: {e}. "
                 "Run once with internet access; see docs/guides/vision-node.md"
             ) from e
+    clip_path = clip_checkpoint() if config.object_embeddings_enabled else None
 
     from walkie_vision.yolo import YoloeTracker, YoloPoseTracker
 
@@ -541,8 +548,13 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
         conf=config.objects_conf,
         agnostic_nms=config.objects_agnostic_nms,
         tracker=config.objects_tracker,
-        # Asked for only with geometry: copying masks to the CPU costs time.
-        **({"keep_masks": True} if config.geometry_enabled else {}),
+        # Asked for only when geometry or sampling reads them: copying masks to
+        # the CPU costs time.
+        **(
+            {"keep_masks": True}
+            if config.geometry_enabled or config.object_crops_enabled or config.object_embeddings_enabled
+            else {}
+        ),
     )
     pose = YoloPoseTracker(
         pose_path,
@@ -555,6 +567,7 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
     from walkie_vision.reid.identifier import OSNetReIdentifier
 
     reid = OSNetReIdentifier(device=config.device, batch_size=config.reid_batch_size)
+    embedder = None if clip_path is None else ClipEmbedder(clip_path, device=config.device)
 
     import onnxruntime
 
@@ -583,7 +596,7 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
         # text encoder that set_classes() drops, so ONNX Runtime can use them.
         torch.cuda.empty_cache()
     logger.info(f"loaded the models in {time.perf_counter() - started:.1f} s")
-    return Providers(objects=objects, pose=pose, faces=faces, reid=reid)
+    return Providers(objects=objects, pose=pose, faces=faces, reid=reid, embedder=embedder)
 
 
 class VisionNode(Node):
@@ -614,6 +627,7 @@ class VisionNode(Node):
     def _setup(self, providers: Providers | None, track_ids: TrackIdBase) -> None:
         self.config = VisionConfig.from_node(self)
         cfg = self.config
+        injected = providers is not None
         if providers is None:
             providers = build_providers(cfg, self.get_logger())
         self.pipeline = VisionPipeline(
@@ -627,6 +641,9 @@ class VisionNode(Node):
             geometry_enabled=cfg.geometry_enabled,
             depth_min_m=cfg.depth_min_m,
             depth_max_m=cfg.depth_max_m,
+            object_crops_enabled=cfg.object_crops_enabled,
+            object_embeddings_enabled=cfg.object_embeddings_enabled,
+            allow_fake_embedder=injected,
         )
         self.track_ids = track_ids
 
@@ -698,6 +715,11 @@ class VisionNode(Node):
                 f"geometry on: depth {cfg.depth_topic}, depth camera_info {cfg.depth_camera_info_topic}; "
                 f"gap at most {cfg.max_pair_gap_s:g} s, wait at most {cfg.pair_wait_s:g} s; "
                 f"images without depth are {'skipped' if cfg.require_depth else 'published without points'}"
+            )
+        if cfg.object_crops_enabled or cfg.object_embeddings_enabled:
+            self.get_logger().info(
+                f"sampling objects: crops {'on' if cfg.object_crops_enabled else 'off'}, "
+                f"embeddings {'on' if cfg.object_embeddings_enabled else 'off'}"
             )
 
     # --- counters and state --------------------------------------------

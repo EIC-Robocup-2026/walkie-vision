@@ -10,6 +10,12 @@ With geometry_enabled, a detection with a mask also gets its points and its
 view quality (walkie_vision.depth). Without it, masks are ignored and no
 geometry work runs.
 
+With object_crops_enabled or object_embeddings_enabled, up to three detections
+per image are sampled (walkie_vision.embeddings). The two flags are separate,
+and one sampler serves both. A sampled detection gets its crop, its vector or
+both, and the colour shares of its mask. The time counts in the build stage.
+With both off, no embedder runs, and no JPEG or colour share is computed.
+
 A single bad value from a model (a box or a vector that is not finite, or an
 object score outside [0, 1]) leaves out that field or that detection, and is
 counted in FrameResult.dropped. A provider that raises, or that returns the wrong
@@ -33,14 +39,24 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
-from sensor_msgs.msg import CameraInfo, PointCloud2
+from sensor_msgs.msg import CameraInfo, CompressedImage, PointCloud2
 from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 
-from . import convert
+from . import convert, embeddings
 from .depth import RegisteredDepth, depth_cover, frame_laplacian, lift_mask, view_quality
 from .image import resize_mask
-from .providers import Detection, Face, ObjectDetector, PersonFaceRecognizer, PersonPose, PoseEstimator, ReIdentifier
+from .providers import (
+    FAKE_MODEL_PREFIX,
+    Detection,
+    Embedder,
+    Face,
+    ObjectDetector,
+    PersonFaceRecognizer,
+    PersonPose,
+    PoseEstimator,
+    ReIdentifier,
+)
 
 TRACK_ID_SPACE = 2**32 - 1
 """The number of non-zero uint32 values, which a published track id can take."""
@@ -75,12 +91,23 @@ class TrackIdBase:
 
 @dataclass(frozen=True)
 class Providers:
-    """The four models the vision node runs on every image."""
+    """The models the vision node runs. embedder is set only with object embeddings on."""
 
     objects: ObjectDetector
     pose: PoseEstimator
     faces: PersonFaceRecognizer
     reid: ReIdentifier
+    embedder: Embedder | None = None
+
+
+@dataclass(frozen=True)
+class _Sample:
+    """What sampling adds to one detection. All empty for a detection that was not sampled."""
+
+    crop: CompressedImage | None = None
+    embedding: np.ndarray | None = None
+    embedding_model: str = ""
+    color_shares: np.ndarray | None = None
 
 
 @dataclass
@@ -102,7 +129,7 @@ class FrameResult:
     objects: ObjectDetectionArray
     times: StageTimes
     dropped: collections.Counter[str] = field(default_factory=collections.Counter)
-    """Bad fields or detections left out of this image: object, person, face, appearance."""
+    """Bad fields or detections left out of this image: object, person, face, appearance, embedding."""
     duplicates: int = 0
     """Poses left out of this image as a second box of a person already in it."""
 
@@ -182,6 +209,9 @@ class VisionPipeline:
     The detector's classes are set once, here, when they differ from the
     configured list. Nothing else calls set_classes(): it costs about 1.5 s
     and restarts the detector's track ids.
+
+    A fake embedder needs allow_fake_embedder, which only an injected set of
+    providers gets. The real path can then never publish a fake's vectors.
     """
 
     def __init__(
@@ -198,8 +228,16 @@ class VisionPipeline:
         geometry_enabled: bool = False,
         depth_min_m: float = 0.2,
         depth_max_m: float = 3.0,
+        object_crops_enabled: bool = False,
+        object_embeddings_enabled: bool = False,
+        allow_fake_embedder: bool = False,
     ) -> None:
         self._classes = _check_classes(classes)
+        if object_embeddings_enabled:
+            if providers.embedder is None:
+                raise ValueError("object_embeddings_enabled needs an embedder")
+            if providers.embedder.model_name.startswith(FAKE_MODEL_PREFIX) and not allow_fake_embedder:
+                raise ValueError(f"the fake embedder {providers.embedder.model_name} must not run with the real models")
         if not 0.0 < depth_min_m < depth_max_m < float("inf"):
             raise ValueError(f"the depth range must be positive and finite, not {depth_min_m} to {depth_max_m}")
         for name, value in (("people_min_score", people_min_score), ("objects_min_score", objects_min_score)):
@@ -219,6 +257,9 @@ class VisionPipeline:
         self._geometry_enabled = bool(geometry_enabled)
         self._depth_min_m = float(depth_min_m)
         self._depth_max_m = float(depth_max_m)
+        self._crops_enabled = bool(object_crops_enabled)
+        self._embeddings_enabled = bool(object_embeddings_enabled)
+        self._processed_images = 0
         if list(providers.objects.classes) != self._classes:
             providers.objects.set_classes(list(self._classes))
 
@@ -231,6 +272,11 @@ class VisionPipeline:
     def stream_id(self) -> str:
         """The id on every object array of this pipeline. A new process gets a new one."""
         return self._stream_id
+
+    @property
+    def processed_images(self) -> int:
+        """Images that process() has returned arrays for. The sampler counts on it."""
+        return self._processed_images
 
     def process(
         self, image: np.ndarray, header: Header, camera_info: CameraInfo, depth: RegisteredDepth | None = None
@@ -297,17 +343,30 @@ class VisionPipeline:
             )
             for pose, face, vector in zip(poses, faces, appearances, strict=True)
         ]
+        published = [dataclasses.replace(det, track_id=self._ids.map(det.track_id)) for det in detections]
         objects = [
             convert.to_object_detection(
-                dataclasses.replace(det, track_id=self._ids.map(det.track_id)), points=points, view_quality=quality
+                det,
+                points=points,
+                view_quality=quality,
+                crop=sample.crop,
+                embedding=sample.embedding,
+                embedding_model=sample.embedding_model,
+                color_shares=sample.color_shares,
             )
-            for det, (points, quality) in zip(detections, self._geometry(image, header, detections, depth), strict=True)
+            for det, (points, quality), sample in zip(
+                published,
+                self._geometry(image, header, detections, depth),
+                self._samples(image, header, published, dropped),
+                strict=True,
+            )
         ]
         people_array = convert.to_person_detection_array(header, info, people)
         objects_array = convert.to_object_detection_array(
             header, info, self._classes, objects, stream_id=self._stream_id
         )
         times.build = _ms_since(t)
+        self._processed_images += 1
         return FrameResult(
             people=people_array,
             objects=objects_array,
@@ -333,9 +392,7 @@ class VisionPipeline:
             if det.mask is None:
                 found.append((None, 0.0))
                 continue
-            mask = np.asarray(det.mask, dtype=bool)
-            if mask.shape != (height, width):
-                raise ValueError(f"a mask has shape {mask.shape}, but the image is {height}x{width}")
+            mask = _native_mask(det.mask, height, width)
             points, cover = None, 0.0
             if depth is not None:
                 on_raster = resize_mask(mask, *depth.metres.shape)
@@ -343,6 +400,53 @@ class VisionPipeline:
                 points = convert.to_point_cloud(header, lift_mask(on_raster, depth, self._depth_min_m, self._depth_max_m))
             found.append((points, view_quality(mask, det.box, laplacian, cover)))
         return found
+
+    def _samples(
+        self, image: np.ndarray, header: Header, detections: Sequence[Detection], dropped: collections.Counter[str]
+    ) -> list[_Sample]:
+        """Return what sampling adds to each detection, which carries its published track id.
+
+        The vector and the crop come from the same padded pixels. A bad vector
+        leaves the crop in place and counts as dropped. Raises when the
+        embedder raises or returns the wrong shape, or for a mask that does
+        not have the image's size.
+        """
+        samples = [_Sample()] * len(detections)
+        if not (self._crops_enabled or self._embeddings_enabled):
+            return samples
+        height, width = image.shape[:2]
+        chosen = embeddings.select_samples(detections, self._processed_images, width, height)
+        if not chosen:
+            return samples
+        sources = [embeddings.padded_crop(image, detections[i].box) for i in chosen]
+        vectors = self._embed(sources, dropped) if self._embeddings_enabled else [None] * len(chosen)
+        model = self._providers.embedder.model_name if self._embeddings_enabled else ""
+        for i, source, vector in zip(chosen, sources, vectors, strict=True):
+            mask = detections[i].mask
+            samples[i] = _Sample(
+                crop=convert.to_jpeg_image(header, embeddings.encode_crop(source)) if self._crops_enabled else None,
+                embedding=vector,
+                embedding_model=model if vector is not None else "",
+                color_shares=None
+                if mask is None
+                else embeddings.mask_color_shares(image, _native_mask(mask, height, width)),
+            )
+        return samples
+
+    def _embed(self, sources: Sequence[np.ndarray], dropped: collections.Counter[str]) -> list[np.ndarray | None]:
+        """Return one vector per image, or None for a row that is not finite or is all zero."""
+        embedder = self._providers.embedder
+        vectors = np.asarray(embedder.embed_images(sources))
+        if vectors.shape != (len(sources), embedder.dim):
+            raise ValueError(f"the embedder returned shape {vectors.shape} for {len(sources)} crops of dim {embedder.dim}")
+        out: list[np.ndarray | None] = []
+        for row in vectors:
+            if _vector_ok(row):
+                out.append(row)
+            else:
+                out.append(None)
+                dropped["embedding"] += 1
+        return out
 
     def _appearances(
         self, image: np.ndarray, poses: Sequence[PersonPose], dropped: collections.Counter[str]
@@ -371,6 +475,14 @@ class VisionPipeline:
             else:
                 dropped["appearance"] += 1
         return out
+
+
+def _native_mask(mask: np.ndarray, height: int, width: int) -> np.ndarray:
+    """A detection's mask as bool. Raises when it does not have the image's size."""
+    array = np.asarray(mask, dtype=bool)
+    if array.shape != (height, width):
+        raise ValueError(f"a mask has shape {array.shape}, but the image is {height}x{width}")
+    return array
 
 
 def _ms_since(start: float) -> float:

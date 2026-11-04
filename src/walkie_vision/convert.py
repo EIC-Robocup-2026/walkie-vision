@@ -204,6 +204,13 @@ def _color_shares_problem(values: np.ndarray) -> str | None:
     return None
 
 
+def to_jpeg_image(header: Header, jpeg: bytes) -> CompressedImage:
+    """A CompressedImage of JPEG bytes. The array assignment skips a per-byte check of the message's setter."""
+    data = array.array("B")
+    data.frombytes(jpeg)
+    return CompressedImage(header=header, format=JPEG_FORMAT, data=data)
+
+
 def to_object_detection(
     detection: Detection,
     embedding: np.ndarray | None = None,

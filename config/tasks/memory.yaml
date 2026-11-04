@@ -1,0 +1,13 @@
+# Object memory: walkie-database builds it from these arrays. No person class:
+# the pose model finds people. Run `task:=memory sim:=true` in the sim: sim:=true
+# chooses the clock, the topics and the services, and brings no fakes or oracle
+# data.
+walkie_vision:
+  ros__parameters:
+    classes: [cup, bottle, bowl, apple, banana, backpack, chair, table, shelf, cabinet, sofa]
+
+    # Every image needs its depth: an object without points cannot be placed.
+    geometry_enabled: true
+    require_depth: true
+    object_crops_enabled: true
+    object_embeddings_enabled: true

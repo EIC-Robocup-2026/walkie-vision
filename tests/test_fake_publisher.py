@@ -656,6 +656,36 @@ def test_a_restart_gets_a_fresh_stream_id_and_the_same_track_ids(wire, tmp_path)
     assert "rmw_fastrtps_cpp" in (tmp_path / "first.log").read_text()
 
 
+_STOP_DURING_A_PUBLISH = """
+import sys
+import rclpy
+from walkie_vision import fake_publisher
+
+publish_next = fake_publisher.FakePublisher.publish_next
+
+def stopped_first(self):
+    rclpy.shutdown()
+    return publish_next(self)
+
+fake_publisher.FakePublisher.publish_next = stopped_first
+sys.exit(fake_publisher.main())
+"""
+
+
+def test_a_stop_that_lands_during_a_publish_still_exits_zero():
+    # SIGTERM shuts the context down from another thread, so a timer the wait
+    # already picked can publish on a dead context. This forces that order.
+    topic = f"/t_{uuid.uuid4().hex[:10]}/objects"
+    out = subprocess.run(
+        [sys.executable, "-P", "-c", _STOP_DURING_A_PUBLISH, "--ros-args", "-p", f"objects_topic:={topic}"],
+        env=_env(),
+        capture_output=True,
+        text=True,
+        timeout=TIMEOUT_S,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+
+
 def test_a_finite_run_ends_by_itself(tmp_path):
     topic = f"/t_{uuid.uuid4().hex[:10]}/objects"
     out = subprocess.run(

@@ -101,3 +101,12 @@ walkie_vision:
     # the ZED and the sim, to tune on recordings.
     depth_min_m: 0.2
     depth_max_m: 3.0
+
+    # Sample up to three objects per image and fill their crops and their colour
+    # shares. Off for HRI: no mask copied to the CPU, no JPEG and no added work.
+    object_crops_enabled: false
+    # Sample the same objects, fill their CLIP vectors and their colour shares.
+    # Off for HRI: CLIP does not load. On needs the weights that
+    # `pixi run fetch-models` puts in the Hugging Face cache; the node never
+    # downloads them.
+    object_embeddings_enabled: false

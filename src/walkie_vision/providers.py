@@ -35,6 +35,8 @@ import numpy as np
 CLIP_VIT_B16 = "clip_vit_b16"
 ARCFACE_W600K_R50 = "arcface_w600k_r50"
 OSNET_X1_0_MSMT17 = "osnet_x1_0_msmt17"
+FAKE_MODEL_PREFIX = "fake_"
+"""A fake's model name starts with this, so nothing reads a fake vector as real."""
 
 # The order of the 17 COCO body keypoints that YOLO26 pose returns, and that
 # PersonDetection.keypoints uses.

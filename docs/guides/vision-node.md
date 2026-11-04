@@ -11,11 +11,16 @@ its consumers is in the [Contract](../architecture/vision.md#contract).
 
 Do these once per computer, in the project folder:
 
-1. Download the model files into `models/`:
+1. Download the model files into `models/`, and the CLIP weights into the
+   Hugging Face cache:
 
     ```bash
     pixi run fetch-models
     ```
+
+    The node loads CLIP from the cache only, and only with
+    `object_embeddings_enabled`. It never downloads them. Without them it
+    stops at start and says what to run.
 
 2. Build the messages:
 
@@ -78,6 +83,20 @@ The node needs a Zenoh router, like every `pixi run`
 starts the node again whenever it exits. Press ++ctrl+c++ to stop it; that
 does not restart it.
 
+### The memory task
+
+For object memory, use the `memory` task:
+
+```bash
+pixi run vision task:=memory
+pixi run vision task:=memory sim:=true
+```
+
+It looks for household objects, and turns on depth, sampled crops and CLIP
+vectors ([Sampled crops and vectors](../architecture/vision.md#contract-object-samples)).
+`sim:=true` chooses the clock, the topics and the services. It brings no fakes
+or oracle data.
+
 ### The first start on a new GPU
 
 On a GPU that ONNX Runtime has no machine code for, such as an RTX 50, the
@@ -113,7 +132,8 @@ list:
 1. Copy `config/tasks/hri.yaml` to `config/tasks/<task>.yaml`.
 2. Change `classes`. Use the exact words the consumer looks for. For HRI,
    walkie-agent-ros counts `chair`, `sofa`, `armchair` and `stool` as
-   seats, and nothing else.
+   seats, and nothing else. A task can also turn on capability flags, as
+   `config/tasks/memory.yaml` does.
 3. Run `pixi run vision task:=<task>`.
 4. Run `pixi run test`. It checks that every task file holds `classes` and
    only parameters the node knows.
@@ -181,6 +201,8 @@ processed 52 in 10.0 s (5.2 Hz); received 150, replaced 98, skipped 0, failed 0,
 | `no_depth` or skipped images with `geometry_enabled` | No depth within the stamp gap and the wait, or a pair that was refused. The warning names the reason ([Depth pairing](../architecture/vision.md#depth-pairing)) |
 | `depth 0` in the latency line              | No depth arrives on `depth_topic`: the camera, the router or the domain                                 |
 | Empty `points` with `paired` above 0       | Under 30 valid pixels in the mask: a small object, or depth outside `depth_min_m` to `depth_max_m` ([Object points](../architecture/vision.md#contract-object-geometry)) |
+| "`open_clip_model.safetensors` ... is not in the Hugging Face cache" at start | `object_embeddings_enabled` is on and the weights were never fetched: run `pixi run fetch-models` once with the internet |
+| Most objects have no crop or vector        | The normal rate: a track is sampled once in ten images, and at most three objects per image ([Sampled crops and vectors](../architecture/vision.md#contract-object-samples)) |
 
 When images are skipped, the node warns every 5 s with the reason, for
 example "camera_info is 640x360 but the image is 2208x1242". The camera

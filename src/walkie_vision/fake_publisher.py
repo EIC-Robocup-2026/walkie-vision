@@ -47,34 +47,13 @@ from tf2_msgs.msg import TFMessage
 from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray
 
 from . import convert, crop
+from .embeddings import CROP_MAX_SIDE, CROP_PADDING, MIN_COLOR_PIXELS, PALETTE_RGB
 from .fakes import hash_vector
-from .providers import Detection
+from .providers import FAKE_MODEL_PREFIX, Detection
 
 NODE_NAME = "walkie_vision_fake"
 EXIT_STARTUP = 2
 DEFAULT_SCENE = Path(__file__).resolve().parents[2] / "config" / "fakes" / "boxes.json"
-FAKE_MODEL_PREFIX = "fake_"
-"""An embedding model name here must start with this, so nothing reads a fake vector as real."""
-
-CROP_PADDING = 0.15
-CROP_MAX_SIDE = 512
-MIN_COLOR_PIXELS = 50
-
-# RGB, in the order of crop.COLOR_NAMES.
-PALETTE_RGB = (
-    (0, 0, 0),
-    (255, 255, 255),
-    (128, 128, 128),
-    (220, 35, 35),
-    (245, 130, 25),
-    (245, 220, 35),
-    (45, 155, 65),
-    (40, 90, 205),
-    (135, 65, 175),
-    (235, 145, 180),
-    (115, 75, 45),
-    (210, 190, 145),
-)
 _BACKGROUND_BGR = (60, 60, 60)
 _NO_COLOR_BGR = (128, 128, 128)
 _REFUSED_CLASS = "person"
@@ -601,7 +580,13 @@ def main(args: list[str] | None = None) -> int:
             code = EXIT_STARTUP
         else:
             while rclpy.ok() and not node.finished:
-                rclpy.spin_once(node, timeout_sec=0.1)
+                try:
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                except Exception:
+                    # SIGTERM shuts the context down from another thread, so a
+                    # timer the wait already picked can publish on a dead context.
+                    if rclpy.ok():
+                        raise
     except (KeyboardInterrupt, ExternalShutdownException):
         code = 0
     finally:

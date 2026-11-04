@@ -19,8 +19,9 @@ face = pytest.importorskip("walkie_vision.face")
 import huggingface_hub  # noqa: E402
 import onnxruntime  # noqa: E402
 import torch  # noqa: E402
+from huggingface_hub.errors import LocalEntryNotFoundError  # noqa: E402
 
-from walkie_vision import node  # noqa: E402
+from walkie_vision import embeddings, node  # noqa: E402
 from walkie_vision.models import BUFFALO_L_DIR, ULTRALYTICS_DIR  # noqa: E402
 from walkie_vision.node import VisionConfig, build_providers  # noqa: E402
 from walkie_vision.pipeline import Providers  # noqa: E402
@@ -125,6 +126,57 @@ def test_geometry_asks_the_object_detector_for_masks(models, manager):
     build_providers(VisionConfig(classes=CLASSES, geometry_enabled=True), manager.logger)
     assert manager.YoloeTracker.call_args.kwargs["keep_masks"] is True
     assert "keep_masks" not in manager.YoloPoseTracker.call_args.kwargs
+
+
+@pytest.mark.parametrize("flag", ["object_crops_enabled", "object_embeddings_enabled"])
+def test_sampling_asks_the_object_detector_for_masks(models, manager, monkeypatch, flag):
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: "/cache/clip.safetensors")
+    monkeypatch.setattr(embeddings, "ClipEmbedder", mock.create_autospec(embeddings.ClipEmbedder))
+    build_providers(VisionConfig(classes=CLASSES, **{flag: True}), manager.logger)
+    assert manager.YoloeTracker.call_args.kwargs["keep_masks"] is True
+
+
+def test_no_embedder_is_built_without_object_embeddings(models, manager, monkeypatch):
+    # hf_hub_download raises in the manager fixture, so the cache is not read either.
+    clip = mock.create_autospec(embeddings.ClipEmbedder)
+    monkeypatch.setattr(embeddings, "ClipEmbedder", clip)
+    assert build_providers(VisionConfig(classes=CLASSES, object_crops_enabled=True), manager.logger).embedder is None
+    clip.assert_not_called()
+
+
+def test_object_embeddings_load_clip_offline_at_the_pinned_commit(models, manager, monkeypatch):
+    calls = []
+
+    def stub(repo, filename, *, revision, local_files_only):
+        calls.append((repo, filename, revision, local_files_only))
+        return "/cache/clip.safetensors"
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", stub)
+    clip = mock.create_autospec(embeddings.ClipEmbedder)
+    monkeypatch.setattr(embeddings, "ClipEmbedder", clip)
+
+    result = build_providers(VisionConfig(classes=CLASSES, device="cpu", object_embeddings_enabled=True), manager.logger)
+
+    assert calls == [
+        (
+            "timm/vit_base_patch16_clip_224.openai",
+            "open_clip_model.safetensors",
+            "977e3dd0ec55ab8da155f2fbeb6b5f54948b6e3d",
+            True,
+        )
+    ]
+    clip.assert_called_once_with("/cache/clip.safetensors", device="cpu")
+    assert result.embedder is clip.return_value
+
+
+def test_missing_clip_weights_fail_before_any_model_loads(models, manager, monkeypatch):
+    def stub(*args, **kwargs):
+        raise LocalEntryNotFoundError("not cached")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", stub)
+    with pytest.raises(FileNotFoundError, match="pixi run fetch-models"):
+        build_providers(VisionConfig(classes=CLASSES, object_embeddings_enabled=True), manager.logger)
+    assert _model_calls(manager) == []
 
 
 def test_the_parameters_reach_the_providers(models, manager, tmp_path):

@@ -309,7 +309,7 @@ None of these models is gated, so no Hugging Face login is needed.
 | ------------------------- | -------------------------------- | ----------------------------------- | ------------------ |
 | InsightFace `buffalo_l`   | `models/buffalo_l/`              | `pixi run fetch-models`             | 326 MB             |
 | Ultralytics weights       | `models/ultralytics/`            | `pixi run fetch-models`             | 295 MB             |
-| Hugging Face models       | `~/.cache/huggingface/hub`       | The first load, for example in `check-env` | SigLIP 2 1.5 GB, EmbeddingGemma 2 1.5 GB, CLIP 571 MB, Florence-2 447 MB, OSNet 17 MB |
+| Hugging Face models       | `~/.cache/huggingface/hub`       | The first load, for example in `check-env`. `pixi run fetch-models` also fetches CLIP's `open_clip_model.safetensors`, because the vision node loads it offline only | SigLIP 2 1.5 GB, EmbeddingGemma 2 1.5 GB, CLIP 571 MB, Florence-2 447 MB, OSNet 17 MB |
 
 `WALKIE_VISION_MODELS` moves `models/` elsewhere. Git ignores `models/`, and
 also every `*.onnx`, `*.pt`, `*.pth` and `*.ts` file, so a model file cannot

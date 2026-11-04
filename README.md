@@ -32,7 +32,7 @@ curl -fsSL https://pixi.sh/install.sh | sh  # once per computer, then reopen the
 git clone https://github.com/EIC-Robocup-2026/walkie-vision.git
 cd walkie-vision
 pixi install           # about 9.6 GB
-pixi run fetch-models  # about 600 MB into models/
+pixi run fetch-models  # about 600 MB into models/, and CLIP into the Hugging Face cache
 pixi run build-msgs    # builds walkie_vision_msgs in ros2_ws/
 pixi run test
 ```
@@ -57,9 +57,9 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 
 | Command                 | What it does                                                                 |
 | ----------------------- | ---------------------------------------------------------------------------- |
-| `pixi run fetch-models` | Download the face and Ultralytics model files into `models/` and check their SHA-256. |
+| `pixi run fetch-models` | Download the face and Ultralytics model files into `models/` and check their SHA-256. Fetch the CLIP weights into the Hugging Face cache. |
 | `pixi run build-msgs`   | Build the `walkie_vision_msgs` package in `ros2_ws/` with colcon.            |
-| `pixi run vision`       | Run the vision node, restarted if it exits. `task:=hri`, `sim:=true`.         |
+| `pixi run vision`       | Run the vision node, restarted if it exits. `task:=hri` or `task:=memory`, `sim:=true`. |
 | `pixi run fake-detections` | Publish synthetic object arrays with no camera, GPU or model, on Fast DDS in domain 77. |
 | `pixi run test`         | Run the tests. They use fake models and need no GPU, no model files and no router. |
 | `pixi run check-env`    | Run the 18 checks: the GPU builds, every model, the vision node's models and rclpy on this computer. Logs in `checks/output/`. |
@@ -87,6 +87,7 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `src/walkie_vision/face/heads.py`   | Faces from crops around each person's head                       |
 | `src/walkie_vision/reid/`           | OSNet re-identification (vendored deep-person-reid code, MIT)    |
 | `src/walkie_vision/reid/identifier.py` | OSNet on person crops, batched                                |
+| `src/walkie_vision/embeddings.py`   | The object sampler, padded crops, colour shares and the interim CLIP provider |
 | `src/walkie_vision/models.py`       | Every model file and Hugging Face commit, with checksums. `fetch-models` runs it. |
 | `config/`                           | The vision node's parameters, and one file per task with its classes |
 | `launch/`                           | The launch file that runs the vision node and restarts it        |

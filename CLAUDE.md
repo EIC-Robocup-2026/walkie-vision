@@ -31,7 +31,10 @@ build, because `scripts/activate.sh` sources the overlay on activation.
   the detector, pose and head-crop face providers.
 - `src/walkie_vision/depth.py`: pairs colour with registered depth, bounded by
   wall time (ADR-0014), lifts masks to points and scores views. Off by default.
-- `config/`: the node's parameters (`vision.yaml`, `sim.yaml`).
+- `src/walkie_vision/embeddings.py`: the object sampler, padded crops, colour
+  shares and the interim CLIP provider. Off by default.
+- `config/`: the node's parameters (`vision.yaml`, `sim.yaml`) and each task's
+  classes and flags (`tasks/hri.yaml`, `tasks/memory.yaml`).
   `launch/vision.launch.py` starts the node and restarts it when it exits.
 - `src/walkie_vision/fakes.py`: deterministic fakes for tests.
 - `src/walkie_vision/fake_publisher.py`, `config/fakes/`: the fake object

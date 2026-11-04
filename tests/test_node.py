@@ -38,6 +38,7 @@ from walkie_vision import node as node_module
 from walkie_vision.convert import bbox_to_box
 from walkie_vision.depth import RgbdBuffer
 from walkie_vision.fakes import (
+    FakeEmbedder,
     FakeObjectDetector,
     FakePersonFaceRecognizer,
     FakePoseEstimator,
@@ -55,6 +56,7 @@ WIDTH, HEIGHT = 64, 48
 FRAME = "zed_head_left_camera_frame_optical"
 K = [50.0, 0.0, 32.0, 0.0, 50.0, 24.0, 0.0, 0.0, 1.0]
 CLASSES = ["chair", "sofa"]
+MEMORY_CLASSES = ("cup", "bottle", "bowl", "apple", "banana", "backpack", "chair", "table", "shelf", "cabinet", "sofa")
 DEADLINE_S = 10.0
 
 # walkie-agent-ros's VisionFeed subscribes with this profile.
@@ -98,6 +100,10 @@ def fake_providers(*, objects=None, pose=None) -> Providers:
         ),
         reid=FakeReIdentifier(),
     )
+
+
+def fake_providers_with_embedder(objects=None, embedder=None, **kwargs) -> Providers:
+    return dataclasses.replace(fake_providers(objects=objects, **kwargs), embedder=embedder or FakeEmbedder())
 
 
 class BlockingPose:
@@ -550,6 +556,31 @@ def test_the_real_parameter_files(ctx):
         assert node.close()
 
 
+def test_the_memory_task_turns_on_object_memory_without_a_person_class(ctx):
+    files = [CONFIG / "vision.yaml", CONFIG / "tasks" / "memory.yaml"]
+    args = ["--ros-args"] + [a for f in files for a in ("--params-file", str(f))]
+    node = VisionNode(
+        fake_providers_with_embedder(FakeObjectDetector([], classes=list(MEMORY_CLASSES))),
+        track_ids=TrackIdBase(start_ns=0),
+        context=ctx,
+        cli_args=args,
+    )
+    try:
+        assert node.config.classes == MEMORY_CLASSES
+        assert "person" not in node.config.classes
+        assert node.config.geometry_enabled and node.config.require_depth
+        assert node.config.object_crops_enabled and node.config.object_embeddings_enabled
+    finally:
+        assert node.close()
+
+
+def test_the_hri_task_keeps_every_object_addition_off():
+    for path in (CONFIG / "vision.yaml", CONFIG / "tasks" / "hri.yaml"):
+        values = _yaml_parameters(path)
+        for flag in ("geometry_enabled", "require_depth", "object_crops_enabled", "object_embeddings_enabled"):
+            assert not values.get(flag, False), f"{path.name}: {flag}"
+
+
 def test_the_config_defaults_equal_vision_yaml():
     values = _yaml_parameters(CONFIG / "vision.yaml")
     for f in dataclasses.fields(VisionConfig):
@@ -842,6 +873,39 @@ def test_the_image_callback_runs_while_a_request_waits_and_then_times_out(harnes
     assert h.node._crops.take() is None
     pose.release.set()
     assert h.spin_until(lambda: 1 in h.stamps("people reliable"))
+
+
+def test_a_sampled_object_reaches_the_array(harness):
+    # The first image has counter 0, so track id 10 is eligible. The second has counter 1.
+    objects = FakeObjectDetector(
+        [Detection(box=np.array(LEFT), label="chair", score=0.8, track_id=10, mask=box_mask(HEIGHT, WIDTH, LEFT))],
+        classes=CLASSES,
+    )
+    h = harness(fake_providers_with_embedder(objects), object_crops_enabled=True, object_embeddings_enabled=True)
+    h.wait_matched()
+    h.publish_frame(1)
+    assert h.spin_until(lambda: 1 in h.stamps("objects reliable"))
+    h.publish_frame(2)
+    assert h.spin_until(lambda: 2 in h.stamps("objects reliable"))
+    first, second = (a.detections[0] for a in sorted(h.got["objects reliable"], key=lambda a: a.header.stamp.sec))
+    assert first.crop.format == "jpeg" and bytes(first.crop.data[:2]) == b"\xff\xd8"
+    assert first.embedding_model == "fake_embedder" and len(first.embedding) == 512
+    assert len(first.color_shares) == 12
+    assert first.crop.header.stamp.sec == 1
+    assert not second.crop.data and not second.embedding and not second.color_shares and second.embedding_model == ""
+
+
+def test_the_real_path_refuses_a_fake_embedder(ctx, monkeypatch):
+    monkeypatch.setattr(node_module, "build_providers", lambda config, logger: fake_providers_with_embedder())
+    params = [Parameter("classes", value=CLASSES), Parameter("object_embeddings_enabled", value=True)]
+    with pytest.raises(ValueError, match="must not run with the real models"):
+        VisionNode(track_ids=TrackIdBase(start_ns=0), context=ctx, parameter_overrides=params)
+
+
+def test_object_embeddings_need_an_embedder(ctx):
+    params = [Parameter("classes", value=CLASSES), Parameter("object_embeddings_enabled", value=True)]
+    with pytest.raises(ValueError, match="needs an embedder"):
+        VisionNode(fake_providers(), track_ids=TrackIdBase(start_ns=0), context=ctx, parameter_overrides=params)
 
 
 def test_no_frame_is_kept_after_an_answer(harness, small_boxes):

@@ -8,13 +8,16 @@ it publishes, and why it is built this way.
     ([The vision node](#the-vision-node), [Contract](#contract)), and
     serves one person's crop on request ([Person crops](#person-crops)).
     The types for object memory are frozen
-    ([ADR-0013](decisions/0013-memory-observation-contract.md)), but the
-    node fills only part of them: object embeddings, object crops and colour
-    shares stay empty. With `geometry_enabled`, which is off by default, it
-    pairs each image with its depth ([Depth pairing](#depth-pairing)) and
-    fills each object's points and view quality
-    ([Object points and view quality](#contract-object-geometry)). This is
-    tested with fakes and has not run with a real model or camera. The
+    ([ADR-0013](decisions/0013-memory-observation-contract.md)). With
+    `geometry_enabled`, which is off by default, the node pairs each image
+    with its depth ([Depth pairing](#depth-pairing)) and fills each object's
+    points and view quality
+    ([Object points and view quality](#contract-object-geometry)). With
+    `object_crops_enabled` or `object_embeddings_enabled`, also off by
+    default, it samples a few objects per image and fills their crops, CLIP
+    vectors and colour shares
+    ([Sampled crops and vectors](#contract-object-samples)). This is tested
+    with fakes and has not run with a real model or camera. The
     `EmbedText`, `DetectObjects`,
     `EmbedCrop` and `DescribeCrop` services and room vectors are not built
     yet.
@@ -220,6 +223,8 @@ sim output topics and the sim crop service. Write every double with a decimal po
 | `require_depth`            | bool     | false                                    | Skip an image without usable depth, instead of publishing it with empty clouds. Needs `geometry_enabled` |
 | `depth_min_m`              | double   | 0.2                                      | Nearer depth becomes no point. Over 0. A starting value for the ZED and the sim, to tune on recordings |
 | `depth_max_m`              | double   | 3.0                                      | Farther depth becomes no point. Finite and above `depth_min_m`. A starting value too          |
+| `object_crops_enabled`     | bool     | false                                    | Sample up to three objects per image and fill their crops and colour shares. Off for HRI: no mask copied to the CPU, no JPEG and no added work |
+| `object_embeddings_enabled` | bool    | false                                    | Sample the same objects and fill their CLIP vectors and colour shares. Off for HRI: CLIP does not load. On needs the weights from `pixi run fetch-models` |
 
 Why 0.25 for both score floors: it is Ultralytics' own `predict` default,
 and the trackers' `new_track_thresh` and `track_high_thresh`. A track can
@@ -330,7 +335,8 @@ processed 52 in 10.0 s (5.2 Hz); received 150, replaced 98, skipped 0, failed 0,
   image waited in the mailbox. `faces` covers SCRFD and ArcFace on every
   head crop. With `geometry_enabled`, reading the depth counts in `convert`,
   copying and resizing the masks in `objects`, and the lift and the view
-  quality in `build`. They have no stages of their own yet.
+  quality in `build`. Sampled crops, vectors and colour shares count in `build`
+  too. They have no stages of their own yet.
 - **`age`** is the time from the image's stamp to the publish, in
   milliseconds. The contract targets under 300 at p95.
 
@@ -555,6 +561,63 @@ recordings, with a versioned recipe. The depth range is a starting value too.
 The checks in `checks/c12_vision_node.py` do not cover this yet. They are to be
 extended together with the per-stage logs.
 
+### Sampled crops and vectors {#contract-object-samples}
+
+`object_crops_enabled` and `object_embeddings_enabled` are separate flags, and
+one sampler serves both. With both off, no mask is copied to the CPU, no JPEG is
+encoded, no colour share is computed and CLIP does not load. The `hri` task
+leaves both off, and the `memory` task turns both on.
+
+**The sampler.** One counter of processed images starts at 0 and grows once per
+image that gives its arrays
+([ADR-0014](decisions/0014-bounded-rgbd-and-service-work.md)). A detection is
+eligible when `(track_id + counter) % 10 == 0`, with its published `track_id`, and
+when its box's shorter side, inside the image, is at least 32 px. Up to three
+eligible detections are sampled: the highest scores, then the lower `track_id`,
+then the earlier detection. So an untracked detection, with `track_id` 0, is
+eligible once in ten images too. Every other detection leaves its crop, vector
+and colour shares empty.
+
+**The crop.** The box grows by 15% on each side and is clipped to the image.
+`crop` is a JPEG at quality 90, reduced by area averaging to at most 512 px on
+its longest side and never enlarged. `bbox` stays the box without the padding.
+
+**The vector.** CLIP takes the same padded pixels before that reduction, turned
+from BGR to RGB, and resizes them with its own 224 px preprocessing. A vector
+that is not finite or is all zero is left out and counted as `dropped`, and the
+detection keeps its crop. An embedder that raises or returns the wrong shape
+fails the whole image, like any other model.
+
+**The model.** `walkie_vision.embeddings.ClipEmbedder` is the interim provider:
+`timm/vit_base_patch16_clip_224.openai` at the commit in `HUB_MODELS`, as
+`ViT-B-16-quickgelu`, with text inside `a photo of {}.`. It stays named
+`clip_vit_b16`, the name in the bake-off, because all of those match. A vector
+from raw tokens must never use that name. The choice of model is still
+[ADR-0008](decisions/0008-model-choices.md), which stays
+Proposed until it is measured. `pixi run fetch-models` is the one thing that
+downloads the weights. The node loads them with `local_files_only`, and refuses
+a `fake_` embedder unless the providers were injected by a test.
+
+**The colour shares** are colour recipe v1. A sampled detection that has a mask
+and at least 50 mask pixels gets them, under either flag. Each original mask
+pixel goes through OpenCV's float32 sRGB to CIELAB conversion and counts for its
+nearest palette centre by Euclidean distance. A tie takes the earlier centre.
+The counts are divided by the mask's pixels. There is no padding, resizing or
+JPEG before this. The RGB centres, in field order, are:
+
+| Colour | RGB             | Colour | RGB             | Colour | RGB             |
+| ------ | --------------- | ------ | --------------- | ------ | --------------- |
+| black  | 0, 0, 0         | orange | 245, 130, 25    | purple | 135, 65, 175    |
+| white  | 255, 255, 255   | yellow | 245, 220, 35    | pink   | 235, 145, 180   |
+| grey   | 128, 128, 128   | green  | 45, 155, 65     | brown  | 115, 75, 45     |
+| red    | 220, 35, 35     | blue   | 40, 90, 205     | beige  | 210, 190, 145   |
+
+This is deterministic plumbing. It does not claim colour constancy, and its
+accuracy has not been measured on recordings.
+
+Without `geometry_enabled`, a sampled detection still has `view_quality` 0 and an
+empty cloud: those two come from the geometry path only.
+
 ### Freshness {#contract-freshness}
 
 - The node processes only the newest image. It drops images rather than
@@ -771,7 +834,8 @@ to be tuned on photos from the robot. On the robot, with HD2K images at
 
 ## How to run
 
-1. `pixi run fetch-models` downloads the model files into `models/`.
+1. `pixi run fetch-models` downloads the model files into `models/`, and the
+   CLIP weights into the Hugging Face cache.
 2. `pixi run build-msgs` builds `walkie_vision_msgs`.
 3. Run once with internet access, so OSNet's checkpoint reaches the
    Hugging Face cache. The node checks the cache at start and fails in
@@ -976,6 +1040,7 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.reid.identifier` | OSNet on person crops (`OSNetReIdentifier`, a `ReIdentifier`)                 |
 | `walkie_vision.models`      | Every model file and Hugging Face commit, with its checksum and licence           |
 | `walkie_vision.image`       | `sensor_msgs/Image` to a BGR array, and the `camera_info` size check              |
+| `walkie_vision.embeddings`  | The object sampler, padded crops, colour recipe v1 and the interim CLIP provider (`ClipEmbedder`, an `Embedder`) |
 | `walkie_vision.pipeline`    | One image through every provider to the two arrays, with the score floors, the person dedupe (`dedupe_poses`) and the track id base. No ROS node |
 | `walkie_vision.crop`        | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. No ROS node and no model |
 | `walkie_vision.node`        | The vision node: parameters, threads, publishing, health checks and `build_providers` |

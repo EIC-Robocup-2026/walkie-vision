@@ -5,9 +5,11 @@ is kept in models/ at the repository root (WALKIE_VISION_MODELS overrides the
 location). A file that is already there with the right checksum is not
 downloaded again, so the task also passes offline once it has run.
 
-Hugging Face models (SigLIP 2, Florence-2, EmbeddingGemma 2, OSNet, CLIP) are
-not downloaded here: they download into the Hugging Face cache on first use.
-HUB_MODELS pins each of them to one commit.
+Hugging Face models (SigLIP 2, Florence-2, EmbeddingGemma 2, OSNet) are not
+downloaded here: they download into the Hugging Face cache on first use.
+HUB_MODELS pins each of them to one commit. The exception is in HUB_FILES:
+the node loads the CLIP weights offline only, so this task fetches them into
+the same cache, at their pinned commit.
 """
 
 from __future__ import annotations
@@ -112,6 +114,9 @@ HUB_MODELS = {
 OSNET_CHECKPOINT = (
     "osnet_x1_0_msmt17_combineall_256x128_amsgrad_ep150_stp60_lr0.0015_b64_fb10_softmax_labelsmooth_flip_jitter.pth"
 )
+CLIP_WEIGHTS = "open_clip_model.safetensors"
+HUB_FILES = (("clip", CLIP_WEIGHTS),)
+"""Files that fetch-models puts in the Hugging Face cache: (key in HUB_MODELS, file name)."""
 
 
 def models_dir() -> Path:
@@ -180,6 +185,14 @@ def fetch(item: Download, root: Path) -> str:
     return "downloaded"
 
 
+def fetch_hub_file(key: str, filename: str) -> str:
+    """Put one file of HUB_MODELS[key] in the Hugging Face cache, at its pinned commit, and return its path."""
+    from huggingface_hub import hf_hub_download
+
+    hub = HUB_MODELS[key]
+    return str(hf_hub_download(hub.repo, filename, revision=hub.revision))
+
+
 def main() -> int:
     root = models_dir()
     print(f"models directory: {root}")
@@ -192,6 +205,15 @@ def main() -> int:
             print(f"FAILED  {item.dest}: {e}")
             continue
         print(f"{status:10s} {item.dest}  [{item.licence}]")
+    for key, filename in HUB_FILES:
+        hub = HUB_MODELS[key]
+        try:
+            fetch_hub_file(key, filename)
+        except Exception as e:  # report every file, then fail
+            failed += 1
+            print(f"FAILED  {hub.repo}/{filename}: {e}")
+            continue
+        print(f"{'cached':10s} {hub.repo}/{filename} at {hub.revision[:12]}  [{hub.licence}]")
     return 1 if failed else 0
 
 

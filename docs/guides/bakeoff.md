@@ -55,7 +55,10 @@ Details that change the results if they are wrong:
 
 - **CLIP** loads as `ViT-B-16-quickgelu` in open_clip. The OpenAI weights
   were trained with QuickGELU, and the plain `ViT-B-16` gives worse vectors
-  with no error.
+  with no error. The vision node's interim provider
+  (`walkie_vision.embeddings.ClipEmbedder`) uses the same weights, the same
+  QuickGELU config and the same template, so its vectors keep the name
+  `clip_vit_b16`. A vector from raw tokens must not use that name.
 - **SigLIP 2** uses `pooler_output`, the vector the model was trained to
   compare. Its tokenizer neither lowers the case nor pads by itself, and the
   model was trained on lower-case text padded to 64 tokens, so the tool does
@@ -341,7 +344,11 @@ in float32 and fails them whatever its recall.
 
 What happens:
 
-1. Every reviewed box is cut out of its frame. This is the `native` bucket.
+1. Every reviewed box is cut out of its frame, with no margin. This is the
+   `native` bucket. The vision node's sampled crops differ: they grow by 15%
+   on each side before the embedding
+   ([Sampled crops and vectors](../architecture/vision.md#contract-object-samples)).
+   So a bake-off score does not yet describe a padded crop.
 2. Each crop is shrunk with area averaging so that its longest side is 32, 48,
    64 and 96 px. A crop is never enlarged: one that is already smaller than a
    size is left out of that bucket. The buckets stand for objects further
