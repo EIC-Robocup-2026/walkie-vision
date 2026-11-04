@@ -60,6 +60,7 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `pixi run fetch-models` | Download the face and Ultralytics model files into `models/` and check their SHA-256. |
 | `pixi run build-msgs`   | Build the `walkie_vision_msgs` package in `ros2_ws/` with colcon.            |
 | `pixi run vision`       | Run the vision node, restarted if it exits. `task:=hri`, `sim:=true`.         |
+| `pixi run fake-detections` | Publish synthetic object arrays with no camera, GPU or model, on Fast DDS in domain 77. |
 | `pixi run test`         | Run the tests. They use fake models and need no GPU, no model files and no router. |
 | `pixi run check-env`    | Run the 18 checks: the GPU builds, every model, the vision node's models and rclpy on this computer. Logs in `checks/output/`. |
 | `pixi run bakeoff`      | Compare the object and room embedders on labelled images.                   |

@@ -13,6 +13,7 @@ pixi run build-msgs     # build ros2_ws/src/walkie_vision_msgs with colcon
 pixi run test           # pytest; fakes only, no GPU, no models, Fast DDS
 pixi run check-env      # every model on this GPU; logs in checks/output/
 pixi run vision         # the vision node (launch/vision.launch.py); needs a router
+pixi run fake-detections  # synthetic object arrays, no models; Fast DDS, domain 77
 pixi run docs-build     # mkdocs build --strict; must pass with no warnings
 pixi install --locked   # must succeed: pixi.lock is committed
 ```
@@ -31,6 +32,9 @@ build, because `scripts/activate.sh` sources the overlay on activation.
 - `config/`: the node's parameters (`vision.yaml`, `sim.yaml`).
   `launch/vision.launch.py` starts the node and restarts it when it exits.
 - `src/walkie_vision/fakes.py`: deterministic fakes for tests.
+- `src/walkie_vision/fake_publisher.py`, `config/fakes/`: the fake object
+  publisher and its scene, for consumers' tests. Synthetic geometry, not
+  perception (ADR-0013).
 - `src/walkie_vision/face/`, `src/walkie_vision/reid/`: vendored model code.
   Keep the licence headers and the change lists up to date.
 - `src/walkie_vision/models.py`: every downloaded file and Hugging Face

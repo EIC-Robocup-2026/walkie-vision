@@ -229,6 +229,7 @@ far away or partly hidden too.
 | Image and `camera_info`   | BEST_EFFORT | KEEP_LAST 1 | VOLATILE   |
 | People and objects        | RELIABLE    | KEEP_LAST 5 | VOLATILE   |
 | The `GetPersonCrop` service | RELIABLE  | KEEP_LAST 10 | VOLATILE  |
+| The fake publisher's objects | BEST_EFFORT | KEEP_LAST 1 | VOLATILE |
 
 RELIABLE outputs match both RELIABLE and BEST_EFFORT subscribers. The
 service uses rclpy's default profile for services.
@@ -835,6 +836,7 @@ The status constants, `OK` to `FAILED`, are on the response
 | --------------------------- | --------------------------------------------------------------------------------- |
 | `walkie_vision.providers`   | The interfaces every model implements (`ObjectDetector`, `Embedder`, `PoseEstimator`, `ReIdentifier`, `FaceRecognizer`, `PersonFaceRecognizer`), their result types, and the model names |
 | `walkie_vision.fakes`       | A fake for each interface, with deterministic vectors, for tests without a GPU (`FakePersonFaceRecognizer` among them), and painted figures for the crop tests (`figure_pose`, `paint_figure`) |
+| `walkie_vision.fake_publisher` | Synthetic object arrays from a scene file, with no model, for consumers' tests ([The fake publisher](../guides/vision-node.md#fake-publisher)) |
 | `walkie_vision.convert`     | Model results to messages, with the checks the message comments state             |
 | `walkie_vision.yolo`        | YOLOE-26 and YOLO26 pose with their trackers (`YoloeTracker`, `YoloPoseTracker`)  |
 | `walkie_vision.face`        | SCRFD and ArcFace on ONNX Runtime (`FaceAnalyzer`, a `FaceRecognizer`)            |

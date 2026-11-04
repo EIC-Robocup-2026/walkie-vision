@@ -1,0 +1,45 @@
+{
+  "format": 1,
+  "camera": {
+    "frame_id": "fake_camera_optical_frame",
+    "parent_frame": "map",
+    "position": [0.0, 0.0, 1.0],
+    "orientation_xyzw": [-0.5, 0.5, -0.5, 0.5],
+    "width": 640,
+    "height": 480,
+    "fx": 525.0,
+    "fy": 525.0,
+    "cx": 319.5,
+    "cy": 239.5,
+    "depth_range": [0.2, 3.0]
+  },
+  "classes": ["cup", "bottle", "bowl", "apple", "banana", "backpack", "chair", "table", "shelf", "cabinet", "sofa"],
+  "boxes": [
+    {
+      "name": "cup_1",
+      "label": "cup",
+      "track_id": 1,
+      "score": 0.9,
+      "view_quality": 0.6,
+      "color": "red",
+      "center": [1.5, 0.2, 0.95],
+      "size": [0.1, 0.1, 0.12]
+    },
+    {
+      "name": "bottle_1",
+      "label": "bottle",
+      "track_id": 2,
+      "score": 0.8,
+      "view_quality": 0.5,
+      "color": "blue",
+      "center": [1.5, -0.25, 0.9],
+      "size": [0.08, 0.08, 0.24]
+    }
+  ],
+  "sequence": [
+    {"frames": 10, "visible": ["cup_1", "bottle_1"]},
+    {"frames": 5, "visible": ["cup_1"]},
+    {"frames": 5, "visible": []},
+    {"frames": 10, "visible": ["cup_1", "bottle_1"], "move": {"cup_1": [1.5, 0.35, 0.95]}}
+  ]
+}

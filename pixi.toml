@@ -161,6 +161,14 @@ description = "Check the GPU builds, every model and rclpy on this computer (log
 cmd = "ros2 launch launch/vision.launch.py"
 description = "Run the vision node (objects and people from the head camera), restarted if it exits"
 
+# Fast DDS, this computer only and domain 77, so that synthetic objects cannot
+# reach a robot's graph (docs/guides/vision-node.md). Arguments go to the node:
+# `pixi run fake-detections --ros-args -p loop:=false`.
+[tasks.fake-detections]
+cmd = "python -m walkie_vision.fake_publisher"
+description = "Publish synthetic object arrays with no camera, GPU or model, on Fast DDS in domain 77"
+env = { RMW_IMPLEMENTATION = "rmw_fastrtps_cpp", ROS_DOMAIN_ID = "77", ROS_AUTOMATIC_DISCOVERY_RANGE = "LOCALHOST" }
+
 [tasks.bakeoff]
 cmd = "python tools/bakeoff/bakeoff.py"
 description = "Compare the object and room embedders on labelled images (docs/guides/bakeoff.md)"

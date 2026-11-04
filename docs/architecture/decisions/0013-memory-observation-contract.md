@@ -63,6 +63,17 @@ identifier. A fake publisher reuses the same small ids after every restart.
   not change the decision. A change to a field needs a new ADR that supersedes
   this one.
 
+**Synthetic geometry and perception**
+
+`walkie_vision.fake_publisher` publishes arrays under this contract, so that
+consumers can be tested without a camera or a GPU. Its boxes, clouds, crops and
+colour shares come from analytic boxes in a synthetic picture. A passing run
+shows the layout, the stamps, the stream ids and the QoS working. It shows
+nothing about detection quality, depth noise, masks or embeddings. Its vectors
+are off by default and are hashes under a `fake_` model name, never labelled as
+CLIP. Only a run with the real models can show perception working
+([The fake publisher](/guides/vision-node.md#fake-publisher)).
+
 **See also:** [Messages](/architecture/vision.md#messages),
 [ADR-0003](/architecture/decisions/0003-messages-in-this-repository.md),
 [ADR-0009](/architecture/decisions/0009-on-demand-detect-objects.md).

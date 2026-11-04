@@ -202,3 +202,71 @@ pixi run python checks/run_checks.py c11 c12
 `c11` checks each model wrapper on its own. `c12` loads the models the way
 the node does and runs 20 HD2K images through all of them, with the
 latency and the GPU memory. Their logs are in `checks/output/`.
+
+## Run the fake publisher {#fake-publisher}
+
+`walkie_vision.fake_publisher` publishes `ObjectDetectionArray` messages from
+a scene file, with no camera, GPU or model. A consumer such as walkie-database
+can test its handling of the contract against it.
+
+```bash
+pixi run fake-detections
+```
+
+The task sets Fast DDS, this computer only and domain 77 itself, so neither
+activation nor your shell can change them. That keeps synthetic objects off a
+robot's graph. For another domain, set the variables after `pixi run`:
+
+```bash
+pixi run env RMW_IMPLEMENTATION=rmw_fastrtps_cpp ROS_DOMAIN_ID=78 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
+  python -m walkie_vision.fake_publisher
+```
+
+!!! warning "This is synthetic geometry, not perception"
+    A run shows that the layout, stamps, stream ids and QoS reach a consumer.
+    It says nothing about detection quality, depth noise, masks or
+    embeddings ([ADR-0013](../architecture/decisions/0013-memory-observation-contract.md)).
+    Never run it in a domain where the vision node or a robot's TF is running.
+
+| Parameter         | Default                  | What it does |
+| ----------------- | ------------------------ | ------------ |
+| `objects_topic`   | `/walkie_vision/objects` | The topic of the arrays |
+| `classes`         | The scene's `classes`    | The array's `classes`. A box with another label gets no detection. `person` is refused. |
+| `rate_hz`         | 5.0                      | Frames per second, on a steady timer. Stamps come from the node's clock. |
+| `scene_file`      | `config/fakes/boxes.json` | The scene |
+| `loop`            | `true`                   | Restart the sequence at its end. `false` exits with code 0 after the last frame. |
+| `crops_enabled`   | `true`                   | Fill `crop` |
+| `embedding_model` | Empty                    | Empty gives no vectors. A name must start with `fake_`, so nothing reads a fake vector as a real model's. |
+| `embedding_dim`   | 512                      | The length of a fake vector |
+| `publish_tf`      | `true`                   | Publish the camera's static transform on `/tf_static` |
+
+A bad parameter or scene stops the start with exit code 2. A new process makes
+a new `stream_id`, which is in its first log line. It publishes no people.
+
+Its arrays are BEST_EFFORT, VOLATILE, KEEP_LAST 1, so a RELIABLE subscriber
+does not match them, and a slow subscriber can miss frames. A consumer test
+must wait for the frames it needs, not count them.
+
+The scene file has a fixed pinhole `camera` and its pose in `parent_frame`,
+the `classes`, axis-aligned `boxes` in that frame, and a `sequence` of phases:
+
+```json title="config/fakes/boxes.json (part)"
+"sequence": [
+  {"frames": 10, "visible": ["cup_1", "bottle_1"]},
+  {"frames": 5, "visible": ["cup_1"]},
+  {"frames": 5, "visible": []},
+  {"frames": 10, "visible": ["cup_1", "bottle_1"], "move": {"cup_1": [1.5, 0.35, 0.95]}}
+]
+```
+
+- A phase repeats one frame `frames` times. A box it leaves out is not in the
+  picture at all, so it hides nothing.
+- `visible: []` gives a valid array with no detections.
+- `move` sets a box's centre in `parent_frame`. It lasts until the sequence
+  restarts.
+- A box's `score` and `view_quality` are the scene's values, with no formula
+  behind them. `color` paints the box and fills its `color_shares`.
+
+Each box's detection comes from the pixels it wins in a ray-cast picture, so
+nearer boxes hide farther ones. Its cloud is its surface at those pixels. With
+the same stamp and `stream_id`, a frame is always the same message.
