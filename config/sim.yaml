@@ -9,3 +9,6 @@ walkie_vision:
     people_topic: /walkie_vision/sim/people
     objects_topic: /walkie_vision/sim/objects
     person_crop_service: /walkie_vision/sim/get_person_crop
+    embed_text_service: /walkie_vision/sim/embed_text
+    embed_crop_service: /walkie_vision/sim/embed_crop
+    describe_crop_service: /walkie_vision/sim/describe_crop

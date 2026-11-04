@@ -266,6 +266,12 @@ def test_the_real_path_accepts_a_real_model_name():
     _pipeline([_detection()], FakeEmbedder(model_name=CLIP_VIT_B16), vectors=True, allow_fake=False)
 
 
+def test_the_real_path_refuses_clip_with_the_wrong_length():
+    embedder = FakeEmbedder(model_name=CLIP_VIT_B16, dim=8)
+    with pytest.raises(ValueError, match="512"):
+        _pipeline([_detection()], embedder, vectors=True, allow_fake=False)
+
+
 def test_the_counter_starts_at_zero_and_counts_processed_images():
     pipeline = _pipeline([_detection(track_id=8)], RecordingEmbedder(), vectors=True)
     sampled = []

@@ -97,6 +97,25 @@ vectors ([Sampled crops and vectors](../architecture/vision.md#contract-object-s
 `sim:=true` chooses the clock, the topics and the services. It brings no fakes
 or oracle data.
 
+### The embedding services
+
+With `object_embeddings_enabled`, the node serves two services on its one model
+worker ([Bounded services](../architecture/vision.md#bounded-services)):
+
+| Service         | Robot                       | `sim:=true`                     | What it does                          |
+| --------------- | --------------------------- | ------------------------------- | ------------------------------------- |
+| `EmbedText`     | `/walkie_vision/embed_text` | `/walkie_vision/sim/embed_text` | Embeds up to 16 texts. Works with no camera |
+| `EmbedCrop`     | `/walkie_vision/embed_crop` | `/walkie_vision/sim/embed_crop` | Crops and embeds one box of the current image |
+
+`/walkie_vision/describe_crop`, or `/walkie_vision/sim/describe_crop`, always
+answers `DISABLED`. Without the flag, the other two answer `DISABLED` as well, so
+HRI loads no CLIP.
+
+Treat `BUSY` and `STALE_IMAGE` as normal answers. `BUSY` means another job holds
+the worker, and nothing queues. `STALE_IMAGE` means that the box's image is no
+longer the current one. The node has no older image, so ask with a newer image's
+stamp, or carry on without the vector.
+
 ### The first start on a new GPU
 
 On a GPU that ONNX Runtime has no machine code for, such as an RTX 50, the
@@ -180,6 +199,10 @@ processed 52 in 10.0 s (5.2 Hz); received 150, replaced 98, skipped 0, failed 0,
   [Troubleshooting](#troubleshooting) table says what each one means.
 - **`duplicates`** counts second boxes of one person that the node left
   out. The pose model gives these now and then, so a few are normal.
+- **`jobs`**, **`busy`** and **`late`** appear with
+  `object_embeddings_enabled`. They count the service jobs that ran, the
+  requests refused with `BUSY`, and the answers that came after their deadline
+  and were discarded.
 - **The stages** show where the time goes. [The latency line](../architecture/vision.md#the-latency-line)
   explains each one.
 
@@ -203,6 +226,10 @@ processed 52 in 10.0 s (5.2 Hz); received 150, replaced 98, skipped 0, failed 0,
 | Empty `points` with `paired` above 0       | Under 30 valid pixels in the mask: a small object, or depth outside `depth_min_m` to `depth_max_m` ([Object points](../architecture/vision.md#contract-object-geometry)) |
 | "`open_clip_model.safetensors` ... is not in the Hugging Face cache" at start | `object_embeddings_enabled` is on and the weights were never fetched: run `pixi run fetch-models` once with the internet |
 | Most objects have no crop or vector        | The normal rate: a track is sampled once in ten images, and at most three objects per image ([Sampled crops and vectors](../architecture/vision.md#contract-object-samples)) |
+| `EmbedText` or `EmbedCrop` answers `DISABLED` | `object_embeddings_enabled` is off, as it is for HRI. `DescribeCrop` always answers this |
+| `EmbedText` or `EmbedCrop` answers `BUSY`  | Another service job holds the worker, or its image is still running. Try again later; nothing queues ([Bounded services](../architecture/vision.md#bounded-services)) |
+| `EmbedCrop` answers `STALE_IMAGE`          | The image the box belongs to is no longer the newest, or it is over 300 ms old. Often normal under load; `busy` and the image rate in the latency line show the load |
+| `late` above 0 in the latency line         | A service job finished after its caller's deadline, and its answer was discarded |
 
 When images are skipped, the node warns every 5 s with the reason, for
 example "camera_info is 640x360 but the image is 2208x1242". The camera

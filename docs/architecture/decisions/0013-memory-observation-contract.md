@@ -6,8 +6,10 @@
 **Runs today:** the fake publisher fills the arrays with synthetic values. The
 vision node sets `stream_id` always, and fills `points` and `view_quality` when
 `geometry_enabled` is on. It fills a sampled object's crop, vector and colour
-shares when `object_crops_enabled` or `object_embeddings_enabled` is on. It serves
-none of the new services.
+shares when `object_crops_enabled` or `object_embeddings_enabled` is on. With
+`object_embeddings_enabled` it serves `EmbedText` and `EmbedCrop`. `DescribeCrop`
+always answers `DISABLED`, and `DetectObjects` is not served
+([ADR-0015](/architecture/decisions/0015-bounded-service-scheduling.md)).
 
 **Context**
 

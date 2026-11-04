@@ -335,6 +335,7 @@ class RgbdBuffer:
         self._depth: tuple[Image, float] | None = None
         self._ready: Bundle | None = None
         self._closed = False
+        self._woken = False
         self.replaced = 0
         """How many colour images a newer one replaced before the worker took them."""
 
@@ -421,13 +422,23 @@ class RgbdBuffer:
                     self._finish(colour, colour.candidate)
                 if self._ready is not None or self._closed:
                     item, self._ready = self._ready, None
+                    self._woken = False
                     return item
+                if self._woken:
+                    self._woken = False
+                    return None
                 remaining = end - now
                 if remaining <= 0:
                     return None
                 if colour is not None:
                     remaining = min(remaining, colour.deadline - now)
                 self._cond.wait(remaining)
+
+    def wake(self) -> None:
+        """End the current or the next take() early, so the worker can look at a service job."""
+        with self._cond:
+            self._woken = True
+            self._cond.notify_all()
 
     def close(self) -> None:
         with self._cond:

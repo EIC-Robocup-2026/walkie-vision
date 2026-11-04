@@ -33,7 +33,7 @@ from walkie_vision_msgs.msg import (
     PersonDetection,
     PersonDetectionArray,
 )
-from walkie_vision_msgs.srv import EmbedText, GetPersonCrop
+from walkie_vision_msgs.srv import EmbedCrop, EmbedText, GetPersonCrop
 
 from .crop import COLOR_NAMES, CropStatus, PersonCrop
 from .providers import CLIP_VIT_B16, Detection, Embedder, Face, PersonPose
@@ -48,6 +48,8 @@ JPEG_FORMAT = "jpeg"
 """The value of CompressedImage.format for every object crop."""
 EMBEDDING_DIMS = {CLIP_VIT_B16: 512}
 """The vector length of each real object embedder. Other names, such as a fake's, are not checked."""
+MAX_MESSAGE_CHARS = 256
+"""The longest failure message of a service response."""
 
 _CLOUD_FIELDS = (("x", 0), ("y", 4), ("z", 8))
 _JPEG_START = b"\xff\xd8"
@@ -492,13 +494,61 @@ def fill_embed_text_response(
         rows = np.stack([unit_vector(v) for v in vectors])
     except Exception as e:  # the reason goes back to the caller
         response.success = False
-        response.message = f"{type(e).__name__}: {e}"
+        response.message = bounded_message(f"{type(e).__name__}: {e}")
         return response
     response.success = True
     response.message = ""
     response.embedding_model = embedder.model_name
     response.dim = embedder.dim
     response.vectors = _float32_array(rows.reshape(-1))
+    return response
+
+
+def bounded_message(text: str) -> str:
+    """Cut a failure message down to MAX_MESSAGE_CHARS."""
+    return text if len(text) <= MAX_MESSAGE_CHARS else text[: MAX_MESSAGE_CHARS - 3] + "..."
+
+
+def check_model_dim(embedder: Embedder) -> None:
+    """Raise ValueError for a real model's name on a vector of another length."""
+    expected = EMBEDDING_DIMS.get(embedder.model_name)
+    if expected is not None and embedder.dim != expected:
+        raise ValueError(f"{embedder.model_name} has {expected} dimensions, not {embedder.dim}")
+
+
+def embed_text_failure(code: str, message: str) -> EmbedText.Response:
+    """An EmbedText failure. The type has no error code field, so the code starts the message."""
+    return EmbedText.Response(success=False, message=bounded_message(f"{code}: {message}"))
+
+
+def embed_crop_failure(code: str, message: str) -> EmbedCrop.Response:
+    """An EmbedCrop failure, with every other field at its empty value."""
+    return EmbedCrop.Response(success=False, error_code=code, message=bounded_message(message))
+
+
+def fill_embed_crop_response(
+    response: EmbedCrop.Response, header: Header, jpeg: bytes, embedder: Embedder, vector: np.ndarray, quality: float
+) -> EmbedCrop.Response:
+    """Fill a successful EmbedCrop response from the source image's header.
+
+    Raises ValueError for a vector that is not a usable one of the model's
+    length, or a quality outside [0, 1].
+    """
+    check_model_dim(embedder)
+    unit = unit_vector(vector)
+    if unit.size != embedder.dim:
+        raise ValueError(f"expected {embedder.dim} dimensions, got {unit.size}")
+    quality = float(quality)
+    if not (math.isfinite(quality) and 0.0 <= quality <= 1.0):
+        raise ValueError(f"view_quality must be finite in [0, 1], not {quality}")
+    response.success = True
+    response.error_code = ""
+    response.message = ""
+    response.header = header
+    response.crop = to_jpeg_image(header, jpeg)
+    response.embedding_model = embedder.model_name
+    response.embedding = _float32_array(unit)
+    response.view_quality = quality
     return response
 
 

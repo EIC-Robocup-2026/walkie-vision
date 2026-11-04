@@ -17,10 +17,11 @@ it publishes, and why it is built this way.
     default, it samples a few objects per image and fills their crops, CLIP
     vectors and colour shares
     ([Sampled crops and vectors](#contract-object-samples)). This is tested
-    with fakes and has not run with a real model or camera. The
-    `EmbedText`, `DetectObjects`,
-    `EmbedCrop` and `DescribeCrop` services and room vectors are not built
-    yet.
+    with fakes and has not run with a real model or camera. With
+    `object_embeddings_enabled`, it also serves `EmbedText` and `EmbedCrop`
+    ([ADR-0015](decisions/0015-bounded-service-scheduling.md)). `DescribeCrop`
+    always answers `DISABLED`. The `DetectObjects` service and room vectors
+    are not built yet.
 
 ## Summary
 
@@ -59,6 +60,10 @@ it publishes, and why it is built this way.
   for walkie-agent-ros's description of a guest
   ([ADR-0011](decisions/0011-serve-one-person-crop.md),
   [Person crops](#person-crops)).
+- `EmbedText` and `EmbedCrop` run on the same model worker as the stream. One
+  job waits at most, and another request gets `BUSY`
+  ([ADR-0015](decisions/0015-bounded-service-scheduling.md),
+  [Bounded services](#bounded-services)).
 - The code is AGPL-3.0-only, to match Ultralytics. The models keep their
   own licences ([ADR-0012](decisions/0012-license-agpl-3-0-only.md)).
 
@@ -77,7 +82,7 @@ flowchart LR
   node -- "/walkie_vision/objects" --> agent
   node -- "/walkie_vision/people" --> agent
   agent -- "/walkie_vision/get_person_crop" --> node
-  agent -. "/walkie_vision/embed_text (not built)" .-> node
+  agent -- "/walkie_vision/embed_text" --> node
   agent -. "/walkie_vision/detect_objects (proposed)" .-> node
   agent <--> db
 ```
@@ -88,8 +93,10 @@ flowchart LR
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
 | Vision node (`walkie_vision.node`) | YOLOE-26 segmentation with tracking, in text-prompt mode; YOLO26 pose with tracking; SCRFD and ArcFace (InsightFace's `buffalo_l`); OSNet | PyTorch and ONNX Runtime, both on CUDA |
 
-The node also serves `GetPersonCrop`. The `EmbedText` server and the
-`DetectObjects` service join this process when they are built.
+The node also serves `GetPersonCrop`, `EmbedText`, `EmbedCrop` and
+`DescribeCrop`, all on one model worker
+([ADR-0015](decisions/0015-bounded-service-scheduling.md)). The
+`DetectObjects` service joins this process when it is built.
 
 Why one process ([ADR-0010](decisions/0010-one-vision-process.md)):
 
@@ -139,7 +146,7 @@ flowchart LR
 ### Threads
 
 - **The main thread** spins the ROS callbacks on a `MultiThreadedExecutor`
-  with two threads, and the callbacks do almost nothing.
+  with four threads, and the callbacks do almost nothing.
     - The image callback counts the image and puts it in a one-slot
       mailbox. A waiting image that has not been processed yet is replaced,
       so the node never works through a queue of old images.
@@ -156,18 +163,28 @@ flowchart LR
       at a time.
     - The `GetPersonCrop` callback has its own callback group. It leaves the
       request in a second one-slot mailbox and waits for the worker's
-      answer, while the executor's other thread keeps running the callbacks
+      answer, while another executor thread keeps running the callbacks
       above ([Person crops](#person-crops)).
+    - The `EmbedText`, `EmbedCrop` and `DescribeCrop` callbacks share a
+      reentrant callback group. They check the request, leave at most one
+      job for the worker and wait for its answer. A second request runs its
+      own callback and gets `BUSY` at once
+      ([Bounded services](#bounded-services)).
+    - With `object_embeddings_enabled`, the image and depth callbacks also
+      keep a reference to the newest of each, for `EmbedCrop`.
     - Every 0.5 s, `main()` checks that the worker is alive and that no
-      image has taken longer than `process_timeout_s`.
+      image or service job has taken longer than `process_timeout_s`.
 - **The worker thread** is the only thread that touches a model. It takes
   the newest image, waits for the rate cap (`max_rate_hz`), checks that the
   newest `camera_info` matches the image's size, checks and reads the paired
   depth with `geometry_enabled`, converts the image, runs the pipeline, and
   publishes. When a crop request waits, the worker then
-  answers it from that image and its people, and drops both.
+  answers it from that image and its people, and drops both. A service job
+  wakes the worker too, and the worker runs the newest image after it before
+  it frees the job's slot.
 - **Exit codes.** The node exits 1 when it fails while running: 30 failed
-  images in a row, one image that takes over 60 s, or a worker that stopped.
+  images in a row, one image or service job that takes over 60 s, or a worker
+  that stopped.
   It exits 2 when it cannot start. A bad parameter, a missing model file,
   or OSNet not cached while offline logs one FATAL line, in about a second,
   before any model loads. A model that fails to load, for example on CUDA
@@ -180,7 +197,7 @@ All parameters are read-only, so `classes` and the topics cannot change
 during a run. `config/vision.yaml` holds the defaults. `classes` has no
 default: it comes from the task's file in `config/tasks/`, and a missing
 list stops the node at start. `config/sim.yaml` sets `use_sim_time`, the
-sim output topics and the sim crop service. Write every double with a decimal point (`10.0`, not
+sim output topics and the sim service names. Write every double with a decimal point (`10.0`, not
 `10`): rclpy rejects an integer for a double parameter.
 
 | Name                       | Type     | Default                                  | Meaning                                                                                       |
@@ -190,6 +207,9 @@ sim output topics and the sim crop service. Write every double with a decimal po
 | `people_topic`             | string   | `/walkie_vision/people`                  | `PersonDetectionArray`                                                                        |
 | `objects_topic`            | string   | `/walkie_vision/objects`                 | `ObjectDetectionArray`                                                                        |
 | `person_crop_service`      | string   | `/walkie_vision/get_person_crop`         | The `GetPersonCrop` service ([Person crops](#person-crops))                                   |
+| `embed_text_service`       | string   | `/walkie_vision/embed_text`              | The `EmbedText` service ([Bounded services](#bounded-services))                               |
+| `embed_crop_service`       | string   | `/walkie_vision/embed_crop`              | The `EmbedCrop` service                                                                       |
+| `describe_crop_service`    | string   | `/walkie_vision/describe_crop`           | The `DescribeCrop` service, which always answers `DISABLED`                                   |
 | `classes`                  | string[] | none; from `config/tasks/<task>.yaml`    | YOLOE's text prompts for the whole run                                                        |
 | `device`                   | string   | `cuda:0`                                 | The PyTorch and Ultralytics device: `cpu`, `cuda` or `cuda:N`. ONNX Runtime's face models always use GPU 0 |
 | `objects_weights`          | string   | `yoloe-26s-seg.pt`                       | A file in `models/ultralytics/`, or an absolute path. `mobileclip2_b.ts` must be next to it  |
@@ -224,7 +244,8 @@ sim output topics and the sim crop service. Write every double with a decimal po
 | `depth_min_m`              | double   | 0.2                                      | Nearer depth becomes no point. Over 0. A starting value for the ZED and the sim, to tune on recordings |
 | `depth_max_m`              | double   | 3.0                                      | Farther depth becomes no point. Finite and above `depth_min_m`. A starting value too          |
 | `object_crops_enabled`     | bool     | false                                    | Sample up to three objects per image and fill their crops and colour shares. Off for HRI: no mask copied to the CPU, no JPEG and no added work |
-| `object_embeddings_enabled` | bool    | false                                    | Sample the same objects and fill their CLIP vectors and colour shares. Off for HRI: CLIP does not load. On needs the weights from `pixi run fetch-models` |
+| `object_embeddings_enabled` | bool    | false                                    | Sample the same objects and fill their CLIP vectors and colour shares, and serve `EmbedText` and `EmbedCrop`. Off for HRI: CLIP does not load and both services answer `DISABLED`. On needs the weights from `pixi run fetch-models` |
+| `captions_enabled`         | bool     | false                                    | Must be false. This build has no caption model, so the node refuses true at start             |
 
 Why 0.25 for both score floors: it is Ultralytics' own `predict` default,
 and the trackers' `new_track_thresh` and `track_high_thresh`. A track can
@@ -305,11 +326,11 @@ The sim renders both from one camera.
 | ------------------------- | ----------- | ----------- | ---------- |
 | Image, depth and `camera_info` | BEST_EFFORT | KEEP_LAST 1 | VOLATILE |
 | People and objects        | RELIABLE    | KEEP_LAST 5 | VOLATILE   |
-| The `GetPersonCrop` service | RELIABLE  | KEEP_LAST 10 | VOLATILE  |
+| The node's services       | RELIABLE    | KEEP_LAST 10 | VOLATILE  |
 | The fake publisher's objects | BEST_EFFORT | KEEP_LAST 1 | VOLATILE |
 
 RELIABLE outputs match both RELIABLE and BEST_EFFORT subscribers. The
-service uses rclpy's default profile for services.
+services use rclpy's default profile for services.
 walkie-agent-ros's `VisionFeed` subscribes BEST_EFFORT.
 
 ### The latency line
@@ -860,10 +881,10 @@ Published and served:
 | `/walkie_vision/sim/objects` and `/walkie_vision/sim/people` | The same types | The node's output with `sim:=true`. In simulation, walkie-agent-ros's `oracle_perception` owns the two topics above ([Who publishes](#contract-publishers)) |
 | `/walkie_vision/get_person_crop` | `walkie_vision_msgs/srv/GetPersonCrop` | One tracked person's crop and colour shares from the next image ([Person crops](#person-crops)) |
 | `/walkie_vision/sim/get_person_crop` | `walkie_vision_msgs/srv/GetPersonCrop` | The same service with `sim:=true`, for this node's own track ids |
-| `/walkie_vision/embed_text` | `walkie_vision_msgs/srv/EmbedText`        | Not built. Text embeddings in the object embedder's space, for search |
+| `/walkie_vision/embed_text` and `/walkie_vision/sim/embed_text` | `walkie_vision_msgs/srv/EmbedText`        | Text embeddings in the object embedder's space, for search. Answers `DISABLED` without `object_embeddings_enabled` ([Bounded services](#bounded-services)) |
 | `/walkie_vision/detect_objects` | `walkie_vision_msgs/srv/DetectObjects` | Type defined, not served ([ADR-0009](decisions/0009-on-demand-detect-objects.md)). Named objects in the newest image, on request |
-| `/walkie_vision/embed_crop` | `walkie_vision_msgs/srv/EmbedCrop`        | Type defined, not served. One box's crop and embedding from the newest image |
-| `/walkie_vision/describe_crop` | `walkie_vision_msgs/srv/DescribeCrop`  | Type defined, not served. Reserved for captions, which are off |
+| `/walkie_vision/embed_crop` and `/walkie_vision/sim/embed_crop` | `walkie_vision_msgs/srv/EmbedCrop`        | One box's crop and embedding from the newest image. Answers `DISABLED` without `object_embeddings_enabled` |
+| `/walkie_vision/describe_crop` and `/walkie_vision/sim/describe_crop` | `walkie_vision_msgs/srv/DescribeCrop`  | Reserved for captions. Always answers `DISABLED` in this build |
 
 Subscribed, from walkie-ros's ZED driver. Both topics are parameters:
 
@@ -949,12 +970,18 @@ are x, y and z at offsets 0, 4 and 8, FLOAT32, count 1, with `point_step` 12,
 
 walkie-database does not run models (walkie-database ADR-0006), so a text
 search such as "a red mug" asks this service for the vector first, then
-searches the table that `embedding_model` names.
+searches the table that `embedding_model` names. The node serves it with
+`object_embeddings_enabled`, also before the first image. At most 16 texts of
+at most 512 characters each, none blank. The deadline is 2 s, because the
+request has no timeout field. The type has no `error_code`, so `message` starts
+with the code when the request fails, for example `BUSY: ...`
+([Bounded services](#bounded-services)).
 
 ### DetectObjects, EmbedCrop and DescribeCrop
 
-These types are frozen and no node serves them yet. `error_code` is empty on
-success. Its values are named in each `.srv` file.
+These types are frozen. The node serves `EmbedCrop` and `DescribeCrop`
+([Bounded services](#bounded-services)). `DetectObjects` is not served yet.
+`error_code` is empty on success. Its values are named in each `.srv` file.
 
 `DetectObjects` finds named objects in the newest image, for the caller only:
 
@@ -981,10 +1008,10 @@ projected into that image:
 | Response | `header`          | `std_msgs/Header`             | The image that was used, not a copy of the request's |
 | Response | `crop`            | `sensor_msgs/CompressedImage` | Padded and encoded like `ObjectDetection.crop` |
 | Response | `embedding_model`, `embedding` | `string`, `float32[]` | One finite unit vector and its model      |
-| Response | `view_quality`    | `float32`                     | Scored like `ObjectDetection.view_quality`. Its depth term is 0 without depth. |
+| Response | `view_quality`    | `float32`                     | Scored like `ObjectDetection.view_quality`, with the box as the mask. Its depth term is 0 without depth. |
 
 `DescribeCrop` is reserved for captions. It answers `DISABLED` in this
-season's build:
+season's build, and `captions_enabled` must stay false:
 
 | Part     | Field             | Type                          | What it is                                     |
 | -------- | ----------------- | ----------------------------- | ---------------------------------------------- |
@@ -996,6 +1023,47 @@ season's build:
 | Response | `attributes_json` | `string`                      | A JSON object with fixed keys and validated values |
 | Response | `printed_text`    | `string`                      | At most 256 characters. Untrusted, and kept apart. |
 | Response | `caption_model`, `prompt_version` | `string`, `string` | The pinned weights and the fixed prompt's version. Empty when disabled. |
+
+### Bounded services {#bounded-services}
+
+`EmbedText` and `EmbedCrop` run on the one model worker
+([ADR-0015](decisions/0015-bounded-service-scheduling.md)). The callback only
+checks the request and leaves a job. One slot holds that job for both services,
+so a second request gets `BUSY` at once and nothing queues. After a job, the
+worker runs the newest image before it frees the slot, so a stream of requests
+cannot stop the arrays.
+
+`EmbedCrop` answers from the current image: the newest colour image, and the
+newest depth image when its stamp is within `max_pair_gap_s`. The node keeps
+nothing older, so a request cannot reach a past image. The worker checks the
+request against the current image when it starts the job:
+
+| Check                  | Limit                                       |
+| ---------------------- | ------------------------------------------- |
+| Frame and image size   | Equal to the current image's                |
+| Stamp difference       | At most 5 ms from the current image's stamp |
+| Image age, in ROS time | At most 300 ms                              |
+| Request ahead of ROS time | At most 5 ms                             |
+| `timeout_s`            | More than 0 and at most 5 s                 |
+
+The codes, in `error_code`, or at the start of `message` for `EmbedText`:
+
+| Code                | Meaning                                                                |
+| ------------------- | ---------------------------------------------------------------------- |
+| `DISABLED`          | `object_embeddings_enabled` is off. `DescribeCrop` always answers this |
+| `INVALID`           | The request breaks a rule. No job is made                              |
+| `BUSY`              | Another job holds the slot. Try again later                            |
+| `NO_IMAGE`          | No image has arrived yet. `EmbedCrop` answers this at once             |
+| `STALE_IMAGE`       | The current image is not the one the request names, or it is too old   |
+| `TIMEOUT`           | No answer before the deadline. A later result is discarded and counted |
+| `INFERENCE_FAILED`  | The model or its vector failed. The arrays keep flowing                |
+| `MODEL_UNAVAILABLE` | The node is shutting down                                              |
+
+The latency line adds `jobs`, `busy` and `late` when
+`object_embeddings_enabled` is on. Neither the latency of a service job nor the
+image rate while requests arrive is measured on the robot. At 15 Hz a request
+succeeds only while the image it names is still the newest, so `EmbedCrop` may
+refuse most proposals under load.
 
 ### GetPersonCrop
 
@@ -1041,6 +1109,7 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.models`      | Every model file and Hugging Face commit, with its checksum and licence           |
 | `walkie_vision.image`       | `sensor_msgs/Image` to a BGR array, and the `camera_info` size check              |
 | `walkie_vision.embeddings`  | The object sampler, padded crops, colour recipe v1 and the interim CLIP provider (`ClipEmbedder`, an `Embedder`) |
+| `walkie_vision.requests`    | Bounded service work: the job, its one slot, the current image and the request checks ([Bounded services](#bounded-services)) |
 | `walkie_vision.pipeline`    | One image through every provider to the two arrays, with the score floors, the person dedupe (`dedupe_poses`) and the track id base. No ROS node |
 | `walkie_vision.crop`        | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. No ROS node and no model |
 | `walkie_vision.node`        | The vision node: parameters, threads, publishing, health checks and `build_providers` |
@@ -1205,8 +1274,8 @@ base has moved more than 5 cm or 3° since the image, with a soft limit of
 
 ### search_detections and EmbedText
 
-`EmbedText` is already designed ([EmbedText](#embedtext)).
-`search_detections` sends the description and the noun as one text, such
+`EmbedText` is served with `object_embeddings_enabled`
+([EmbedText](#embedtext)). `search_detections` sends the description and the noun as one text, such
 as "red mug", and computes the cosine between that vector and each
 detection's embedding.
 
@@ -1314,7 +1383,7 @@ bodies, so the node finds no people there.
 | Field pins for its request and response                  | `test_message_fields` in `tests/test_convert.py`            | Done   |
 | Filling the response                                     | `walkie_vision.convert`. `to_object_detection_array` fills `objects`. The `success` and `message` handling is new, like `fill_embed_text_response` for `EmbedText`. | New |
 | The `DetectObjects` server, with its own YOLOE instance and no tracker | The vision node (`walkie_vision.node`)        | New |
-| The `EmbedText` server                                   | The vision node (`walkie_vision.node`)                      | Already designed, not built. No change to its type. |
+| The `EmbedText` server                                   | The vision node (`walkie_vision.node`)                      | Done ([Bounded services](#bounded-services)). No change to its type. |
 | `hash_vector`                                            | `walkie_vision.fakes`                                       | Unchanged. walkie-agent-ros copies it. |
 
 ### Open questions
@@ -1404,7 +1473,8 @@ bodies, so the node finds no people there.
   seconds, or minutes on a GPU whose kernels are not compiled yet.
 - **Empty fields.** Object embeddings, crops and colour shares are empty in
   every published object. Without `geometry_enabled`, points are empty too and
-  `view_quality` is 0. `EmbedText` is not built.
+  `view_quality` is 0. Without `object_embeddings_enabled`, `EmbedText` and
+  `EmbedCrop` answer `DISABLED`.
 - **The trackers count processed frames.** A lost track is kept for 30
   processed frames, 3 s at 10 Hz but 6 s at 5 Hz. A slower node keeps lost
   ids longer.
@@ -1504,7 +1574,7 @@ bodies, so the node finds no people there.
 
     --8<-- "architecture/decisions/0010-one-vision-process.md:body"
 
-??? success "ADR-0011: Serve one person crop on request · Accepted"
+??? success "ADR-0011: Serve one person crop on request · Accepted, partly superseded by ADR-0015"
 
     --8<-- "architecture/decisions/0011-serve-one-person-crop.md:body"
 
@@ -1519,3 +1589,7 @@ bodies, so the node finds no people there.
 ??? success "ADR-0014: Keep only bounded RGB-D input and service work · Accepted"
 
     --8<-- "architecture/decisions/0014-bounded-rgbd-and-service-work.md:body"
+
+??? success "ADR-0015: Schedule bounded service work on the one model worker · Accepted"
+
+    --8<-- "architecture/decisions/0015-bounded-service-scheduling.md:body"

@@ -29,14 +29,16 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time as RosTime
 from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
-from walkie_vision_msgs.srv import GetPersonCrop
+from walkie_vision_msgs.srv import DescribeCrop, EmbedCrop, EmbedText, GetPersonCrop
 
-from walkie_vision import crop
+from walkie_vision import crop, embeddings, requests
 from walkie_vision import node as node_module
-from walkie_vision.convert import bbox_to_box
-from walkie_vision.depth import RgbdBuffer
+from walkie_vision.convert import MAX_MESSAGE_CHARS, bbox_to_box, box_to_bbox, vectors_from_response
+from walkie_vision.depth import RgbdBuffer, frame_laplacian, view_quality
 from walkie_vision.fakes import (
     FakeEmbedder,
     FakeObjectDetector,
@@ -106,6 +108,50 @@ def fake_providers_with_embedder(objects=None, embedder=None, **kwargs) -> Provi
     return dataclasses.replace(fake_providers(objects=objects, **kwargs), embedder=embedder or FakeEmbedder())
 
 
+class _SetClock:
+    """Stands in for the node's ROS clock."""
+
+    def __init__(self, ns: int) -> None:
+        self.ns = ns
+
+    def now(self) -> RosTime:
+        return RosTime(nanoseconds=self.ns)
+
+
+class BlockingEmbedder(FakeEmbedder):
+    """An embedder whose first service call waits until released, as a stuck model would."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.calls = 0
+
+    def _block(self) -> None:
+        self.calls += 1
+        if self.calls == 1:
+            self.entered.set()
+            self.release.wait(DEADLINE_S)
+
+    def embed_texts(self, texts):
+        self._block()
+        return super().embed_texts(texts)
+
+    def embed_images(self, images):
+        self._block()
+        return super().embed_images(images)
+
+
+class RaisingEmbedder(FakeEmbedder):
+    """An embedder that fails every call."""
+
+    def embed_texts(self, texts):
+        raise RuntimeError("CUDA out of memory")
+
+    def embed_images(self, images):
+        raise RuntimeError("CUDA out of memory")
+
+
 class BlockingPose:
     """A pose fake whose first call waits until released."""
 
@@ -162,6 +208,9 @@ class Harness:
             "people_topic": f"{prefix}/people",
             "objects_topic": f"{prefix}/objects",
             "person_crop_service": f"{prefix}/get_person_crop",
+            "embed_text_service": f"{prefix}/embed_text",
+            "embed_crop_service": f"{prefix}/embed_crop",
+            "describe_crop_service": f"{prefix}/describe_crop",
             "depth_topic": f"{prefix}/depth",
             "depth_camera_info_topic": f"{prefix}/depth_camera_info",
         }
@@ -181,6 +230,7 @@ class Harness:
         self.depth_pub = self.helper.create_publisher(Image, self.topics["depth_topic"], IMAGE_QOS)
         self.depth_info_pub = self.helper.create_publisher(CameraInfo, self.topics["depth_camera_info_topic"], IMAGE_QOS)
         self.crop_client = self.helper.create_client(GetPersonCrop, self.topics["person_crop_service"])
+        self._service_clients: dict = {}
         self.got: dict[str, list] = {"people agent": [], "people reliable": [], "objects agent": [], "objects reliable": []}
         self.subs = []
         for kind, msg_type in (("people", PersonDetectionArray), ("objects", ObjectDetectionArray)):
@@ -219,6 +269,27 @@ class Harness:
     def answer(self, future) -> GetPersonCrop.Response:
         assert self.spin_until(future.done), "no GetPersonCrop answer"
         return future.result()
+
+    def call(self, service_type, request):
+        """Send a request to one of the bounded services and return its future."""
+        name = {EmbedText: "embed_text_service", EmbedCrop: "embed_crop_service", DescribeCrop: "describe_crop_service"}
+        client = self._service_clients.get(service_type)
+        if client is None:
+            client = self.helper.create_client(service_type, self.topics[name[service_type]])
+            self._service_clients[service_type] = client
+        assert self.spin_until(client.service_is_ready), "the service did not appear"
+        return client.call_async(request)
+
+    def set_clock(self, ns: int) -> None:
+        """Hold the node's ROS clock at ns, so a test sets an image's age exactly."""
+        clock = _SetClock(ns)
+        self.node.get_clock = lambda: clock
+
+    def publish_msg(self, msg: Image) -> None:
+        """Publish one prepared image and spin until the node has received it."""
+        before = self.node.frames_received
+        self.image_pub.publish(msg)
+        assert self.spin_until(lambda: self.node.frames_received > before), "the image did not arrive"
 
     def camera_info(self, sec: int, width: int = WIDTH, height: int = HEIGHT) -> CameraInfo:
         info = CameraInfo()
@@ -487,6 +558,10 @@ def test_an_empty_classes_list_fails_at_construction(ctx):
         ("device", "gpu"),
         ("people_topic", "no_slash"),
         ("person_crop_service", "no_slash"),
+        ("embed_text_service", "no_slash"),
+        ("embed_crop_service", "no_slash"),
+        ("describe_crop_service", "no_slash"),
+        ("captions_enabled", True),
         ("objects_tracker", "relative/tracker.yaml"),
         ("objects_imgsz", 100),
         ("face_det_thresh", 0.0),
@@ -542,6 +617,10 @@ def test_the_real_parameter_files(ctx):
         assert node.get_parameter("use_sim_time").value is False
         assert node.config.people_topic == "/walkie_vision/people"
         assert node.config.person_crop_service == "/walkie_vision/get_person_crop"
+        assert node.config.embed_text_service == "/walkie_vision/embed_text"
+        assert node.config.embed_crop_service == "/walkie_vision/embed_crop"
+        assert node.config.describe_crop_service == "/walkie_vision/describe_crop"
+        assert node.config.captions_enabled is False
     finally:
         assert node.close()
 
@@ -551,6 +630,9 @@ def test_the_real_parameter_files(ctx):
         assert node.config.people_topic == "/walkie_vision/sim/people"
         assert node.config.objects_topic == "/walkie_vision/sim/objects"
         assert node.config.person_crop_service == "/walkie_vision/sim/get_person_crop"
+        assert node.config.embed_text_service == "/walkie_vision/sim/embed_text"
+        assert node.config.embed_crop_service == "/walkie_vision/sim/embed_crop"
+        assert node.config.describe_crop_service == "/walkie_vision/sim/describe_crop"
         assert node.config.classes == ("chair", "sofa", "armchair", "stool")
     finally:
         assert node.close()
@@ -771,7 +853,7 @@ def test_the_crop_service_has_its_own_callback_group(harness):
     group = h.node._crop_service.callback_group
     assert isinstance(group, MutuallyExclusiveCallbackGroup)
     assert group is not h.node.default_callback_group
-    assert node_module.EXECUTOR_THREADS == 2
+    assert node_module.EXECUTOR_THREADS == 4
 
 
 def test_a_person_crop_comes_from_the_next_image(harness, small_boxes):
@@ -1220,3 +1302,446 @@ def test_a_mask_without_geometry_stays_out_of_the_message(harness):
     h.publish_frame(1)
     _, det = _published_object(h)
     assert det.points.width == 0 and len(det.points.data) == 0 and det.view_quality == 0.0
+
+
+# --- 9. the bounded services (ADR-0015) ----------------------------------
+
+
+NO_OBJECTS = FakeObjectDetector([], classes=CLASSES)
+"""So the stream never calls the embedder, and only the service job does."""
+SECOND_NS = 1_000_000_000
+BOX = (10.0, 10.0, 30.0, 30.0)
+
+
+def _service_harness(harness, embedder=None, **overrides) -> Harness:
+    return harness(
+        fake_providers_with_embedder(objects=NO_OBJECTS, embedder=embedder), object_embeddings_enabled=True, **overrides
+    )
+
+
+def _text_request(*texts: str) -> EmbedText.Request:
+    return EmbedText.Request(texts=list(texts or ("a red mug",)))
+
+
+def _crop_request(
+    sec: int = 1,
+    *,
+    nanosec: int = 0,
+    frame: str = FRAME,
+    width: int = WIDTH,
+    height: int = HEIGHT,
+    timeout_s: float = 5.0,
+):
+    return EmbedCrop.Request(
+        header=Header(stamp=Time(sec=sec, nanosec=nanosec), frame_id=frame),
+        image_width=width,
+        image_height=height,
+        bbox=box_to_bbox(BOX),
+        timeout_s=timeout_s,
+    )
+
+
+def _slot_free(h: Harness) -> bool:
+    return h.node._jobs._job is None
+
+
+def _box_mask() -> np.ndarray:
+    mask = np.zeros((HEIGHT, WIDTH), dtype=bool)
+    mask[10:30, 10:30] = True
+    return mask
+
+
+def test_embed_text_answers_before_the_first_image(harness):
+    embedder = FakeEmbedder()
+    h = _service_harness(harness, embedder)
+    texts = ["a red mug", "a chair"]
+    response = h.answer(h.call(EmbedText, _text_request(*texts)))
+    assert h.node.frames_received == 0
+    assert response.success and response.message == ""
+    assert response.embedding_model == embedder.model_name and response.dim == embedder.dim
+    np.testing.assert_allclose(vectors_from_response(response), embedder.embed_texts(texts), rtol=1e-6)
+
+
+def test_embed_text_wakes_a_worker_on_the_depth_buffer(harness):
+    h = _service_harness(harness, geometry_enabled=True)
+    assert isinstance(h.node._mailbox, RgbdBuffer)
+    assert h.answer(h.call(EmbedText, _text_request())).success
+
+
+@pytest.mark.parametrize(
+    ("texts", "reason"),
+    [
+        ([], "empty"),
+        (["mug"] * 17, "at most 16"),
+        (["mug", "   "], "text 1 is blank"),
+        (["x" * 513], "more than 512"),
+    ],
+)
+def test_embed_text_refuses_a_bad_request_before_the_worker(harness, texts, reason):
+    h = _service_harness(harness)
+    response = h.answer(h.call(EmbedText, EmbedText.Request(texts=texts)))
+    assert not response.success and response.message.startswith(requests.INVALID) and reason in response.message
+    assert response.embedding_model == "" and response.dim == 0 and len(response.vectors) == 0
+    assert h.node.service_jobs == 0
+
+
+def test_embed_text_takes_a_request_at_the_caps(harness):
+    h = _service_harness(harness)
+    response = h.answer(h.call(EmbedText, EmbedText.Request(texts=["x" * 512] * 16)))
+    assert response.success and vectors_from_response(response).shape == (16, response.dim)
+
+
+def test_embed_crop_refuses_a_bad_request_before_the_worker(harness):
+    h = _service_harness(harness)
+    request = _crop_request()
+    request.bbox.center.position.x = float("nan")
+    response = h.answer(h.call(EmbedCrop, request))
+    assert not response.success and response.error_code == requests.INVALID
+    assert h.node.service_jobs == 0
+
+
+def test_a_second_request_gets_busy_and_nothing_queues(harness, monkeypatch):
+    monkeypatch.setattr(requests, "EMBED_TEXT_DEADLINE_S", 30.0)
+    embedder = BlockingEmbedder()
+    h = _service_harness(harness, embedder)
+    try:
+        first = h.call(EmbedText, _text_request())
+        assert h.spin_until(embedder.entered.is_set)
+        busy_text = h.answer(h.call(EmbedText, _text_request()))
+        assert not busy_text.success and busy_text.message.startswith(requests.BUSY)
+        busy_crop = h.answer(h.call(EmbedCrop, _crop_request()))
+        assert not busy_crop.success and busy_crop.error_code == requests.BUSY
+        assert h.node.service_busy == 2
+    finally:
+        embedder.release.set()
+    assert h.answer(first).success
+    assert h.spin_until(lambda: _slot_free(h))
+    # Neither refused request ran later.
+    assert embedder.calls == 1 and h.node.service_jobs == 1
+    assert h.answer(h.call(EmbedText, _text_request())).success
+    assert embedder.calls == 2
+
+
+def test_embed_text_stops_at_its_deadline_and_discards_the_late_result(harness, monkeypatch):
+    monkeypatch.setattr(requests, "EMBED_TEXT_DEADLINE_S", 0.2)
+    embedder = BlockingEmbedder()
+    h = _service_harness(harness, embedder)
+    try:
+        response = h.answer(h.call(EmbedText, _text_request()))
+        assert not response.success and response.message.startswith(requests.TIMEOUT)
+        assert response.embedding_model == "" and len(response.vectors) == 0
+        # The model still runs, so the slot stays taken.
+        assert h.answer(h.call(EmbedText, _text_request())).message.startswith(requests.BUSY)
+    finally:
+        embedder.release.set()
+    assert h.spin_until(lambda: h.node.late_results == 1)
+    assert h.spin_until(lambda: _slot_free(h))
+    monkeypatch.setattr(requests, "EMBED_TEXT_DEADLINE_S", 30.0)
+    assert h.answer(h.call(EmbedText, _text_request())).success
+
+
+def test_a_paused_clock_cannot_make_a_crop_request_hang(harness):
+    # Sim time without a /clock: the node's clock stands still at 0.
+    embedder = BlockingEmbedder()
+    h = _service_harness(harness, embedder, use_sim_time=True)
+    h.wait_matched()
+    msg = h.image(1)
+    msg.header.stamp = Time(nanosec=1000)
+    h.publish_msg(msg)
+    try:
+        response = h.answer(h.call(EmbedCrop, _crop_request(0, nanosec=1000, timeout_s=0.2)))
+        assert embedder.entered.is_set()
+        assert not response.success and response.error_code == requests.TIMEOUT
+        assert len(response.embedding) == 0 and len(response.crop.data) == 0
+    finally:
+        embedder.release.set()
+    assert h.spin_until(lambda: h.node.late_results == 1)
+    assert h.spin_until(lambda: _slot_free(h))
+    assert h.answer(h.call(EmbedCrop, _crop_request(0, nanosec=1000))).success
+
+
+def test_a_job_given_up_before_the_worker_reaches_it_runs_no_model(harness, monkeypatch):
+    monkeypatch.setattr(requests, "EMBED_TEXT_DEADLINE_S", 0.2)
+    embedder, pose = BlockingEmbedder(), BlockingPose()
+    h = harness(
+        fake_providers_with_embedder(objects=NO_OBJECTS, embedder=embedder, pose=pose), object_embeddings_enabled=True
+    )
+    h.wait_matched()
+    h.publish_frame(1)
+    assert h.spin_until(pose.entered.is_set)
+    try:
+        response = h.answer(h.call(EmbedText, _text_request()))
+        assert response.message.startswith(requests.TIMEOUT)
+        # The worker never took it, so the slot is free again.
+        assert _slot_free(h)
+    finally:
+        pose.release.set()
+    assert h.spin_until(lambda: 1 in h.stamps("people reliable"))
+    assert embedder.calls == 0 and h.node.late_results == 0
+
+
+def test_closing_the_slot_answers_the_running_job_and_later_requests(harness, monkeypatch):
+    monkeypatch.setattr(requests, "EMBED_TEXT_DEADLINE_S", 30.0)
+    embedder = BlockingEmbedder()
+    h = _service_harness(harness, embedder)
+    try:
+        future = h.call(EmbedText, _text_request())
+        assert h.spin_until(embedder.entered.is_set)
+        h.node._jobs.close()
+        response = h.answer(future)
+        assert not response.success and response.message.startswith(requests.MODEL_UNAVAILABLE)
+        assert "shutting down" in response.message
+        refused = h.answer(h.call(EmbedCrop, _crop_request()))
+        assert refused.error_code == requests.MODEL_UNAVAILABLE and "shutting down" in refused.message
+    finally:
+        embedder.release.set()
+
+
+def test_closing_the_node_stops_with_a_job_running(harness, monkeypatch):
+    monkeypatch.setattr(requests, "EMBED_TEXT_DEADLINE_S", 30.0)
+    embedder = BlockingEmbedder()
+    h = _service_harness(harness, embedder)
+    h.call(EmbedText, _text_request())
+    assert h.spin_until(embedder.entered.is_set)
+    job = h.node._jobs._job
+    release = threading.Timer(0.2, embedder.release.set)
+    release.start()
+    try:
+        assert h.close()
+    finally:
+        release.join()
+    assert job.wait().message.startswith(requests.MODEL_UNAVAILABLE)
+    # The model's answer came after the refusal, and was dropped.
+    assert h.node.late_results == 1
+
+
+@pytest.mark.parametrize(
+    ("fields", "reason"),
+    [
+        ({"nanosec": 5_000_001}, "from the current image"),
+        ({"frame": "other_frame"}, "frame"),
+        ({"width": WIDTH + 2}, "image is"),
+        ({"height": HEIGHT + 2}, "image is"),
+    ],
+)
+def test_embed_crop_refuses_a_request_that_does_not_name_the_current_image(harness, fields, reason):
+    embedder = BlockingEmbedder()
+    embedder.release.set()
+    h = _service_harness(harness, embedder)
+    h.set_clock(SECOND_NS + 100_000_000)
+    h.wait_matched()
+    h.publish_image(1)
+    response = h.answer(h.call(EmbedCrop, _crop_request(**fields)))
+    assert not response.success and response.error_code == requests.STALE_IMAGE and reason in response.message
+    assert embedder.calls == 0
+    assert len(response.embedding) == 0 and len(response.crop.data) == 0 and response.header.frame_id == ""
+
+
+def test_embed_crop_never_crops_a_later_view_with_an_old_box(harness):
+    embedder = BlockingEmbedder()
+    embedder.release.set()
+    h = _service_harness(harness, embedder)
+    h.set_clock(2 * SECOND_NS)
+    h.wait_matched()
+    h.publish_image(1)
+    h.publish_image(2)
+    response = h.answer(h.call(EmbedCrop, _crop_request(1)))
+    assert response.error_code == requests.STALE_IMAGE and embedder.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("now_ns", "code"),
+    [
+        (SECOND_NS + requests.MAX_IMAGE_AGE_NS, ""),
+        (SECOND_NS + requests.MAX_IMAGE_AGE_NS + 1, requests.STALE_IMAGE),
+        (SECOND_NS - requests.MAX_FUTURE_NS - 1, requests.STALE_IMAGE),
+    ],
+)
+def test_embed_crop_holds_the_image_age_in_ros_time(harness, now_ns, code):
+    h = _service_harness(harness)
+    h.set_clock(now_ns)
+    h.wait_matched()
+    h.publish_image(1)
+    assert h.answer(h.call(EmbedCrop, _crop_request())).error_code == code
+
+
+def test_embed_crop_without_an_image_answers_no_image_at_once(harness):
+    h = _service_harness(harness)
+    response = h.answer(h.call(EmbedCrop, _crop_request()))
+    assert not response.success and response.error_code == requests.NO_IMAGE
+    assert h.node.frames_received == 0
+
+
+def test_embed_crop_answers_from_the_current_image(harness):
+    embedder = FakeEmbedder()
+    h = _service_harness(harness, embedder)
+    h.set_clock(SECOND_NS + 100_000_000)
+    h.wait_matched()
+    msg = h.image(1)
+    # A pattern, so the crop's pixels say where they came from.
+    array = np.random.default_rng(1).integers(0, 255, (HEIGHT, WIDTH, 3), dtype=np.uint8)
+    msg.data = array.tobytes()
+    h.publish_msg(msg)
+    # Within 5 ms, so the response shows the image's own stamp and not this one.
+    response = h.answer(h.call(EmbedCrop, _crop_request(nanosec=4_000_000)))
+    assert response.success and response.error_code == "" and response.message == ""
+    assert response.header.stamp == Time(sec=1) and response.header.frame_id == FRAME
+    assert response.crop.header == response.header and response.crop.format == "jpeg"
+    pixels = embeddings.padded_crop(array, np.array(BOX))
+    assert pixels.shape == (26, 26, 3)
+    decoded = cv2.imdecode(np.frombuffer(bytes(response.crop.data), np.uint8), cv2.IMREAD_COLOR)
+    assert decoded.shape == pixels.shape
+    # The same padded pixels give the crop and the vector.
+    assert np.abs(decoded.astype(int) - pixels.astype(int)).mean() < np.abs(pixels.astype(int) - 128).mean()
+    assert response.embedding_model == embedder.model_name
+    np.testing.assert_allclose(response.embedding, embedder.embed_images([pixels])[0], rtol=1e-6)
+    expected = view_quality(_box_mask(), np.array(BOX), frame_laplacian(array), 0.0)
+    assert response.view_quality == pytest.approx(expected)
+
+
+def test_embed_crop_scores_depth_only_for_a_paired_current_image(harness):
+    h = _service_harness(harness, geometry_enabled=True)
+    h.wait_matched()
+    h.hold_infos()
+    h.freeze_pair_clock()
+    h.set_clock(SECOND_NS + 100_000_000)
+    h.publish_depth(_depth_msg(1, 1.5))
+    h.publish_image(1)
+    plain = np.full((HEIGHT, WIDTH, 3), 1, dtype=np.uint8)
+    paired = h.answer(h.call(EmbedCrop, _crop_request()))
+    expected = view_quality(_box_mask(), np.array(BOX), frame_laplacian(plain), 1.0)
+    assert paired.success and paired.view_quality == pytest.approx(expected)
+    # Image 2 has no depth of its own, and depth 1 is too far from it to count.
+    assert h.spin_until(lambda: _slot_free(h))
+    h.set_clock(2 * SECOND_NS + 100_000_000)
+    h.publish_image(2)
+    unpaired = h.answer(h.call(EmbedCrop, _crop_request(2)))
+    plain = np.full((HEIGHT, WIDTH, 3), 2, dtype=np.uint8)
+    expected = view_quality(_box_mask(), np.array(BOX), frame_laplacian(plain), 0.0)
+    assert unpaired.success and unpaired.view_quality == pytest.approx(expected)
+    assert paired.view_quality > unpaired.view_quality
+
+
+def test_a_refused_depth_leaves_only_the_depth_term_out_of_a_crop(harness):
+    h = _service_harness(harness, geometry_enabled=True)
+    h.wait_matched()
+    h.hold_infos()
+    h.freeze_pair_clock()
+    h.set_clock(SECOND_NS + 100_000_000)
+    h.publish_depth(_depth_msg(1, 1.5, frame="other_frame"))
+    h.publish_image(1)
+    response = h.answer(h.call(EmbedCrop, _crop_request()))
+    plain = np.full((HEIGHT, WIDTH, 3), 1, dtype=np.uint8)
+    expected = view_quality(_box_mask(), np.array(BOX), frame_laplacian(plain), 0.0)
+    assert response.success and response.view_quality == pytest.approx(expected)
+
+
+def test_a_service_failure_leaves_the_stream_alone(harness):
+    h = _service_harness(harness, RaisingEmbedder())
+    h.set_clock(SECOND_NS + 100_000_000)
+    h.wait_matched()
+    h.publish_frame(1)
+    assert h.spin_until(lambda: 1 in h.stamps("people reliable") and 1 in h.stamps("objects reliable"))
+    response = h.answer(h.call(EmbedCrop, _crop_request()))
+    assert not response.success and response.error_code == requests.INFERENCE_FAILED
+    assert "CUDA out of memory" in response.message and len(response.embedding) == 0
+    assert h.spin_until(lambda: _slot_free(h))
+    text = h.answer(h.call(EmbedText, _text_request()))
+    assert not text.success and text.message.startswith(f"{requests.INFERENCE_FAILED}: ")
+    assert "CUDA out of memory" in text.message
+    assert h.node.frames_failed == 0 and h.node.consecutive_failures == 0 and h.node.fatal is None
+    h.publish_frame(2)
+    assert h.spin_until(lambda: 2 in h.stamps("people reliable") and 2 in h.stamps("objects reliable"))
+    assert h.node.frames_failed == 0
+
+
+def test_a_bad_vector_answers_inference_failed(harness):
+    class ZeroEmbedder(FakeEmbedder):
+        def embed_images(self, images):
+            return np.zeros((len(images), self.dim), dtype=np.float32)
+
+    h = _service_harness(harness, ZeroEmbedder())
+    h.set_clock(SECOND_NS + 100_000_000)
+    h.wait_matched()
+    h.publish_image(1)
+    response = h.answer(h.call(EmbedCrop, _crop_request()))
+    assert not response.success and response.error_code == requests.INFERENCE_FAILED and "zero" in response.message
+
+
+def test_the_newest_frame_runs_before_the_next_job(harness, monkeypatch):
+    monkeypatch.setattr(requests, "EMBED_TEXT_DEADLINE_S", 30.0)
+    embedder, pose = BlockingEmbedder(), BlockingPose()
+    h = harness(
+        fake_providers_with_embedder(objects=NO_OBJECTS, embedder=embedder, pose=pose), object_embeddings_enabled=True
+    )
+    h.wait_matched()
+    try:
+        first = h.call(EmbedText, _text_request())
+        assert h.spin_until(embedder.entered.is_set)
+        # The input callbacks keep running while the model runs.
+        h.publish_frame(7)
+        h.publish_frame(8)
+        assert h.node.frames_received == 2
+        embedder.release.set()
+        assert h.answer(first).success
+        assert h.spin_until(pose.entered.is_set)
+        # The job has its answer, and the slot stays taken through the newest frame.
+        assert h.answer(h.call(EmbedText, _text_request())).message.startswith(requests.BUSY)
+    finally:
+        embedder.release.set()
+        pose.release.set()
+    assert h.spin_until(lambda: 8 in h.stamps("people reliable"))
+    assert 7 not in h.stamps("people reliable")
+    assert h.spin_until(lambda: _slot_free(h))
+    assert h.answer(h.call(EmbedText, _text_request())).success
+
+
+def test_only_the_newest_image_stays_for_a_crop(harness):
+    h = _service_harness(harness)
+    h.wait_matched()
+    h.publish_image(1)
+    h.publish_image(2)
+    colour, depth = h.node._current.read()
+    assert colour.header.stamp.sec == 2 and depth is None
+
+
+def test_no_decoded_image_is_kept_after_a_crop_answer(harness):
+    kept = []
+
+    class Recording(FakeEmbedder):
+        def embed_images(self, images):
+            kept.extend(weakref.ref(i) for i in images)
+            return super().embed_images(images)
+
+    h = _service_harness(harness, Recording())
+    h.set_clock(SECOND_NS + 100_000_000)
+    h.wait_matched()
+    h.publish_image(1)
+    assert h.answer(h.call(EmbedCrop, _crop_request())).success
+
+    def dropped() -> bool:
+        gc.collect()
+        return all(ref() is None for ref in kept)
+
+    assert kept and h.spin_until(dropped), "the node still holds a crop"
+
+
+def test_with_embeddings_off_no_image_stays_and_the_services_answer_disabled(harness):
+    h = harness()
+    assert h.node._current is None
+    text = h.answer(h.call(EmbedText, _text_request()))
+    assert not text.success and text.message.startswith(requests.DISABLED)
+    response = h.answer(h.call(EmbedCrop, _crop_request()))
+    assert not response.success and response.error_code == requests.DISABLED
+    assert h.node.service_jobs == 0
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_describe_crop_answers_disabled_with_no_worker(harness, enabled):
+    h = _service_harness(harness) if enabled else harness()
+    response = h.answer(h.call(DescribeCrop, DescribeCrop.Request()))
+    assert not response.success and response.error_code == requests.DISABLED and response.message
+    assert len(response.message) <= MAX_MESSAGE_CHARS
+    assert response.caption == "" and response.attributes_json == "" and response.printed_text == ""
+    assert response.caption_model == "" and response.prompt_version == ""
+    assert h.node.service_jobs == 0

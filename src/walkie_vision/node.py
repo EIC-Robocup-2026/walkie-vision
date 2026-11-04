@@ -4,7 +4,8 @@ For every image it processes, the node publishes one PersonDetectionArray
 and one ObjectDetectionArray, both with the image's header and a copy of
 its camera_info. The contract that consumers rely on is in
 docs/architecture/vision.md#contract. It also serves GetPersonCrop: one
-person's crop and colour shares from the next image (ADR-0011).
+person's crop and colour shares from the next image (ADR-0011). And it serves
+EmbedText, EmbedCrop and DescribeCrop, with one bounded service job (ADR-0015).
 
 Threads:
 
@@ -20,11 +21,18 @@ Threads:
   subscribe to depth at all.
 - The GetPersonCrop callback has its own callback group. It leaves the
   request in a one-slot mailbox and waits for the worker's answer, while
-  the executor's other thread runs the callbacks above.
+  another of the executor's threads runs the callbacks above.
+- The EmbedText, EmbedCrop and DescribeCrop callbacks share a reentrant group.
+  Each checks its request and tries to leave one job in the slot of
+  walkie_vision.requests. One that gets the slot waits for the worker, up to
+  a deadline in wall time. Another gets BUSY at once, on another thread.
 - One worker thread takes the newest image, runs walkie_vision.pipeline on
   it and publishes the two arrays. It is the only thread that touches a
   model. When a GetPersonCrop request waits, the worker answers it from
   that image and its people (walkie_vision.crop), and then drops both.
+  Between images it runs the service job, and a job wakes it with no image.
+  The slot stays taken until the worker has also processed the newest image
+  after the job, so requests cannot stop the stream.
 - main() checks the worker's health on every loop. A failure while running
   exits with EXIT_FATAL (1), and the launch file starts the node again. A
   failure before the worker starts, such as a missing model file or a bad
@@ -45,7 +53,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Protocol
@@ -53,7 +61,7 @@ from typing import Any, Protocol
 import numpy as np
 import rclpy
 from rcl_interfaces.msg import ParameterDescriptor
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.clock import Clock, ClockType
 from rclpy.exceptions import NameValidationException, ParameterException
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
@@ -65,11 +73,11 @@ from rclpy.validate_full_topic_name import validate_full_topic_name
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
-from walkie_vision_msgs.srv import GetPersonCrop
+from walkie_vision_msgs.srv import DescribeCrop, EmbedCrop, EmbedText, GetPersonCrop
 
-from . import convert, crop
+from . import convert, crop, requests
 from .crop import CropStatus
-from .depth import DepthRefused, RegisteredDepth, RgbdBuffer, read_registered_depth
+from .depth import DepthRefused, RegisteredDepth, RgbdBuffer, read_registered_depth, stamp_ns
 from .image import camera_info_problem, image_to_bgr
 from .pipeline import Providers, TrackIdBase, VisionPipeline
 
@@ -99,8 +107,8 @@ EXIT_FATAL = 1
 """A failure while running. The launch file starts the node again."""
 EXIT_STARTUP = 2
 """A failure before the worker started: a missing file, a bad parameter, a model that did not load."""
-EXECUTOR_THREADS = 2
-"""One thread for the GetPersonCrop callback while it waits, one for every other callback."""
+EXECUTOR_THREADS = 4
+"""One for the input callbacks, one for a waiting GetPersonCrop, one for a waiting service job, one for a BUSY answer."""
 MAX_CROP_TIMEOUT_S = 5.0
 """The longest timeout_s a GetPersonCrop request may ask for: the service answers one request at a time."""
 MAX_PAIR_WINDOW_S = 0.1
@@ -145,6 +153,9 @@ class VisionConfig:
     people_topic: str = "/walkie_vision/people"
     objects_topic: str = "/walkie_vision/objects"
     person_crop_service: str = "/walkie_vision/get_person_crop"
+    embed_text_service: str = "/walkie_vision/embed_text"
+    embed_crop_service: str = "/walkie_vision/embed_crop"
+    describe_crop_service: str = "/walkie_vision/describe_crop"
     device: str = "cuda:0"
     objects_weights: str = "yoloe-26s-seg.pt"
     objects_imgsz: int = 640
@@ -179,6 +190,7 @@ class VisionConfig:
     depth_max_m: float = 3.0
     object_crops_enabled: bool = False
     object_embeddings_enabled: bool = False
+    captions_enabled: bool = False
 
     def __post_init__(self) -> None:
         # Lists become tuples, so the config stays hashable and immutable.
@@ -206,12 +218,14 @@ class VisionConfig:
                 validate_full_topic_name(topic)
             except NameValidationException as e:
                 raise ValueError(f"{name} must be an absolute, valid topic name, not {topic!r}: {e}") from e
-        try:
-            validate_full_topic_name(self.person_crop_service, is_service=True)
-        except NameValidationException as e:
-            raise ValueError(
-                f"person_crop_service must be an absolute, valid service name, not {self.person_crop_service!r}: {e}"
-            ) from e
+        for name in ("person_crop_service", "embed_text_service", "embed_crop_service", "describe_crop_service"):
+            service = getattr(self, name)
+            try:
+                validate_full_topic_name(service, is_service=True)
+            except NameValidationException as e:
+                raise ValueError(f"{name} must be an absolute, valid service name, not {service!r}: {e}") from e
+        if self.captions_enabled:
+            raise ValueError("captions_enabled must be false: this build has no caption model")
 
         if not _DEVICE.match(self.device):
             raise ValueError(f"device must be cpu, cuda or cuda:N, not {self.device!r}")
@@ -304,6 +318,7 @@ class NewestFrame:
         self._cond = threading.Condition()
         self._item: tuple[Image, float] | None = None
         self._closed = False
+        self._woken = False
         self.replaced = 0
         """How many waiting items a newer one replaced."""
 
@@ -319,10 +334,17 @@ class NewestFrame:
     def take(self, timeout: float) -> tuple[Image, float] | None:
         """Return the waiting item, waiting up to timeout seconds; None when there is none."""
         with self._cond:
-            if self._item is None and not self._closed and timeout > 0:
+            if self._item is None and not self._closed and not self._woken and timeout > 0:
                 self._cond.wait(timeout)
+            self._woken = False
             item, self._item = self._item, None
             return item
+
+    def wake(self) -> None:
+        """End the current or the next take() early, so the worker can look at a service job."""
+        with self._cond:
+            self._woken = True
+            self._cond.notify_all()
 
     def close(self) -> None:
         with self._cond:
@@ -658,6 +680,12 @@ class VisionNode(Node):
         self.consecutive_failures = 0
         self.crop_requests = 0
         """GetPersonCrop requests that reached the worker's mailbox."""
+        self.service_jobs = 0
+        """EmbedText and EmbedCrop requests that the worker took."""
+        self.service_busy = 0
+        """EmbedText and EmbedCrop requests refused because the slot was taken."""
+        self.late_results = 0
+        """Service answers discarded because they came after their deadline."""
         self.fatal: str | None = None
         self.latency = LatencyLog()
         self.depth_received = 0
@@ -673,6 +701,10 @@ class VisionNode(Node):
             RgbdBuffer(cfg.max_pair_gap_s, cfg.pair_wait_s) if cfg.geometry_enabled else NewestFrame()
         )
         self._crops = CropMailbox()
+        self._embedder = providers.embedder
+        self._jobs = requests.JobSlot(self._mailbox.wake)
+        # Only what EmbedCrop can answer from. Off, no image outlives its processing.
+        self._current = requests.CurrentImage() if cfg.object_embeddings_enabled else None
         self._rate_replaced = 0
         self._camera_info: CameraInfo | None = None
         self._depth_camera_info: CameraInfo | None = None
@@ -703,6 +735,17 @@ class VisionNode(Node):
             self._on_get_person_crop,
             callback_group=MutuallyExclusiveCallbackGroup(),
         )
+        # Reentrant, so a second request can run and get BUSY while the first waits.
+        service_group = ReentrantCallbackGroup()
+        self._embed_text_service = self.create_service(
+            EmbedText, cfg.embed_text_service, self._on_embed_text, callback_group=service_group
+        )
+        self._embed_crop_service = self.create_service(
+            EmbedCrop, cfg.embed_crop_service, self._on_embed_crop, callback_group=service_group
+        )
+        self._describe_crop_service = self.create_service(
+            DescribeCrop, cfg.describe_crop_service, self._on_describe_crop, callback_group=service_group
+        )
         self._worker = threading.Thread(target=self._work, daemon=True, name="walkie_vision_worker")
         self._worker.start()
         self.get_logger().info(
@@ -721,6 +764,8 @@ class VisionNode(Node):
                 f"sampling objects: crops {'on' if cfg.object_crops_enabled else 'off'}, "
                 f"embeddings {'on' if cfg.object_embeddings_enabled else 'off'}"
             )
+        if cfg.object_embeddings_enabled:
+            self.get_logger().info(f"serving {cfg.embed_text_service} and {cfg.embed_crop_service}")
 
     # --- counters and state --------------------------------------------
 
@@ -734,7 +779,7 @@ class VisionNode(Node):
         return [t for t in (self.config.people_topic, self.config.objects_topic) if self.count_publishers(t) > 1]
 
     def check_health(self) -> None:
-        """Set fatal if the worker has stopped, or if one image has taken longer than process_timeout_s."""
+        """Set fatal if the worker has stopped, or if one image or service job has taken longer than process_timeout_s."""
         if self.fatal is not None or self._stop.is_set():
             return
         if not self._worker.is_alive():
@@ -742,7 +787,7 @@ class VisionNode(Node):
             return
         busy = self._busy_since
         if busy is not None and time.monotonic() - busy > self.config.process_timeout_s:
-            self.fatal = f"one image has taken more than {self.config.process_timeout_s:g} s; the GPU may hang"
+            self.fatal = f"one image or service job has taken more than {self.config.process_timeout_s:g} s; the GPU may hang"
 
     def close(self) -> bool:
         """Stop the worker and destroy the node. False if the worker did not stop in time.
@@ -755,6 +800,7 @@ class VisionNode(Node):
         self._stop.set()
         self._mailbox.close()
         self._crops.close()
+        self._jobs.close()
         self._worker.join(timeout=_JOIN_TIMEOUT_S)
         if self._worker.is_alive():
             return False
@@ -766,6 +812,8 @@ class VisionNode(Node):
 
     def _on_image(self, msg: Image) -> None:
         self.frames_received += 1
+        if self._current is not None:
+            self._current.put_colour(msg)
         self._mailbox.put((msg, time.perf_counter()))
 
     def _on_camera_info(self, msg: CameraInfo) -> None:
@@ -774,6 +822,8 @@ class VisionNode(Node):
 
     def _on_depth(self, msg: Image) -> None:
         self.depth_received += 1
+        if self._current is not None:
+            self._current.put_depth(msg)
         self._mailbox.put_depth(msg)
 
     def _on_depth_camera_info(self, msg: CameraInfo) -> None:
@@ -812,6 +862,42 @@ class VisionNode(Node):
             return _crop_answer(CropStatus.NO_IMAGE, f"no image arrived on {self.config.image_topic} in {timeout:g} s")
         return _crop_answer(CropStatus.TIMEOUT, f"images arrived, but none was processed in {timeout:g} s")
 
+    def _on_embed_text(self, request: EmbedText.Request, response: EmbedText.Response) -> EmbedText.Response:
+        if not self.config.object_embeddings_enabled:
+            return convert.embed_text_failure(requests.DISABLED, "object_embeddings_enabled is off")
+        problem = requests.embed_text_problem(request.texts)
+        if problem is not None:
+            return convert.embed_text_failure(requests.INVALID, problem)
+        return self._serve(request, requests.EMBED_TEXT_DEADLINE_S, convert.embed_text_failure)
+
+    def _on_embed_crop(self, request: EmbedCrop.Request, response: EmbedCrop.Response) -> EmbedCrop.Response:
+        if not self.config.object_embeddings_enabled:
+            return convert.embed_crop_failure(requests.DISABLED, "object_embeddings_enabled is off")
+        problem = requests.embed_crop_problem(request)
+        if problem is not None:
+            return convert.embed_crop_failure(requests.INVALID, problem)
+        return self._serve(request, float(request.timeout_s), convert.embed_crop_failure)
+
+    def _on_describe_crop(self, request: DescribeCrop.Request, response: DescribeCrop.Response) -> DescribeCrop.Response:
+        return DescribeCrop.Response(
+            success=False, error_code=requests.DISABLED, message="this build has no caption model"
+        )
+
+    def _serve(self, request: Any, deadline_s: float, fail: Callable[[str, str], Any]) -> Any:
+        """Leave one job for the worker and wait for its answer, up to deadline_s of wall time."""
+        job = requests.ServiceJob(request, time.monotonic() + deadline_s, fail)
+        if not self._jobs.admit(job):
+            if self._jobs.closed:
+                return fail(requests.MODEL_UNAVAILABLE, "the node is shutting down")
+            with self._counts_lock:
+                self.service_busy += 1
+            return fail(requests.BUSY, "another service job holds the worker")
+        answer = job.wait()
+        if answer is not None:
+            return answer
+        self._jobs.withdraw(job)
+        return fail(requests.TIMEOUT, f"no answer in {deadline_s:g} s")
+
     def _on_latency_timer(self) -> None:
         now = time.monotonic()
         elapsed, self._period_start = now - self._period_start, now
@@ -828,6 +914,10 @@ class VisionNode(Node):
                 counts["depth"] = self.depth_received
                 counts["paired"] = self.depth_paired
                 counts["no_depth"] = sum(self.no_depth.values())
+            if self.config.object_embeddings_enabled:
+                counts["jobs"] = self.service_jobs
+                counts["busy"] = self.service_busy
+                counts["late"] = self.late_results
         self.get_logger().info(self.latency.summary(elapsed, counts))
         self.summaries_logged += 1
         if elapsed > 0:
@@ -859,27 +949,93 @@ class VisionNode(Node):
         try:
             last_start: float | None = None
             while not self._stop.is_set():
-                item = self._mailbox.take(0.5)
-                if item is None:
-                    if self._mailbox.closed:
-                        return
-                    continue
-                rate = self.config.max_rate_hz
-                if rate > 0 and last_start is not None:
-                    delay = last_start + 1.0 / rate - time.monotonic()
-                    if delay > 0:
-                        if self._stop.wait(delay):
+                # The slot stays taken through the frame after a job, so the
+                # next request cannot get in before the newest image.
+                job = self._jobs.claim()
+                try:
+                    if job is not None:
+                        self._run_job(job)
+                    item = self._mailbox.take(0.0 if job is not None else 0.5)
+                    if item is None:
+                        if self._mailbox.closed:
                             return
-                        newer = self._mailbox.take(0.0)
-                        if newer is not None:
-                            self._rate_replaced += 1
-                            item = newer
-                last_start = time.monotonic()
-                if not self._process_one(*item):
-                    return
+                        continue
+                    rate = self.config.max_rate_hz
+                    if rate > 0 and last_start is not None:
+                        delay = last_start + 1.0 / rate - time.monotonic()
+                        if delay > 0:
+                            if self._stop.wait(delay):
+                                return
+                            newer = self._mailbox.take(0.0)
+                            if newer is not None:
+                                self._rate_replaced += 1
+                                item = newer
+                    last_start = time.monotonic()
+                    if not self._process_one(*item):
+                        return
+                finally:
+                    if job is not None:
+                        self._jobs.release(job)
         except BaseException as e:
             self.get_logger().fatal(f"the worker stopped:\n{traceback.format_exc()}")
             self.fatal = f"the worker stopped: {type(e).__name__}: {e}"
+
+    def _run_job(self, job: requests.ServiceJob) -> None:
+        """Run one service job. A failure answers it, and leaves the stream and its counters as they are."""
+        if job.given_up or job.remaining() <= 0:
+            return  # its callback answers TIMEOUT
+        with self._counts_lock:
+            self.service_jobs += 1
+        self._busy_since = time.monotonic()
+        try:
+            if isinstance(job.request, EmbedText.Request):
+                response = convert.fill_embed_text_response(EmbedText.Response(), self._embedder, job.request.texts)
+                if not response.success:
+                    self._warn_throttled("service job", f"a service job failed: {response.message}")
+                    response = job.fail(requests.INFERENCE_FAILED, response.message)
+            else:
+                response = self._embed_crop(job.request)
+        except Exception as e:
+            self._warn_throttled("service job", f"a service job failed: {type(e).__name__}: {e}")
+            response = job.fail(requests.INFERENCE_FAILED, f"{type(e).__name__}: {e}")
+        finally:
+            self._busy_since = None
+        if not job.finish(response):
+            with self._counts_lock:
+                self.late_results += 1
+            self._warn_throttled("late", "a service answer came after its deadline and was discarded")
+
+    def _embed_crop(self, request: EmbedCrop.Request) -> EmbedCrop.Response:
+        """Answer an EmbedCrop request from the current image, if the request names it."""
+        cfg = self.config
+        msg, depth_msg = self._current.read()
+        if msg is None:
+            return convert.embed_crop_failure(requests.NO_IMAGE, f"no image has arrived on {cfg.image_topic}")
+        problem = requests.crop_image_problem(request, msg, self.get_clock().now().nanoseconds)
+        if problem is not None:
+            return convert.embed_crop_failure(requests.STALE_IMAGE, problem)
+        return requests.embed_crop_answer(
+            self._embedder,
+            image_to_bgr(msg),
+            Header(stamp=msg.header.stamp, frame_id=msg.header.frame_id),
+            convert.bbox_to_box(request.bbox),
+            self._current_depth(msg, depth_msg),
+            cfg.depth_min_m,
+            cfg.depth_max_m,
+        )
+
+    def _current_depth(self, msg: Image, depth_msg: Image | None) -> RegisteredDepth | None:
+        """Return the checked depth of the current image, or None. A service job counts nothing here."""
+        cfg = self.config
+        if depth_msg is None or abs(stamp_ns(msg.header) - stamp_ns(depth_msg.header)) > round(cfg.max_pair_gap_s * 1e9):
+            return None
+        with self._camera_info_lock:
+            info = self._camera_info
+            depth_info = info if cfg.depth_camera_info_topic == cfg.camera_info_topic else self._depth_camera_info
+        try:
+            return read_registered_depth(depth_msg, depth_info, msg, info)
+        except DepthRefused:
+            return None
 
     def _read_depth(self, msg: Image, info: CameraInfo, depth_msg: Image | None) -> RegisteredDepth | None:
         """Return the checked depth of an image, or None after counting why there is none.
@@ -1078,8 +1234,9 @@ def main(args: list[str] | None = None) -> int:
             _log_startup_failure(logger, e)
             code = EXIT_STARTUP
         else:
-            # Two threads, so the image callback runs while the GetPersonCrop
-            # callback waits for the worker (ADR-0011).
+            # Enough threads that the image callback runs while a GetPersonCrop
+            # callback and a service job's callback wait for the worker, and a
+            # second request can still get BUSY (ADR-0015).
             executor = MultiThreadedExecutor(num_threads=EXECUTOR_THREADS)
             executor.add_node(node)
             while rclpy.ok() and node.fatal is None:
@@ -1103,7 +1260,7 @@ def main(args: list[str] | None = None) -> int:
         os._exit(code)
     if executor is not None:
         # Joins the executor's threads. close() has answered a waiting
-        # GetPersonCrop request, so none of them waits for long.
+        # request, so none of them waits for long.
         executor.shutdown()
     rclpy.try_shutdown()
     return code

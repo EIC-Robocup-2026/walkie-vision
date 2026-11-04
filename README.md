@@ -9,8 +9,8 @@ walkie-database keeps the memory. [Pixi](https://pixi.sh) installs all of
 it, ROS 2 Jazzy, PyTorch and ONNX Runtime included.
 
 The vision node (`pixi run vision`) publishes objects and people, and
-serves one person's crop on request (`GetPersonCrop`). The `EmbedText`
-service is not built yet.
+serves one person's crop on request (`GetPersonCrop`). With
+`object_embeddings_enabled`, it also serves `EmbedText` and `EmbedCrop`.
 
 **Documentation:** <https://eic-robocup-2026.github.io/walkie-vision/>
 
@@ -88,6 +88,7 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `src/walkie_vision/reid/`           | OSNet re-identification (vendored deep-person-reid code, MIT)    |
 | `src/walkie_vision/reid/identifier.py` | OSNet on person crops, batched                                |
 | `src/walkie_vision/embeddings.py`   | The object sampler, padded crops, colour shares and the interim CLIP provider |
+| `src/walkie_vision/requests.py`     | Bounded service work: the job, its one slot, the current image and the request checks |
 | `src/walkie_vision/models.py`       | Every model file and Hugging Face commit, with checksums. `fetch-models` runs it. |
 | `config/`                           | The vision node's parameters, and one file per task with its classes |
 | `launch/`                           | The launch file that runs the vision node and restarts it        |

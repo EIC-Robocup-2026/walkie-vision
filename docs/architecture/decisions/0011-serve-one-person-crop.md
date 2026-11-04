@@ -1,7 +1,7 @@
 # ADR-0011: Serve one person crop on request
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-27
+**Status:** Accepted, partly superseded by [ADR-0015](/architecture/decisions/0015-bounded-service-scheduling.md) · **Date:** 2026-10-27
 
 **Context**
 

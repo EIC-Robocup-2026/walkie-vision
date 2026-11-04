@@ -31,8 +31,8 @@ The package `walkie_vision_msgs` has four messages and five services:
 | `EmbedText` (service)  | Embeds texts with the object embedder, so that a text can be searched against stored object vectors |
 | `GetPersonCrop` (service) | One tracked person's crop from the next image, with other people greyed and the colour shares of the person's top and bottom ([Person crops](../architecture/vision.md#person-crops)) |
 | `DetectObjects` (service) | Named objects in the newest image, for the caller only. Defined, not served yet. |
-| `EmbedCrop` (service)  | One box's crop and embedding from the newest image. Defined, not served yet. |
-| `DescribeCrop` (service) | Reserved for captions. Defined, not served yet. |
+| `EmbedCrop` (service)  | One box's crop and embedding from the newest image ([Bounded services](../architecture/vision.md#bounded-services)) |
+| `DescribeCrop` (service) | Reserved for captions. Always answers `DISABLED` in this build. |
 
 Every field is commented in its `.msg` file. The rules behind them:
 
@@ -199,6 +199,8 @@ checks them on the way:
 | `new_stream_id`, `check_object_detection_array` | The publisher's id for one process, and the rules of a whole array ([ADR-0013](../architecture/decisions/0013-memory-observation-contract.md)). |
 | `to_person_detection`, `to_person_detection_array` | One `PersonDetection` per pose result, with an optional face and appearance embedding. |
 | `fill_embed_text_response`                    | Answers an `EmbedText` request. An embedder error gives `success = False` and the error in `message`, so the service never crashes. |
+| `embed_text_failure`, `embed_crop_failure`    | A failure response with a code and a bounded message. `EmbedText` has no code field, so the code starts its `message`. |
+| `fill_embed_crop_response`                    | A successful `EmbedCrop` response from the image's own header, with the same checks as a published object's crop and vector. |
 | `pose_from_person_detection`, `fill_person_crop_response` | A published person back to a pose result, and a `GetPersonCrop` response from `walkie_vision.crop`'s result, with the crop and the shares only for OK. |
 | `vectors_from_response`                       | The client side: the response's vectors as an `(n, dim)` array.      |
 | `box_to_bbox`, `bbox_to_box`, `unit_vector`   | The conversions they share. `box_to_bbox` refuses a box that is not finite or is inverted, and `unit_vector` a vector that is empty, not finite or zero. |

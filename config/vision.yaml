@@ -17,6 +17,11 @@ walkie_vision:
     # GetPersonCrop: one person's crop and colour shares from the next image,
     # by the track id in people_topic (ADR-0011).
     person_crop_service: /walkie_vision/get_person_crop
+    # They answer DISABLED until object_embeddings_enabled is on (ADR-0015).
+    embed_text_service: /walkie_vision/embed_text
+    embed_crop_service: /walkie_vision/embed_crop
+    # Always answers DISABLED in this build.
+    describe_crop_service: /walkie_vision/describe_crop
 
     # The device of the PyTorch models: cpu, cuda or cuda:N. ONNX Runtime's
     # face models always use GPU 0.
@@ -110,3 +115,5 @@ walkie_vision:
     # `pixi run fetch-models` puts in the Hugging Face cache; the node never
     # downloads them.
     object_embeddings_enabled: false
+    # This build has no caption model, so the node refuses true at startup.
+    captions_enabled: false

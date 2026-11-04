@@ -17,8 +17,9 @@ keeps the memory.
 !!! note "What runs today"
     The vision node runs: it publishes objects and people from the head
     camera, and serves one person's crop on request
-    ([Run the vision node](guides/vision-node.md)). The text search service
-    (`EmbedText`) and the object embeddings are not built yet.
+    ([Run the vision node](guides/vision-node.md)). Object embeddings and the
+    text search service (`EmbedText`) are built and off by default. They have
+    not run with a real model yet.
 
 This site is also a learning guide. It shows how the project was set up, step
 by step, so new members can learn how it works and change it safely.
