@@ -1,0 +1,12 @@
+string[] classes                   # 1..32 unique nouns, each 1..80 characters.
+# Reject images older than this in ROS time; finite (0,1], default 0.3 s.
+float32 max_image_age_s 0.3
+# Wall-clock deadline including admission, re-prompting and inference; (0,5].
+float32 timeout_s 4.0
+---
+bool success                       # True includes a successful zero-detection array.
+# Empty on success. INVALID, NO_IMAGE, STALE_IMAGE, BUSY, TIMEOUT,
+# DISABLED, MODEL_UNAVAILABLE or INFERENCE_FAILED otherwise.
+string error_code
+string message
+ObjectDetectionArray objects       # Empty default on failure; image header on success.

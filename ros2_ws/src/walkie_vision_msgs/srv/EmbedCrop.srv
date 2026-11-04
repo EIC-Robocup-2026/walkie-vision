@@ -1,0 +1,17 @@
+# Pixel box projected by database from a proposal into this specific image.
+std_msgs/Header header
+uint32 image_width                 # Must equal the current RGB width.
+uint32 image_height                # Must equal the current RGB height.
+vision_msgs/BoundingBox2D bbox      # Unpadded, theta=0, positive area.
+float32 timeout_s 1.0              # Wall deadline, finite (0,5].
+---
+bool success
+# INVALID, NO_IMAGE, STALE_IMAGE, BUSY, TIMEOUT, DISABLED, MODEL_UNAVAILABLE,
+# INFERENCE_FAILED; empty on success.
+string error_code
+string message
+std_msgs/Header header             # Actual source image, never request time copied blindly.
+sensor_msgs/CompressedImage crop   # Same padding/JPEG convention as ObjectDetection.
+string embedding_model
+float32[] embedding                # One finite unit vector.
+float32 view_quality               # Same scoring; depth term zero when unavailable.

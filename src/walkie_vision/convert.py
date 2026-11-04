@@ -8,6 +8,9 @@ node cannot publish a message that breaks them:
 - An embedding is never sent without the name of the model that made it.
 - Every detection's label is one of the array's classes, because a class
   without a detection tells walkie-database that the object was not seen.
+- An object array has a stream id, and its cloud, crop and camera_info stamps
+  equal the array's stamp. check_object_detection_array() holds these rules
+  (ADR-0013).
 
 Unbounded float32[] fields are filled with array.array("f"): rosidl's Python
 setters accept that type or a list, not a numpy array.
@@ -16,10 +19,12 @@ setters accept that type or a list, not a numpy array.
 from __future__ import annotations
 
 import array
+import math
+import uuid
 from collections.abc import Iterable, Sequence
 
 import numpy as np
-from sensor_msgs.msg import CameraInfo, CompressedImage, PointCloud2
+from sensor_msgs.msg import CameraInfo, CompressedImage, PointCloud2, PointField
 from std_msgs.msg import Header
 from vision_msgs.msg import BoundingBox2D
 from walkie_vision_msgs.msg import (
@@ -31,7 +36,24 @@ from walkie_vision_msgs.msg import (
 from walkie_vision_msgs.srv import EmbedText, GetPersonCrop
 
 from .crop import COLOR_NAMES, CropStatus, PersonCrop
-from .providers import Detection, Embedder, Face, PersonPose
+from .providers import CLIP_VIT_B16, Detection, Embedder, Face, PersonPose
+
+MAX_CLOUD_POINTS = 2000
+"""The most points that one object's cloud may hold."""
+MIN_CLOUD_POINTS = 30
+"""An object with fewer valid points than this gets an empty cloud."""
+POINT_STEP = 12
+"""The bytes of one point: x, y and z as float32."""
+JPEG_FORMAT = "jpeg"
+"""The value of CompressedImage.format for every object crop."""
+EMBEDDING_DIMS = {CLIP_VIT_B16: 512}
+"""The vector length of each real object embedder. Other names, such as a fake's, are not checked."""
+
+_CLOUD_FIELDS = (("x", 0), ("y", 4), ("z", 8))
+_JPEG_START = b"\xff\xd8"
+# Leaves room for float32 rounding, and no more.
+_SHARES_SUM_TOLERANCE = 1e-4
+_UNIT_NORM_TOLERANCE = 1e-3
 
 
 def box_to_bbox(box: Sequence[float] | np.ndarray) -> BoundingBox2D:
@@ -94,24 +116,118 @@ def _track_id(track_id: int) -> int:
     return int(track_id)
 
 
+def new_stream_id() -> str:
+    """Return the id of one publisher process. Call it once, when the process starts."""
+    return str(uuid.uuid4())
+
+
+def empty_cloud(header: Header) -> PointCloud2:
+    """Return the cloud of an object with no points: the contract's layout and header, and no data."""
+    return _cloud(header, array.array("B"), 0)
+
+
+def to_point_cloud(header: Header, points: Sequence[Sequence[float]] | np.ndarray) -> PointCloud2:
+    """Build an object's cloud from an N x 3 array of x, y, z in metres, in the optical frame.
+
+    Fewer than MIN_CLOUD_POINTS points give an empty cloud. More than
+    MAX_CLOUD_POINTS are cut down to that many, at evenly spaced indices in
+    their input order, so the same input gives the same cloud. Raises
+    ValueError for another shape, a value that is not finite, or a point
+    that is not in front of the camera.
+    """
+    xyz = np.asarray(points, dtype=np.float64)
+    if xyz.size == 0:
+        return empty_cloud(header)
+    if xyz.ndim != 2 or xyz.shape[1] != 3:
+        raise ValueError(f"points must have shape (N, 3), not {xyz.shape}")
+    if not np.all(np.isfinite(xyz)):
+        raise ValueError("points has a value that is not finite")
+    if np.any(xyz[:, 2] <= 0):
+        raise ValueError("points has a point that is not in front of the camera")
+    count = len(xyz)
+    if count < MIN_CLOUD_POINTS:
+        return empty_cloud(header)
+    if count > MAX_CLOUD_POINTS:
+        xyz = xyz[np.arange(MAX_CLOUD_POINTS) * count // MAX_CLOUD_POINTS]
+    data = array.array("B")
+    data.frombytes(xyz.astype("<f4").tobytes())
+    return _cloud(header, data, len(xyz))
+
+
+def _cloud(header: Header, data: array.array, width: int) -> PointCloud2:
+    return PointCloud2(
+        header=header,
+        height=1,
+        width=width,
+        fields=[PointField(name=n, offset=o, datatype=PointField.FLOAT32, count=1) for n, o in _CLOUD_FIELDS],
+        is_bigendian=False,
+        point_step=POINT_STEP,
+        row_step=POINT_STEP * width,
+        data=data,
+        is_dense=True,
+    )
+
+
+def _unit_interval(value: float, name: str) -> float:
+    value = float(value)
+    if not 0.0 <= value <= 1.0:  # also false for NaN
+        raise ValueError(f"{name} must be finite and in [0, 1], not {value}")
+    return value
+
+
+def _color_shares(shares: Sequence[float] | np.ndarray | None) -> array.array:
+    """Return shares for a message, checked. None or an empty sequence means not sampled."""
+    if shares is None:
+        return array.array("f")
+    values = np.asarray(shares, dtype=np.float64)
+    if values.size == 0:
+        return array.array("f")
+    problem = _color_shares_problem(values)
+    if problem is not None:
+        raise ValueError(problem)
+    return _float32_array(values)
+
+
+def _color_shares_problem(values: np.ndarray) -> str | None:
+    if values.shape != (len(COLOR_NAMES),):
+        return f"color_shares must be empty or hold {len(COLOR_NAMES)} shares, not shape {values.shape}"
+    if not np.all(np.isfinite(values)) or np.any(values < 0):
+        return "color_shares must be finite and not negative"
+    if abs(float(values.sum()) - 1.0) > _SHARES_SUM_TOLERANCE:
+        return f"color_shares must sum to 1, not {float(values.sum())}"
+    return None
+
+
 def to_object_detection(
     detection: Detection,
     embedding: np.ndarray | None = None,
     embedding_model: str = "",
     points: PointCloud2 | None = None,
     crop: CompressedImage | None = None,
+    view_quality: float = 0.0,
+    color_shares: Sequence[float] | np.ndarray | None = None,
 ) -> ObjectDetection:
-    """Build an ObjectDetection from a detector result and its optional parts."""
+    """Build an ObjectDetection from a detector result and its optional parts.
+
+    Raises ValueError for a score or a view quality outside [0, 1], colour
+    shares that break the message's rule, or a real model's vector of the
+    wrong length. to_object_detection_array() checks the rest.
+    """
     msg = ObjectDetection()
     msg.label = detection.label
-    msg.score = float(detection.score)
+    msg.score = _unit_interval(detection.score, "score")
     msg.track_id = _track_id(detection.track_id)
     msg.bbox = box_to_bbox(detection.box)
     msg.embedding_model, msg.embedding = _embedding(embedding, embedding_model, "embedding")
+    expected = EMBEDDING_DIMS.get(msg.embedding_model)
+    if expected is not None and len(msg.embedding) != expected:
+        raise ValueError(f"embedding: {msg.embedding_model} has {expected} values, not {len(msg.embedding)}")
     if points is not None:
         msg.points = points
     if crop is not None:
         msg.crop = crop
+    msg.view_quality = _unit_interval(view_quality, "view_quality")
+    msg.color_shares = _color_shares(color_shares)
     return msg
 
 
@@ -120,17 +236,136 @@ def to_object_detection_array(
     camera_info: CameraInfo,
     classes: Sequence[str],
     detections: Iterable[ObjectDetection],
+    *,
+    stream_id: str,
 ) -> ObjectDetectionArray:
-    """Build the array for one image. Publish it also when detections is empty."""
+    """Build the array for one image. Publish it also when detections is empty.
+
+    A detection whose cloud was never set gets the empty cloud with this
+    header, and an empty crop gets this header, so that every stamp in the
+    array agrees. Raises ValueError for an array that
+    check_object_detection_array() refuses.
+    """
     msg = ObjectDetectionArray()
     msg.header = header
     msg.camera_info = camera_info
     msg.classes = list(classes)
     msg.detections = list(detections)
-    unknown = sorted({d.label for d in msg.detections} - set(msg.classes))
-    if unknown:
-        raise ValueError(f"detections with labels that are not in classes: {unknown}")
+    msg.stream_id = stream_id
+    for detection in msg.detections:
+        if detection.points == PointCloud2():
+            detection.points = empty_cloud(header)
+        if len(detection.crop.data) == 0:
+            detection.crop.header = header
+    check_object_detection_array(msg)
     return msg
+
+
+def check_object_detection_array(msg: ObjectDetectionArray) -> None:
+    """Raise ValueError unless an array follows the rules in the message files.
+
+    It reads a crop's first bytes but does not decode it, so it cannot check
+    the crop's size.
+    """
+    problem = _array_problem(msg) or next(
+        (f"detection {i}: {p}" for i, d in enumerate(msg.detections) if (p := _detection_problem(d, msg))), None
+    )
+    if problem is not None:
+        raise ValueError(problem)
+
+
+def _array_problem(msg: ObjectDetectionArray) -> str | None:
+    if not _is_stream_id(msg.stream_id):
+        return f"stream_id must be a UUID, not {msg.stream_id!r}"
+    if msg.camera_info.header != msg.header:
+        return "camera_info.header differs from the array's header"
+    classes = list(msg.classes)
+    if not classes or not all(classes) or len(set(classes)) != len(classes):
+        return f"classes must be unique non-empty names, and at least one, not {classes}"
+    return None
+
+
+def _is_stream_id(stream_id: str) -> bool:
+    try:
+        return str(uuid.UUID(stream_id)) == stream_id
+    except ValueError:
+        return False
+
+
+def _detection_problem(det: ObjectDetection, array_msg: ObjectDetectionArray) -> str | None:
+    if det.label not in array_msg.classes:
+        return f"the label {det.label!r} is not in classes: {list(array_msg.classes)}"
+    if not 0.0 <= det.score <= 1.0:
+        return f"score must be finite and in [0, 1], not {det.score}"
+    if not 0.0 <= det.view_quality <= 1.0:
+        return f"view_quality must be finite and in [0, 1], not {det.view_quality}"
+    return (
+        _bbox_problem(det.bbox)
+        or _embedding_problem(det)
+        or _cloud_problem(det.points, array_msg.header)
+        or _crop_problem(det.crop, array_msg.header)
+        or (_color_shares_problem(np.asarray(det.color_shares, dtype=np.float64)) if len(det.color_shares) else None)
+    )
+
+
+def _bbox_problem(bbox: BoundingBox2D) -> str | None:
+    values = (bbox.center.position.x, bbox.center.position.y, bbox.size_x, bbox.size_y)
+    if not all(math.isfinite(v) for v in values) or bbox.size_x < 0 or bbox.size_y < 0:
+        return f"bbox must be finite with a size that is not negative, not {values}"
+    if bbox.center.theta != 0.0:
+        return f"bbox.center.theta must be 0, not {bbox.center.theta}"
+    return None
+
+
+def _embedding_problem(det: ObjectDetection) -> str | None:
+    vector = np.asarray(det.embedding, dtype=np.float64)
+    if bool(det.embedding_model) != (vector.size > 0):
+        return "embedding and embedding_model must be both set or both empty"
+    if vector.size == 0:
+        return None
+    expected = EMBEDDING_DIMS.get(det.embedding_model)
+    if expected is not None and vector.size != expected:
+        return f"embedding: {det.embedding_model} has {expected} values, not {vector.size}"
+    if not np.all(np.isfinite(vector)):
+        return "embedding has a value that is not finite"
+    if abs(float(np.linalg.norm(vector)) - 1.0) > _UNIT_NORM_TOLERANCE:
+        return f"embedding must have unit length, not {float(np.linalg.norm(vector))}"
+    return None
+
+
+def _cloud_problem(cloud: PointCloud2, header: Header) -> str | None:
+    if cloud.header != header:
+        return "points.header differs from the array's header"
+    fields = [(f.name, f.offset, f.datatype, f.count) for f in cloud.fields]
+    if fields != [(n, o, PointField.FLOAT32, 1) for n, o in _CLOUD_FIELDS]:
+        return f"points must have float32 fields x, y, z at offsets 0, 4, 8, not {fields}"
+    if cloud.is_bigendian or not cloud.is_dense:
+        return "points must be little-endian and dense"
+    if cloud.height != 1 or cloud.point_step != POINT_STEP or cloud.row_step != POINT_STEP * cloud.width:
+        return (
+            f"points must have height 1, point_step {POINT_STEP} and row_step {POINT_STEP} * width, "
+            f"not {cloud.height}, {cloud.point_step} and {cloud.row_step}"
+        )
+    if len(cloud.data) != cloud.row_step:
+        return f"points has {len(cloud.data)} bytes for {cloud.width} points"
+    if cloud.width == 0:
+        return None
+    if not MIN_CLOUD_POINTS <= cloud.width <= MAX_CLOUD_POINTS:
+        return f"points must be empty or hold {MIN_CLOUD_POINTS} to {MAX_CLOUD_POINTS} points, not {cloud.width}"
+    xyz = np.frombuffer(bytes(cloud.data), dtype="<f4").reshape(-1, 3)
+    if not np.all(np.isfinite(xyz)) or np.any(xyz[:, 2] <= 0):
+        return "points has a point that is not finite or not in front of the camera"
+    return None
+
+
+def _crop_problem(crop: CompressedImage, header: Header) -> str | None:
+    if len(crop.data) == 0:
+        return None
+    if crop.header != header:
+        return "crop.header differs from the array's header"
+    if crop.format != JPEG_FORMAT or bytes(crop.data[:2]) != _JPEG_START:
+        return f"crop must be a JPEG with format {JPEG_FORMAT!r}, not format {crop.format!r}"
+    return None
 
 
 def to_person_detection(

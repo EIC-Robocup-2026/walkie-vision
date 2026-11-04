@@ -6,9 +6,9 @@ results into the two arrays that the vision node publishes for that image,
 with the image's header and a copy of its camera_info. It has no ROS node
 and imports no model library, so the tests run it with the fakes.
 
-A single bad value from a model (a box or a vector that is not finite)
-leaves out that field or that detection, and is counted in
-FrameResult.dropped. A provider that raises, or that returns the wrong
+A single bad value from a model (a box or a vector that is not finite, or an
+object score outside [0, 1]) leaves out that field or that detection, and is
+counted in FrameResult.dropped. A provider that raises, or that returns the wrong
 number or shape of results, makes process() raise: the caller then
 publishes neither array for that image.
 
@@ -188,6 +188,7 @@ class VisionPipeline:
         people_min_score: float = 0.0,
         objects_min_score: float = 0.0,
         people_dedupe_iou: float = 1.0,
+        stream_id: str | None = None,
     ) -> None:
         self._classes = _check_classes(classes)
         for name, value in (("people_min_score", people_min_score), ("objects_min_score", objects_min_score)):
@@ -203,6 +204,7 @@ class VisionPipeline:
         self._people_min_score = float(people_min_score)
         self._objects_min_score = float(objects_min_score)
         self._people_dedupe_iou = float(people_dedupe_iou)
+        self._stream_id = convert.new_stream_id() if stream_id is None else stream_id
         if list(providers.objects.classes) != self._classes:
             providers.objects.set_classes(list(self._classes))
 
@@ -210,6 +212,11 @@ class VisionPipeline:
     def classes(self) -> list[str]:
         """The detector's text prompts, as configured."""
         return list(self._classes)
+
+    @property
+    def stream_id(self) -> str:
+        """The id on every object array of this pipeline. A new process gets a new one."""
+        return self._stream_id
 
     def process(self, image: np.ndarray, header: Header, camera_info: CameraInfo) -> FrameResult:
         """Run every model on one BGR image and return its two arrays.
@@ -225,7 +232,7 @@ class VisionPipeline:
         t = time.perf_counter()
         detections: list[Detection] = []
         for det in p.objects.detect(image):
-            if not _box_ok(det.box) or not _finite(det.score):
+            if not _box_ok(det.box) or not 0.0 <= float(det.score) <= 1.0:
                 dropped["object"] += 1
             elif det.score >= self._objects_min_score:
                 detections.append(det)
@@ -278,7 +285,9 @@ class VisionPipeline:
             for det in detections
         ]
         people_array = convert.to_person_detection_array(header, info, people)
-        objects_array = convert.to_object_detection_array(header, info, self._classes, objects)
+        objects_array = convert.to_object_detection_array(
+            header, info, self._classes, objects, stream_id=self._stream_id
+        )
         times.build = _ms_since(t)
         return FrameResult(
             people=people_array,

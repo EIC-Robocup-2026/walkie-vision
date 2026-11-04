@@ -1,28 +1,25 @@
-# One object that the open-vocabulary detector found in one camera image.
-# The ObjectDetectionArray that holds it has the image's header and
-# camera_info. Boxes are in pixels of the image that camera_info describes.
-
-# The class name the detector matched: one of ObjectDetectionArray.classes.
-string label
-# The detector's confidence, from 0 to 1.
-float32 score
-# The tracker's id for this object. It stays the same from image to image
-# while the track lasts. 0 means that the object is not tracked.
-uint32 track_id
-# The box around the object. center.theta is always 0.
-vision_msgs/BoundingBox2D bbox
-
-# The embedding of the image inside bbox. embedding_model names the weights
-# that made it: it is the <model> part of walkie-database's vector table
-# name, for example clip_vit_b16 for object_clip_vit_b16. The vector length
-# is the length of embedding, and the vector has unit length. Both fields
-# are empty when no embedding was computed.
+# One observation. Pixel coordinates use the containing array's camera_info.
+# No map pose, persistent object ID, segmentation mask or person record here.
+string label                       # One member of ObjectDetectionArray.classes.
+float32 score                      # Finite detector confidence in [0,1].
+uint32 track_id                    # Hint within stream_id; 0 means untracked.
+vision_msgs/BoundingBox2D bbox      # Original box in full-image pixels; theta=0.
+# Image and text vectors share the exact weights/preprocessing named here.
+# Both empty when not sampled; otherwise finite unit vector (CLIP: 512).
+# Crop uses 15% padding PER SIDE, clipped to image, before model preprocessing.
 string embedding_model
 float32[] embedding
-
-# The object's points, cut out of the depth image with the object's mask,
-# in the frame given in points.header. Empty when there was no depth image.
+# XYZ float32 little-endian metres, x right/y down/z forward, height=1.
+# Header equals array.header. Cap 2000 points. Empty data/width=0 if <30
+# valid points or depth unavailable. Never re-stamp or use a map frame.
 sensor_msgs/PointCloud2 points
-# The image inside bbox, compressed. Optional: data is empty when no crop
-# was sent.
+# JPEG quality 90; same header. The padded crop, not just bbox pixels.
+# Empty data when not sampled. Longest side <=512; never upscale.
 sensor_msgs/CompressedImage crop
+# Finite [0,1]; zero when disabled or unusable for best-view selection.
+float32 view_quality
+# Optional mask-only colour evidence, computed BEFORE JPEG/padding/resizing.
+# Empty when not sampled or <50 valid mask pixels; otherwise 12 shares
+# summing to 1: black,white,grey,red,orange,yellow,green,blue,purple,pink,brown,beige.
+# This freezes the colour seam while masks still exist; no mask is transmitted.
+float32[] color_shares

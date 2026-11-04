@@ -22,7 +22,7 @@ build, because `scripts/activate.sh` sources the overlay on activation.
 
 ## Layout
 
-- `ros2_ws/src/walkie_vision_msgs/`: the messages and the service only.
+- `ros2_ws/src/walkie_vision_msgs/`: the messages and the services only.
 - `src/walkie_vision/providers.py`: model interfaces and result types.
 - `src/walkie_vision/convert.py`: results to messages, with validation.
 - `src/walkie_vision/node.py`, `pipeline.py`, `image.py`: the vision node,

@@ -1,18 +1,9 @@
-# Embed texts with the model that embeds the object images, so that a text
-# can be searched against stored vectors: for example "a red mug" against
-# walkie-database's object_clip_vit_b16 table.
-
-# The texts to embed. At least one.
+# At least one text; runtime caps batch at 16 and each text at 512 characters.
 string[] texts
 ---
-# False when nothing was embedded; message then says why.
-bool success
-string message
-# The <model> part of walkie-database's vector table names that these
-# vectors belong to, for example clip_vit_b16.
-string embedding_model
-# The length of each vector.
-uint32 dim
-# One vector per text, in the order of texts, one after another: vector i is
-# vectors[i * dim : (i + 1) * dim]. Each vector has unit length.
+bool success                       # False leaves model/dim/vectors empty or zero.
+string message                     # Empty on success; bounded reason on failure.
+string embedding_model             # clip_vit_b16 initially.
+uint32 dim                         # 512 initially.
+# Row-major [len(texts),dim], finite unit rows, input order preserved.
 float32[] vectors

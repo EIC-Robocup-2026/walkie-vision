@@ -20,16 +20,19 @@ fills it land in one commit.
 
 ## Step 1: Design the messages
 
-The package `walkie_vision_msgs` has four messages and two services:
+The package `walkie_vision_msgs` has four messages and five services:
 
 | Type                   | What it is                                                                                     |
 | ---------------------- | ---------------------------------------------------------------------------------------------- |
-| `ObjectDetectionArray` | Every object found in one camera image: the image's `header` and `camera_info`, the `classes` the detector looked for, and the detections |
-| `ObjectDetection`      | One object: `label`, `score`, `track_id`, `bbox`, an image embedding with its model name, its 3D `points`, and an optional compressed `crop` |
+| `ObjectDetectionArray` | Every object found in one camera image: the image's `header` and `camera_info`, the `classes` the detector looked for, the detections, and the publisher's `stream_id` |
+| `ObjectDetection`      | One object: `label`, `score`, `track_id`, `bbox`, an image embedding with its model name, its 3D `points`, an optional compressed `crop`, its `view_quality` and its `color_shares` |
 | `PersonDetectionArray` | Every person found in one camera image, with the image's `header` and `camera_info`             |
 | `PersonDetection`      | One person: body `bbox` and 17 keypoints, the face box and face embedding, and an appearance embedding |
 | `EmbedText` (service)  | Embeds texts with the object embedder, so that a text can be searched against stored object vectors |
 | `GetPersonCrop` (service) | One tracked person's crop from the next image, with other people greyed and the colour shares of the person's top and bottom ([Person crops](../architecture/vision.md#person-crops)) |
+| `DetectObjects` (service) | Named objects in the newest image, for the caller only. Defined, not served yet. |
+| `EmbedCrop` (service)  | One box's crop and embedding from the newest image. Defined, not served yet. |
+| `DescribeCrop` (service) | Reserved for captions. Defined, not served yet. |
 
 Every field is commented in its `.msg` file. The rules behind them:
 
@@ -76,6 +79,9 @@ ros2_ws/
         │   ├── PersonDetection.msg
         │   └── PersonDetectionArray.msg
         └── srv/
+            ├── DescribeCrop.srv
+            ├── DetectObjects.srv
+            ├── EmbedCrop.srv
             ├── EmbedText.srv
             └── GetPersonCrop.srv
 ```
@@ -105,6 +111,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ObjectDetectionArray.msg"
   "msg/PersonDetection.msg"
   "msg/PersonDetectionArray.msg"
+  "srv/DescribeCrop.srv"
+  "srv/DetectObjects.srv"
+  "srv/EmbedCrop.srv"
   "srv/EmbedText.srv"
   "srv/GetPersonCrop.srv"
   DEPENDENCIES std_msgs sensor_msgs vision_msgs
@@ -185,7 +194,9 @@ checks them on the way:
 
 | Function                                      | What it does                                                         |
 | --------------------------------------------- | -------------------------------------------------------------------- |
-| `to_object_detection`, `to_object_detection_array` | One `ObjectDetection` per detector result. Refuses a label that is not in `classes`. |
+| `to_object_detection`, `to_object_detection_array` | One `ObjectDetection` per detector result. Refuses a label that is not in `classes`, and anything else that `check_object_detection_array` refuses. |
+| `to_point_cloud`, `empty_cloud`               | An object's cloud in the contract's layout. Fewer than 30 points give an empty cloud, and more than 2000 are cut down at evenly spaced indices. |
+| `new_stream_id`, `check_object_detection_array` | The publisher's id for one process, and the rules of a whole array ([ADR-0013](../architecture/decisions/0013-memory-observation-contract.md)). |
 | `to_person_detection`, `to_person_detection_array` | One `PersonDetection` per pose result, with an optional face and appearance embedding. |
 | `fill_embed_text_response`                    | Answers an `EmbedText` request. An embedder error gives `success = False` and the error in `message`, so the service never crashes. |
 | `pose_from_person_detection`, `fill_person_crop_response` | A published person back to a pose result, and a `GetPersonCrop` response from `walkie_vision.crop`'s result, with the crop and the shares only for OK. |

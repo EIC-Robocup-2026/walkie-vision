@@ -372,6 +372,30 @@ def test_a_detection_with_a_bad_box_or_score_is_left_out():
     assert len(result.people.people) == 2
 
 
+@pytest.mark.parametrize("score", [1.5, -0.1, float("inf")])
+def test_a_detection_with_a_score_outside_the_range_is_left_out(score):
+    detector = _Detector([_detection(score=score, track_id=1), _detection(track_id=2)])
+    result = _pipeline(_providers(objects=detector)).process(IMAGE, _header(), _info())
+    assert [d.track_id for d in result.objects.detections] == [2]
+    assert result.dropped == {"object": 1}
+
+
+def test_a_pipeline_keeps_one_stream_id_and_a_new_pipeline_gets_another():
+    pipeline = _pipeline()
+    first = pipeline.process(IMAGE, _header(), _info()).objects
+    second = pipeline.process(IMAGE, _header(nanosec=346), _info()).objects
+    assert first.stream_id == second.stream_id == pipeline.stream_id
+    assert first.stream_id
+    assert _pipeline().stream_id != pipeline.stream_id
+
+
+def test_an_object_array_has_empty_parts_with_the_image_header():
+    (det,) = _pipeline().process(IMAGE, _header(), _info()).objects.detections
+    assert det.points.header == _header() and det.points.width == 0 and len(det.points.fields) == 3
+    assert det.crop.header == _header() and len(det.crop.data) == 0
+    assert det.view_quality == 0.0 and len(det.color_shares) == 0
+
+
 class _Raises:
     model_name = "fake_raises"
     dim = 512

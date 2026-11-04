@@ -1,14 +1,10 @@
-# Every object that the detector found in one camera image.
-#
-# One array is published for every image the detector processes, also when
-# it found nothing. An array without a detection of a class in classes tells
-# walkie-database that no such object was visible in this image.
-
-# The stamp and the camera frame of the image.
-std_msgs/Header header
-# The calibration of the image that the boxes are in.
-sensor_msgs/CameraInfo camera_info
-# The class names that the detector looked for in this image: its text
-# prompts. A class in this list without a detection was not seen.
-string[] classes
+# One complete successful detector result, including a successful empty frame.
+# No publication for an inference failure. classes is the searched vocabulary.
+std_msgs/Header header             # Colour image capture time and optical frame.
+sensor_msgs/CameraInfo camera_info # Rectified calibration for bbox/points pixels.
+string[] classes                   # Ordered unique nonempty class names.
 ObjectDetection[] detections
+# UUID generated once at publisher-process startup, including fake publisher.
+# Identity key for a track is (source topic, stream_id, kind, track_id).
+# Not a frame handle and cannot retrieve an old image. Empty is invalid.
+string stream_id

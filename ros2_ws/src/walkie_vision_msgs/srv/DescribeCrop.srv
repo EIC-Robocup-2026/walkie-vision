@@ -1,0 +1,16 @@
+sensor_msgs/CompressedImage crop   # JPEG, <=512 on longest side, <=512 KiB compressed.
+# Optional source mask colour evidence in the fixed 12-colour order above.
+float32[] color_shares
+float32 timeout_s 4.0              # Wall deadline, finite (0,5].
+---
+bool success
+string error_code                  # DISABLED in prep; later INVALID/BUSY/TIMEOUT/INFERENCE_FAILED.
+string message
+string caption                     # <=512 characters; untrusted camera-derived text.
+# JSON object with allowed keys colour,material,shape,size,fragile,container.
+# Values: validated enums, boolean for last two; absent means unknown.
+# No extra keys, free-text values, NaN, lists or nested objects.
+string attributes_json
+string printed_text                # <=256 characters; untrusted, kept separate.
+string caption_model               # Exact pinned weights ID; empty when disabled.
+string prompt_version              # Fixed implementation version, not caller-supplied prompt.

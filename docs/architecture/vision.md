@@ -7,8 +7,12 @@ it publishes, and why it is built this way.
     The vision node publishes objects and people from the head camera
     ([The vision node](#the-vision-node), [Contract](#contract)), and
     serves one person's crop on request ([Person crops](#person-crops)).
-    The `EmbedText` service, object embeddings, points, object crops, room
-    vectors and `DetectObjects` are not built yet.
+    The types for object memory are frozen
+    ([ADR-0013](decisions/0013-memory-observation-contract.md)), but the
+    node does not fill them yet: object embeddings, points, object crops,
+    view quality and colour shares stay empty. The `EmbedText`,
+    `DetectObjects`, `EmbedCrop` and `DescribeCrop` services and room vectors
+    are not built yet.
 
 ## Summary
 
@@ -388,6 +392,10 @@ walkie-database can cite each item by its link.
   keeps the published people's ids (`c11`, with the dedupe).
 - An object's label can change between images under the same id, for
   example from `chair` to `armchair`.
+- Every object array has a `stream_id`, a UUID that the publisher makes once
+  at startup. An object track's identity is the source topic, `stream_id`,
+  the kind and `track_id` ([ADR-0013](decisions/0013-memory-observation-contract.md)).
+  People arrays have no `stream_id`.
 - Ids are `((offset + local - 1) mod (2^32 - 1)) + 1`, where `offset` is
   the Unix time in ms at node start, mod (2^32 - 1). So a restart never
   reuses an id, unless the system clock steps back further than the time
@@ -658,7 +666,9 @@ Published and served:
 | `/walkie_vision/get_person_crop` | `walkie_vision_msgs/srv/GetPersonCrop` | One tracked person's crop and colour shares from the next image ([Person crops](#person-crops)) |
 | `/walkie_vision/sim/get_person_crop` | `walkie_vision_msgs/srv/GetPersonCrop` | The same service with `sim:=true`, for this node's own track ids |
 | `/walkie_vision/embed_text` | `walkie_vision_msgs/srv/EmbedText`        | Not built. Text embeddings in the object embedder's space, for search |
-| `/walkie_vision/detect_objects` | `walkie_vision_msgs/srv/DetectObjects` | Proposed, not built ([ADR-0009](decisions/0009-on-demand-detect-objects.md)). Named objects in the newest image, on request |
+| `/walkie_vision/detect_objects` | `walkie_vision_msgs/srv/DetectObjects` | Type defined, not served ([ADR-0009](decisions/0009-on-demand-detect-objects.md)). Named objects in the newest image, on request |
+| `/walkie_vision/embed_crop` | `walkie_vision_msgs/srv/EmbedCrop`        | Type defined, not served. One box's crop and embedding from the newest image |
+| `/walkie_vision/describe_crop` | `walkie_vision_msgs/srv/DescribeCrop`  | Type defined, not served. Reserved for captions, which are off |
 
 Subscribed, from walkie-ros's ZED driver. Both topics are parameters:
 
@@ -685,8 +695,9 @@ explains the rules behind them.
 | ------------- | ------------------------ | ------------------------------------------------------------------ |
 | `header`      | `std_msgs/Header`        | The stamp and camera frame of the image                            |
 | `camera_info` | `sensor_msgs/CameraInfo` | The calibration of the image the boxes are in                      |
-| `classes`     | `string[]`               | The text prompts the detector looked for. A class without a detection was not seen. |
+| `classes`     | `string[]`               | The text prompts the detector looked for, ordered and unique. A class without a detection was not seen. |
 | `detections`  | `ObjectDetection[]`      | The objects                                                        |
+| `stream_id`   | `string`                 | A UUID made once when the publisher process starts. Empty is invalid. Not a handle on a frame. |
 
 ### ObjectDetection
 
@@ -697,9 +708,18 @@ explains the rules behind them.
 | `track_id`        | `uint32`                      | The tracker's id, stable while the track lasts. 0 means not tracked.    |
 | `bbox`            | `vision_msgs/BoundingBox2D`   | The box, in float pixels. `center.theta` is 0.                          |
 | `embedding_model` | `string`                      | The `<model>` part of walkie-database's table name, for example `clip_vit_b16` |
-| `embedding`       | `float32[]`                   | The unit-length embedding of the image inside `bbox`. Empty, with an empty model name, when none was computed. |
-| `points`          | `sensor_msgs/PointCloud2`     | The object's points, cut out of the depth image with its mask, in `points.header.frame_id`. Empty without depth. |
-| `crop`            | `sensor_msgs/CompressedImage` | The image inside `bbox`. Optional.                                      |
+| `embedding`       | `float32[]`                   | The unit-length embedding of the padded crop (CLIP: 512 values). Empty, with an empty model name, when not sampled. |
+| `points`          | `sensor_msgs/PointCloud2`     | The object's points, x right, y down and z forward in metres, in the optical frame. At most 2000. `width` 0 under 30 valid points or without depth. Never in a map frame. |
+| `crop`            | `sensor_msgs/CompressedImage` | A JPEG at quality 90 of the box with 15% padding per side, clipped to the image, at most 512 px on its longest side. Empty data when not sampled. |
+| `view_quality`    | `float32`                     | How good this view is for choosing a best view, finite, 0 to 1. 0 when disabled or unusable. |
+| `color_shares`    | `float32[]`                   | Empty, or 12 shares of the object's mask pixels that sum to 1: black, white, grey, red, orange, yellow, green, blue, purple, pink, brown, beige. |
+
+The array, its `camera_info`, each cloud and each sampled crop have the same
+header. An empty cloud still has its three fields and that header. Its fields
+are x, y and z at offsets 0, 4 and 8, FLOAT32, count 1, with `point_step` 12,
+`row_step` 12 times `width`, little-endian and dense.
+`convert.check_object_detection_array` holds these rules
+([ADR-0013](decisions/0013-memory-observation-contract.md)).
 
 ### PersonDetectionArray and PersonDetection
 
@@ -734,6 +754,52 @@ explains the rules behind them.
 walkie-database does not run models (walkie-database ADR-0006), so a text
 search such as "a red mug" asks this service for the vector first, then
 searches the table that `embedding_model` names.
+
+### DetectObjects, EmbedCrop and DescribeCrop
+
+These types are frozen and no node serves them yet. `error_code` is empty on
+success. Its values are named in each `.srv` file.
+
+`DetectObjects` finds named objects in the newest image, for the caller only:
+
+| Part     | Field             | Type                   | What it is                                                |
+| -------- | ----------------- | ---------------------- | --------------------------------------------------------- |
+| Request  | `classes`         | `string[]`             | The nouns to look for. At least one, ordered and unique.  |
+| Request  | `max_image_age_s` | `float32`              | The oldest image it may use. Default 0.3.                 |
+| Request  | `timeout_s`       | `float32`              | The wall deadline. Default 4.0.                           |
+| Response | `success`         | `bool`                 | False when the request could not be served                |
+| Response | `error_code`      | `string`               | Why, in a word that code can match                        |
+| Response | `message`         | `string`               | Why, for people                                           |
+| Response | `objects`         | `ObjectDetectionArray` | The detections. Its `classes` are the request's, it shares the node's `stream_id`, and every `track_id` is 0. |
+
+`EmbedCrop` embeds one box of the newest image, for a box that walkie-database
+projected into that image:
+
+| Part     | Field             | Type                          | What it is                                     |
+| -------- | ----------------- | ----------------------------- | ---------------------------------------------- |
+| Request  | `header`          | `std_msgs/Header`             | The image the box was projected into           |
+| Request  | `image_width`, `image_height` | `uint32`          | Must equal the current image's size            |
+| Request  | `bbox`            | `vision_msgs/BoundingBox2D`   | The box without padding. `theta` 0, positive area. |
+| Request  | `timeout_s`       | `float32`                     | The wall deadline. Default 1.0.                |
+| Response | `success`, `error_code`, `message` | `bool`, `string`, `string` | As above                  |
+| Response | `header`          | `std_msgs/Header`             | The image that was used, not a copy of the request's |
+| Response | `crop`            | `sensor_msgs/CompressedImage` | Padded and encoded like `ObjectDetection.crop` |
+| Response | `embedding_model`, `embedding` | `string`, `float32[]` | One finite unit vector and its model      |
+| Response | `view_quality`    | `float32`                     | Scored like `ObjectDetection.view_quality`. Its depth term is 0 without depth. |
+
+`DescribeCrop` is reserved for captions. It answers `DISABLED` in this
+season's build:
+
+| Part     | Field             | Type                          | What it is                                     |
+| -------- | ----------------- | ----------------------------- | ---------------------------------------------- |
+| Request  | `crop`            | `sensor_msgs/CompressedImage` | A JPEG, at most 512 px on its longest side and 512 KiB |
+| Request  | `color_shares`    | `float32[]`                   | Optional colour evidence, in the order above   |
+| Request  | `timeout_s`       | `float32`                     | The wall deadline. Default 4.0.                |
+| Response | `success`, `error_code`, `message` | `bool`, `string`, `string` | As above                  |
+| Response | `caption`         | `string`                      | At most 512 characters. Untrusted text from the camera. |
+| Response | `attributes_json` | `string`                      | A JSON object with fixed keys and validated values |
+| Response | `printed_text`    | `string`                      | At most 256 characters. Untrusted, and kept apart. |
+| Response | `caption_model`, `prompt_version` | `string`, `string` | The pinned weights and the fixed prompt's version. Empty when disabled. |
 
 ### GetPersonCrop
 
@@ -884,16 +950,9 @@ detection's points.
 ### detect_objects and DetectObjects
 
 `detect_objects` passes one or more nouns. A bundle can add a second noun,
-for example the anchor of "the cup left of the plate". The proposed
-service is below, at sketch level. The exact `.srv` is left to the
-implementation ([ADR-0009](decisions/0009-on-demand-detect-objects.md)).
-
-| Part     | Field     | Type                   | What it is                                                     |
-| -------- | --------- | ---------------------- | -------------------------------------------------------------- |
-| Request  | `classes` | `string[]`             | The nouns to look for, for example `mug`. At least one.        |
-| Response | `success` | `bool`                 | False when the request could not be served                     |
-| Response | `message` | `string`               | Why, when `success` is false                                   |
-| Response | `objects` | `ObjectDetectionArray` | The detections in the newest image. Its `classes` are the request's nouns. |
+for example the anchor of "the cup left of the plate". The type is frozen
+([DetectObjects](#detectobjects-embedcrop-and-describecrop), ADR-0013), and no
+node serves it yet ([ADR-0009](decisions/0009-on-demand-detect-objects.md)).
 
 How it would run:
 
@@ -1052,9 +1111,9 @@ bodies, so the node finds no people there.
 
 | Piece                                                    | Location                                                    | Status |
 | -------------------------------------------------------- | ----------------------------------------------------------- | ------ |
-| The `DetectObjects` service type                         | `ros2_ws/src/walkie_vision_msgs/srv/DetectObjects.srv`      | New    |
-| Its entry in `rosidl_generate_interfaces`                | `ros2_ws/src/walkie_vision_msgs/CMakeLists.txt`             | Changed |
-| Field pins for its request and response                  | `test_message_fields` in `tests/test_convert.py`            | Changed |
+| The `DetectObjects` service type                         | `ros2_ws/src/walkie_vision_msgs/srv/DetectObjects.srv`      | Done   |
+| Its entry in `rosidl_generate_interfaces`                | `ros2_ws/src/walkie_vision_msgs/CMakeLists.txt`             | Done   |
+| Field pins for its request and response                  | `test_message_fields` in `tests/test_convert.py`            | Done   |
 | Filling the response                                     | `walkie_vision.convert`. `to_object_detection_array` fills `objects`. The `success` and `message` handling is new, like `fill_embed_text_response` for `EmbedText`. | New |
 | The `DetectObjects` server, with its own YOLOE instance and no tracker | The vision node (`walkie_vision.node`)        | New |
 | The `EmbedText` server                                   | The vision node (`walkie_vision.node`)                      | Already designed, not built. No change to its type. |
@@ -1145,8 +1204,9 @@ bodies, so the node finds no people there.
 - **The respawn gap.** After a crash, nothing is published until the
   launch has started the node again and its models have loaded: several
   seconds, or minutes on a GPU whose kernels are not compiled yet.
-- **Empty fields.** Object embeddings, points and crops are empty in every
-  published object. `EmbedText` is not built.
+- **Empty fields.** Object embeddings, points, crops and colour shares are
+  empty in every published object, and `view_quality` is 0. `EmbedText` is
+  not built.
 - **The trackers count processed frames.** A lost track is kept for 30
   processed frames, 3 s at 10 Hz but 6 s at 5 Hz. A slower node keeps lost
   ids longer.
@@ -1250,3 +1310,7 @@ bodies, so the node finds no people there.
 ??? success "ADR-0012: License the repository under AGPL-3.0-only · Accepted"
 
     --8<-- "architecture/decisions/0012-license-agpl-3-0-only.md:body"
+
+??? success "ADR-0013: Freeze the memory observation contract · Accepted"
+
+    --8<-- "architecture/decisions/0013-memory-observation-contract.md:body"

@@ -12,6 +12,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ObjectDetectionArray.msg"
   "msg/PersonDetection.msg"
   "msg/PersonDetectionArray.msg"
+  "srv/DescribeCrop.srv"
+  "srv/DetectObjects.srv"
+  "srv/EmbedCrop.srv"
   "srv/EmbedText.srv"
   "srv/GetPersonCrop.srv"
   DEPENDENCIES std_msgs sensor_msgs vision_msgs
