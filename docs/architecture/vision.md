@@ -50,11 +50,11 @@ it publishes, and why it is built this way.
   ([ADR-0007](decisions/0007-zenoh-in-every-pixi-environment.md)).
 - The models are proposed, pending the embedding bake-off and a measurement
   on the robot ([ADR-0008](decisions/0008-model-choices.md)).
-- A new `DetectObjects` service would detect named objects in the newest
-  image on request, for walkie-agent-ros's proposed self-evolving agent,
-  without touching the streaming detector
+- With `on_demand_enabled`, a `DetectObjects` service detects named objects in
+  a current image on request, without changing the streaming detector's classes
+  or tracks. It is built on fakes and not measured
   ([ADR-0009](decisions/0009-on-demand-detect-objects.md), and
-  [the proposed section](#proposed-on-demand-detectobjects-for-the-self-evolving-agent)).
+  [On-demand DetectObjects](#on-demand-detectobjects)).
 - `GetPersonCrop` returns one tracked person's crop from the next image,
   with other people masked and the colour shares of their top and bottom,
   for walkie-agent-ros's description of a guest
@@ -165,13 +165,14 @@ flowchart LR
       request in a second one-slot mailbox and waits for the worker's
       answer, while another executor thread keeps running the callbacks
       above ([Person crops](#person-crops)).
-    - The `EmbedText`, `EmbedCrop` and `DescribeCrop` callbacks share a
-      reentrant callback group. They check the request, leave at most one
-      job for the worker and wait for its answer. A second request runs its
-      own callback and gets `BUSY` at once
+    - The `EmbedText`, `EmbedCrop`, `DescribeCrop` and `DetectObjects`
+      callbacks share a reentrant callback group. They check the request,
+      leave at most one job for the worker and wait for its answer. A second
+      request runs its own callback and gets `BUSY` at once
       ([Bounded services](#bounded-services)).
-    - With `object_embeddings_enabled`, the image and depth callbacks also
-      keep a reference to the newest of each, for `EmbedCrop`.
+    - With `object_embeddings_enabled` or `on_demand_enabled`, the image and
+      depth callbacks also keep a reference to the newest of each, and to the
+      newest pair whose stamps match, for those services.
     - Every 0.5 s, `main()` checks that the worker is alive and that no
       image or service job has taken longer than `process_timeout_s`.
 - **The worker thread** is the only thread that touches a model. It takes
@@ -210,6 +211,7 @@ sim output topics and the sim service names. Write every double with a decimal p
 | `embed_text_service`       | string   | `/walkie_vision/embed_text`              | The `EmbedText` service ([Bounded services](#bounded-services))                               |
 | `embed_crop_service`       | string   | `/walkie_vision/embed_crop`              | The `EmbedCrop` service                                                                       |
 | `describe_crop_service`    | string   | `/walkie_vision/describe_crop`           | The `DescribeCrop` service, which always answers `DISABLED`                                   |
+| `detect_objects_service`   | string   | `/walkie_vision/detect_objects`          | The `DetectObjects` service ([On-demand DetectObjects](#on-demand-detectobjects))             |
 | `classes`                  | string[] | none; from `config/tasks/<task>.yaml`    | YOLOE's text prompts for the whole run                                                        |
 | `device`                   | string   | `cuda:0`                                 | The PyTorch and Ultralytics device: `cpu`, `cuda` or `cuda:N`. ONNX Runtime's face models always use GPU 0 |
 | `objects_weights`          | string   | `yoloe-26s-seg.pt`                       | A file in `models/ultralytics/`, or an absolute path. `mobileclip2_b.ts` must be next to it  |
@@ -245,6 +247,7 @@ sim output topics and the sim service names. Write every double with a decimal p
 | `depth_max_m`              | double   | 3.0                                      | Farther depth becomes no point. Finite and above `depth_min_m`. A starting value too          |
 | `object_crops_enabled`     | bool     | false                                    | Sample up to three objects per image and fill their crops and colour shares. Off for HRI: no mask copied to the CPU, no JPEG and no added work |
 | `object_embeddings_enabled` | bool    | false                                    | Sample the same objects and fill their CLIP vectors and colour shares, and serve `EmbedText` and `EmbedCrop`. Off for HRI: CLIP does not load and both services answer `DISABLED`. On needs the weights from `pixi run fetch-models` |
+| `on_demand_enabled`        | bool     | false                                    | Load a second YOLOE instance at start and serve `DetectObjects`. Off for HRI: the model does not load and the service answers `DISABLED`. A new list stops the stream while it is prepared |
 | `captions_enabled`         | bool     | false                                    | Must be false. This build has no caption model, so the node refuses true at start             |
 
 Why 0.25 for both score floors: it is Ultralytics' own `predict` default,
@@ -882,7 +885,7 @@ Published and served:
 | `/walkie_vision/get_person_crop` | `walkie_vision_msgs/srv/GetPersonCrop` | One tracked person's crop and colour shares from the next image ([Person crops](#person-crops)) |
 | `/walkie_vision/sim/get_person_crop` | `walkie_vision_msgs/srv/GetPersonCrop` | The same service with `sim:=true`, for this node's own track ids |
 | `/walkie_vision/embed_text` and `/walkie_vision/sim/embed_text` | `walkie_vision_msgs/srv/EmbedText`        | Text embeddings in the object embedder's space, for search. Answers `DISABLED` without `object_embeddings_enabled` ([Bounded services](#bounded-services)) |
-| `/walkie_vision/detect_objects` | `walkie_vision_msgs/srv/DetectObjects` | Type defined, not served ([ADR-0009](decisions/0009-on-demand-detect-objects.md)). Named objects in the newest image, on request |
+| `/walkie_vision/detect_objects` and `/walkie_vision/sim/detect_objects` | `walkie_vision_msgs/srv/DetectObjects` | Named objects in a current image, on request, for the caller only. Answers `DISABLED` without `on_demand_enabled` ([On-demand DetectObjects](#on-demand-detectobjects)) |
 | `/walkie_vision/embed_crop` and `/walkie_vision/sim/embed_crop` | `walkie_vision_msgs/srv/EmbedCrop`        | One box's crop and embedding from the newest image. Answers `DISABLED` without `object_embeddings_enabled` |
 | `/walkie_vision/describe_crop` and `/walkie_vision/sim/describe_crop` | `walkie_vision_msgs/srv/DescribeCrop`  | Reserved for captions. Always answers `DISABLED` in this build |
 
@@ -979,11 +982,12 @@ with the code when the request fails, for example `BUSY: ...`
 
 ### DetectObjects, EmbedCrop and DescribeCrop
 
-These types are frozen. The node serves `EmbedCrop` and `DescribeCrop`
-([Bounded services](#bounded-services)). `DetectObjects` is not served yet.
+These types are frozen. The node serves all three
+([Bounded services](#bounded-services)).
 `error_code` is empty on success. Its values are named in each `.srv` file.
 
-`DetectObjects` finds named objects in the newest image, for the caller only:
+`DetectObjects` finds named objects in a current image, for the caller only
+([On-demand DetectObjects](#on-demand-detectobjects)):
 
 | Part     | Field             | Type                   | What it is                                                |
 | -------- | ----------------- | ---------------------- | --------------------------------------------------------- |
@@ -1026,12 +1030,12 @@ season's build, and `captions_enabled` must stay false:
 
 ### Bounded services {#bounded-services}
 
-`EmbedText` and `EmbedCrop` run on the one model worker
+`EmbedText`, `EmbedCrop` and `DetectObjects` run on the one model worker
 ([ADR-0015](decisions/0015-bounded-service-scheduling.md)). The callback only
-checks the request and leaves a job. One slot holds that job for both services,
-so a second request gets `BUSY` at once and nothing queues. After a job, the
-worker runs the newest image before it frees the slot, so a stream of requests
-cannot stop the arrays.
+checks the request and leaves a job. One slot holds that job for all three
+services, so a second request gets `BUSY` at once and nothing queues. After a
+job, the worker runs the newest image before it frees the slot, so a stream of
+requests cannot stop the arrays.
 
 `EmbedCrop` answers from the current image: the newest colour image, and the
 newest depth image when its stamp is within `max_pair_gap_s`. The node keeps
@@ -1050,20 +1054,20 @@ The codes, in `error_code`, or at the start of `message` for `EmbedText`:
 
 | Code                | Meaning                                                                |
 | ------------------- | ---------------------------------------------------------------------- |
-| `DISABLED`          | `object_embeddings_enabled` is off. `DescribeCrop` always answers this |
+| `DISABLED`          | The service's flag is off. `DescribeCrop` always answers this          |
 | `INVALID`           | The request breaks a rule. No job is made                              |
-| `BUSY`              | Another job holds the slot. Try again later                            |
-| `NO_IMAGE`          | No image has arrived yet. `EmbedCrop` answers this at once             |
+| `BUSY`              | Another job holds the slot, or a new `DetectObjects` list came too soon. Try again later |
+| `NO_IMAGE`          | No usable image: none has arrived, or `DetectObjects` found no valid `camera_info`, no depth that `require_depth` asks for, or an encoding it cannot read. `EmbedCrop` answers this at once |
 | `STALE_IMAGE`       | The current image is not the one the request names, or it is too old   |
 | `TIMEOUT`           | No answer before the deadline. A later result is discarded and counted |
 | `INFERENCE_FAILED`  | The model or its vector failed. The arrays keep flowing                |
-| `MODEL_UNAVAILABLE` | The node is shutting down                                              |
+| `MODEL_UNAVAILABLE` | The node is shutting down, or `DetectObjects` could not prepare a list |
 
 The latency line adds `jobs`, `busy` and `late` when
-`object_embeddings_enabled` is on. Neither the latency of a service job nor the
-image rate while requests arrive is measured on the robot. At 15 Hz a request
-succeeds only while the image it names is still the newest, so `EmbedCrop` may
-refuse most proposals under load.
+`object_embeddings_enabled` or `on_demand_enabled` is on. Neither the latency of
+a service job nor the image rate while requests arrive is measured on the robot.
+At 15 Hz a request succeeds only while the image it names is still the newest,
+so `EmbedCrop` may refuse most proposals under load.
 
 ### GetPersonCrop
 
@@ -1129,25 +1133,34 @@ computing.
 So every model that a test depends on runs on the robot's own GPU. A cloud
 model may only add to what the robot can already do on board.
 
-## Proposed: on-demand DetectObjects for the self-evolving agent
+## On-demand DetectObjects {#on-demand-detectobjects}
 
-!!! note "Status: Proposed"
-    Nothing in this section is built or accepted. It records what
-    walkie-agent-ros's proposed self-evolving agent asks of this
-    repository, and the proposed
-    [ADR-0009](decisions/0009-on-demand-detect-objects.md).
+!!! note "Status: built on fakes, not measured"
+    The service is built and tested with fake models. No real model has run
+    behind it, and its latency and GPU memory are not measured, so
+    [ADR-0009](decisions/0009-on-demand-detect-objects.md) stays Proposed.
 
-walkie-agent-ros plans to turn its agent into a self-evolving agent
-(walkie-agent-ros `docs/architecture/self-evolving-agent.md`, Proposed).
+!!! note "References to walkie-agent-ros"
+    The agent design below is what walkie-agent-ros proposed at its commit
+    91ffe25cc411700e2fac33adbbd815998a3296c9, on its `main` branch. The pages
+    this section names are `docs/architecture/self-evolving-agent.md`,
+    `docs/architecture/access-levels.md`, `docs/architecture/harvest.md` and
+    its ADR-0046. walkie-agent-ros plans to withdraw or rewrite them, and has no
+    replacement page yet. So these references name that commit. They record what
+    was asked of this repository, not the agent's current plan. Update them
+    when the agent owner publishes the replacement pages.
+
+walkie-agent-ros proposed to turn its agent into a self-evolving agent
+(`docs/architecture/self-evolving-agent.md` at commit 91ffe25).
 The agent gets small typed tools, called atomics, which it chains into
 bundles. It also writes new tools of its own. In simulation these are
 drafts, which a human reviews before they are kept. At competitions, when
 the run profile allows it and the robot is online, it may write tools for
 the current session that only read, perceive and speak.
 
-Generated tools run at one of three access levels (walkie-agent-ros
-`docs/architecture/access-levels.md`, Proposed). Unrestricted and Standard
-run only in simulation. Competition, the default, is the only level
+Generated tools run at one of three access levels
+(`docs/architecture/access-levels.md` at commit 91ffe25). Unrestricted and
+Standard run only in simulation. Competition, the default, is the only level
 allowed on the real robot.
 
 Two of the agent's perception atomics call walkie-vision:
@@ -1167,8 +1180,8 @@ repository is listed in
 
 The agent looks in memory first, then looks with the camera, then narrows
 the result down. Every step runs on the robot. The full cascade is on
-walkie-agent-ros's page (`docs/architecture/self-evolving-agent.md`,
-"Finding objects with search_detections"). The part that involves
+walkie-agent-ros's page (`docs/architecture/self-evolving-agent.md` at commit
+91ffe25, "Finding objects with search_detections"). The part that involves
 walkie-vision:
 
 ```mermaid
@@ -1218,24 +1231,43 @@ detection's points.
 
 `detect_objects` passes one or more nouns. A bundle can add a second noun,
 for example the anchor of "the cup left of the plate". The type is frozen
-([DetectObjects](#detectobjects-embedcrop-and-describecrop), ADR-0013), and no
-node serves it yet ([ADR-0009](decisions/0009-on-demand-detect-objects.md)).
+([DetectObjects](#detectobjects-embedcrop-and-describecrop), ADR-0013), and the
+node serves it with `on_demand_enabled`
+([ADR-0009](decisions/0009-on-demand-detect-objects.md)).
 
-How it would run:
+How it runs:
 
-- **On the newest image.** The vision node is the only subscriber to the
-  camera, and holds only the newest RGB image and `camera_info`. For this
-  service it would also hold the newest depth image, which it subscribes to
-  only with `geometry_enabled`. The service reads those and adds no subscriber.
-  It keeps no image and no detection after it answers. Only the on-demand
-  model's last class list stays loaded, as a cache. It returns no id for
-  the image.
-- **With everything the topic carries.** Every detection has its box, its
-  embedding from the object embedder, its points and, when the topic sends
-  one, its crop, as on `/walkie_vision/objects`. The array's `header` is
-  the image's stamp and frame, not the time of the answer.
-- **On its own YOLOE instance, without a tracker.** The streaming detector
-  keeps its classes and its tracks. On-demand detections have `track_id` 0.
+- **On a current image.** The vision node is the only subscriber to the
+  camera. It holds the newest RGB image, depth image and `camera_info`, and
+  the newest pair whose stamps match. The service reads those and adds no
+  subscriber. With `geometry_enabled` it uses the newest pair within
+  `max_image_age_s`. Without one, it uses the newest RGB image, with no points,
+  or answers `NO_IMAGE` under `require_depth`. It keeps no image and no
+  detection after it answers. Only the on-demand model's last class list stays
+  loaded. It returns no id for the image.
+- **At most 20 objects.** It keeps the highest scores above `objects_min_score`.
+- **With what its flags turn on.** Points need `geometry_enabled`. A crop and
+  colour shares need `object_crops_enabled`, and a vector and colour shares need
+  `object_embeddings_enabled`. Every box of at least 32 px on its short side gets
+  them. The stream's 1-in-10 sampler and its limit of three do not apply. The
+  array's `header` is the image's stamp and frame, not the time of the answer,
+  and `stream_id` is the stream's own.
+- **On its own YOLOE instance, without a tracker.** The node builds and warms it
+  up at start with the task's classes, so no request pays for a load. The
+  streaming detector keeps its classes and its tracks. On-demand detections have
+  `track_id` 0.
+- **One job at a time, on the one worker.** It shares the job slot of
+  [Bounded services](#bounded-services). The stream gets no image processed while
+  a job runs. A new list stops it for about 1.5 s, and the node publishes no
+  empty array for the gap.
+- **At most one new list every 2 s.** The time runs from the end of the last
+  preparation, also a failed one, so the stream gets 2 s between stalls. Another
+  new list before that answers `BUSY`. The same ordered list prepares nothing,
+  and a reordered list counts as new.
+- **In a fixed order.** The worker prepares the classes, then picks the image,
+  so a slow preparation does not age it. It checks the image's age against
+  `max_image_age_s` in ROS time, both ways, and checks it again before it
+  answers, so an old image is never labelled current.
 - **To the caller only.** The result is not published on
   `/walkie_vision/objects`.
 
@@ -1255,14 +1287,15 @@ too much:
 | Cost                         | Why                                                                               |
 | ---------------------------- | --------------------------------------------------------------------------------- |
 | About 1.5 s per new list     | `set_classes()` with 5 names took 1.5 s on the RTX 2060 ([Measured on the RTX 2060](../setup/01-vision-environment.md#measured-on-the-rtx-2060)). In the installed Ultralytics 8.4.182, it loads the text encoder again on every call that changes the list. |
-| Track ids may reset          | `ObjectDetector` in `walkie_vision.providers` allows it. In Ultralytics 8.4.182, `set_classes()` drops the predictor, and the trackers live on the predictor (read in the code, not tested). |
+| Track ids may reset          | `ObjectDetector` in `walkie_vision.providers` allows it. In Ultralytics 8.4.182, `set_classes()` drops the predictor, and the trackers live on the predictor (read in the code; `tests/test_yolo.py` only stubs it). |
 | The `classes` field changes  | A class in `classes` without a detection was not seen (`ObjectDetectionArray.msg`). While the caller's nouns replace the task's list, walkie-database would read every task class as "not seen" when it was only "not looked for". |
 | Restoring the list costs again | Setting the old list back pays the 1.5 s again and resets the tracks again. Two callers at once would fight over one list. |
 
 A second instance avoids the last three. It still pays the 1.5 s for each
-new list, but on the caller's request instead of stalling the streaming
-detector. It also costs GPU memory, which is not measured yet. A request
-with the same list as the one before skips the text encoder, so repeated
+new list, and because one worker runs every model, the stream waits for that
+time too. Only a request with a new list pays this, and the stream's classes
+and tracks survive it. It also costs GPU memory, which is not measured yet. A
+request with the same list as the one before skips the text encoder, so repeated
 searches for the same noun stay fast.
 
 **What the agent does with the answer.** walkie-agent-ros keeps the
@@ -1299,8 +1332,8 @@ detection's embedding.
   inside them.
 
 **Not for tool search.** The agent also searches its own catalogue of
-tools, with a hybrid keyword and vector index (walkie-agent-ros ADR-0046,
-Proposed). It deliberately does not use `EmbedText` for the vectors. The
+tools, with a hybrid keyword and vector index (walkie-agent-ros ADR-0046 at
+commit 91ffe25). It deliberately does not use `EmbedText` for the vectors. The
 object embedder is an image-text model with a short text context and no
 task prompt, and tool search would then depend on the vision service. The
 agent runs its own small text-embedding model on the CPU instead: the
@@ -1309,8 +1342,8 @@ search only, and a new object embedder never touches the tool index.
 
 ### In simulation
 
-walkie-agent-ros's sim harvest runs its agent in MuJoCo (walkie-agent-ros
-`docs/architecture/harvest.md`, Proposed). There, walkie-agent-ros's
+walkie-agent-ros's sim harvest runs its agent in MuJoCo
+(`docs/architecture/harvest.md` at commit 91ffe25). There, walkie-agent-ros's
 `oracle_perception` node (`src/walkie_agent/sim/oracle_perception.py`)
 publishes detections from the scenario's spec, with configurable noise and
 dropout, in `walkie_vision_msgs` types. People come only from that node,
@@ -1343,10 +1376,12 @@ bodies, so the node finds no people there.
 
 ### What walkie-agent-ros builds against
 
-- **The message package.** walkie-agent-ros pins this repository in its
-  `ros2_ws.repos` (b050ea1 when this was written) and builds
-  `walkie_vision_msgs` in `build-ros2`, as it does `walkie_database_msgs`
-  (walkie-agent-ros ADR-0034).
+- **The message package.** walkie-agent-ros's `main` at commit 91ffe25 does not
+  pin this repository. Its local `experiment/hri-agent` branch pins 1576d6f,
+  which is older than these services. A client must pin the full commit that the
+  robot runs in its `ros2_ws.repos` and build `walkie_vision_msgs` in
+  `build-ros2`, as it does `walkie_database_msgs`, because a type hash changes
+  with the type (walkie-agent-ros ADR-0034).
 - **The real clients.** `DetectObjects` and `EmbedText` clients are a
   parallel track, from phase 2 of the agent's roadmap, and the agent's
   bundle tests are rerun against them. Until then its presets stay backed
@@ -1381,8 +1416,8 @@ bodies, so the node finds no people there.
 | The `DetectObjects` service type                         | `ros2_ws/src/walkie_vision_msgs/srv/DetectObjects.srv`      | Done   |
 | Its entry in `rosidl_generate_interfaces`                | `ros2_ws/src/walkie_vision_msgs/CMakeLists.txt`             | Done   |
 | Field pins for its request and response                  | `test_message_fields` in `tests/test_convert.py`            | Done   |
-| Filling the response                                     | `walkie_vision.convert`. `to_object_detection_array` fills `objects`. The `success` and `message` handling is new, like `fill_embed_text_response` for `EmbedText`. | New |
-| The `DetectObjects` server, with its own YOLOE instance and no tracker | The vision node (`walkie_vision.node`)        | New |
+| Filling the response                                     | `walkie_vision.pipeline`. `detect_on_demand` fills `objects`, and `convert.detect_objects_failure` fills a failure. | Done |
+| The `DetectObjects` server, with its own YOLOE instance and no tracker | The vision node (`walkie_vision.node`), and `YoloeDetector` in `walkie_vision.yolo` | Done on fakes. Not run with a real model. |
 | The `EmbedText` server                                   | The vision node (`walkie_vision.node`)                      | Done ([Bounded services](#bounded-services)). No change to its type. |
 | `hash_vector`                                            | `walkie_vision.fakes`                                       | Unchanged. walkie-agent-ros copies it. |
 
@@ -1400,10 +1435,10 @@ bodies, so the node finds no people there.
    `YOLOE.set_classes()` accepts embeddings computed beforehand. How the
    1.5 s splits between loading and encoding is not measured, so neither
    saving is known. Blocks: the agent's timeout for `detect_objects`.
-3. **How old the newest image may be.** No age limit is set, and it is not
-   decided whether the service waits for an image taken after the base
-   stopped. Blocks: the service's failure reasons, and the agent's
-   staleness rule.
+3. **Whether a caller needs an image taken after the base stopped.** The
+   request's `max_image_age_s` bounds the age, 0.3 s by default. The service
+   does not wait for a later image: the caller decides when to ask, and compares
+   the `header` stamp with its own motion. Blocks: the agent's staleness rule.
 4. **Whether on-demand results reach walkie-database.** They answer only
    the caller. Publishing them on `/walkie_vision/objects` would mix two
    class lists in one topic. Another topic would need a walkie-database
@@ -1442,8 +1477,10 @@ bodies, so the node finds no people there.
 9. **A rate limit for generated callers.** At Competition, generated tools
    may call `detect_objects`, within the agent's budget of 10 tool calls
    and 15 s per invocation. Each new class list costs about 1.5 s on the
-   on-demand instance. Whether `DetectObjects` needs a limit of its own is
-   not decided. Blocks: nothing until the service is built.
+   on-demand instance, and stops the stream for that time. The node prepares at
+   most one new list every 2 s, for all callers together. Whether a generated
+   caller needs a tighter limit of its own is for the agent to decide. Blocks:
+   nothing here.
 
 ## Open problems
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import sys
 import threading
@@ -9,10 +10,13 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 from launch import LaunchContext, LaunchDescription, LaunchService
 from launch.actions import DeclareLaunchArgument, RegisterEventHandler, Shutdown, TimerAction
 from launch.event_handlers import OnProcessStart
 from launch.utilities import perform_substitutions
+
+from walkie_vision.node import VisionConfig
 
 REPO = Path(__file__).resolve().parents[1]
 CONFIG = REPO / "config"
@@ -52,6 +56,25 @@ def test_the_memory_task_runs_in_sim_with_the_sim_file_last(vision_launch):
         "--params-file",
         str(CONFIG / "sim.yaml"),
     ]
+
+
+def test_the_sim_file_moves_every_service_and_topic_of_this_node(vision_launch):
+    # Each output must have its own sim name, or a sim run would answer for the
+    # real robot's endpoints. A new service fails here until sim.yaml names it.
+    sim = yaml.safe_load((CONFIG / "sim.yaml").read_text())["walkie_vision"]["ros__parameters"]
+    assert sim["use_sim_time"] is True
+    fields = {f.name: f.default for f in dataclasses.fields(VisionConfig)}
+    services = {name: value for name, value in fields.items() if name.endswith("_service")}
+    assert set(services) >= {
+        "person_crop_service",
+        "embed_text_service",
+        "embed_crop_service",
+        "describe_crop_service",
+        "detect_objects_service",
+    }
+    for name, value in {**services, "people_topic": fields["people_topic"], "objects_topic": fields["objects_topic"]}.items():
+        assert value.startswith("/walkie_vision/"), name
+        assert sim[name] == value.replace("/walkie_vision/", "/walkie_vision/sim/", 1), name
 
 
 def test_an_unknown_task_names_the_known_ones(vision_launch):

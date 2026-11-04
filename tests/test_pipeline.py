@@ -3,6 +3,7 @@
 The LatencyLog tests are here too: it is the node's, but needs no node.
 """
 
+import dataclasses
 import threading
 
 import numpy as np
@@ -11,9 +12,11 @@ from builtin_interfaces.msg import Time
 from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import Header
 
+from walkie_vision import embeddings as embeddings_module
 from walkie_vision import pipeline as pipeline_module
 from walkie_vision.depth import RegisteredDepth, frame_laplacian, view_quality
 from walkie_vision.fakes import (
+    FakeEmbedder,
     FakeObjectDetector,
     FakePersonFaceRecognizer,
     FakePoseEstimator,
@@ -61,6 +64,22 @@ def _detection(box=(1.0, 2.0, 30.0, 40.0), label="chair", score=0.8, track_id=5)
 
 BIG = (2.0, 2.0, 40.0, 46.0)  # 38 x 44 px
 SMALL = (50.0, 2.0, 60.0, 12.0)  # 10 x 10 px
+
+
+class _CountingEmbedder(FakeEmbedder):
+    """Counts the images it embeds."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.images = 0
+
+    def embed_images(self, images):
+        self.images += len(images)
+        return super().embed_images(images)
+
+
+def _raises_if_called(*args, **kwargs):
+    raise AssertionError("this work must not run")
 
 
 def _providers(objects=None, people=None, faces=None, *, classes=CLASSES, reid=None, face_model=None):
@@ -600,6 +619,147 @@ def test_a_label_outside_classes_raises():
     detector = _Detector([_detection(label="table")])
     with pytest.raises(ValueError, match="table"):
         _pipeline(_providers(objects=detector)).process(IMAGE, _header(), _info())
+
+
+# --- detect_on_demand ---------------------------------------------------
+
+
+class _ForbiddenDetector(FakeObjectDetector):
+    """A streaming detector that a test expects no request to reach."""
+
+    def __init__(self) -> None:
+        super().__init__([], classes=CLASSES)
+
+    def set_classes(self, classes):
+        raise AssertionError("the stream's classes must not change")
+
+    def detect(self, image):
+        raise AssertionError("the stream's detector must not run")
+
+
+def _on_demand_pipeline(*detections, classes=("cup",), embedder=None, **kwargs) -> VisionPipeline:
+    providers = dataclasses.replace(
+        _providers(objects=_ForbiddenDetector()),
+        on_demand=FakeObjectDetector(list(detections), classes=classes),
+        embedder=embedder,
+    )
+    return _pipeline(providers, on_demand_enabled=True, allow_fake_embedder=True, **kwargs)
+
+
+def test_on_demand_needs_its_own_detector():
+    with pytest.raises(ValueError, match="needs an on-demand detector"):
+        _pipeline(on_demand_enabled=True)
+    providers = _providers()
+    with pytest.raises(ValueError, match="must not be the streaming detector"):
+        _pipeline(dataclasses.replace(providers, on_demand=providers.objects), on_demand_enabled=True)
+
+
+def test_an_on_demand_array_is_its_own_and_every_track_id_is_zero():
+    det = _detection(label="cup", track_id=9)
+    pipeline = _on_demand_pipeline(det)
+    result = pipeline.detect_on_demand(IMAGE, _header(), _info())
+    array = result.objects
+    assert list(array.classes) == ["cup"]
+    assert array.header == _header() and array.camera_info.header == _header()
+    assert array.stream_id == pipeline.stream_id
+    assert [d.track_id for d in array.detections] == [0]
+    assert pipeline.classes == CLASSES and pipeline.processed_images == 0
+
+
+def test_an_on_demand_call_leaves_the_sampler_on_the_same_image():
+    # A track that is due on the stream's first image stays due after any number of requests.
+    embedder = FakeEmbedder()
+    providers = dataclasses.replace(
+        _providers(objects=FakeObjectDetector([_detection(BIG, track_id=1)], classes=CLASSES)),
+        on_demand=FakeObjectDetector([_detection(BIG, label="cup")], classes=("cup",)),
+        embedder=embedder,
+    )
+    # Offset 9 maps tracker id 1 to 10, so (track_id + 0) % 10 == 0.
+    pipeline = _pipeline(
+        providers, start_ns=9_000_000, on_demand_enabled=True, object_embeddings_enabled=True, allow_fake_embedder=True
+    )
+    for _ in range(3):
+        pipeline.detect_on_demand(IMAGE, _header(), _info())
+    assert pipeline.processed_images == 0
+    [det] = pipeline.process(IMAGE, _header(), _info()).objects.detections
+    assert len(det.embedding) == embedder.dim
+
+
+def test_on_demand_keeps_the_highest_scores_up_to_the_cap_before_any_work():
+    embedder = _CountingEmbedder()
+    # Scores rise with the index, so the cap must sort before it cuts.
+    many = [_detection(BIG, label="cup", score=(i + 1) / 100.0) for i in range(pipeline_module.ON_DEMAND_MAX_OBJECTS + 5)]
+    pipeline = _on_demand_pipeline(*many, embedder=embedder, object_embeddings_enabled=True)
+    array = pipeline.detect_on_demand(IMAGE, _header(), _info()).objects
+    assert pipeline_module.ON_DEMAND_MAX_OBJECTS == 20
+    assert len(array.detections) == 20
+    assert [round(float(d.score), 2) for d in array.detections] == [round((25 - i) / 100.0, 2) for i in range(20)]
+    assert embedder.images == 20
+
+
+def test_on_demand_applies_the_published_floor_and_counts_a_bad_box():
+    pipeline = _on_demand_pipeline(
+        _detection(label="cup", score=0.9),
+        _detection(label="cup", score=0.1),
+        _detection((float("nan"), 0.0, 1.0, 1.0), label="cup"),
+        objects_min_score=0.25,
+    )
+    result = pipeline.detect_on_demand(IMAGE, _header(), _info())
+    assert [round(float(d.score), 2) for d in result.objects.detections] == [0.9]
+    assert result.dropped == {"object": 1}
+
+
+def test_on_demand_embeds_every_usable_box_with_no_sampler():
+    embedder = FakeEmbedder()
+    pipeline = _on_demand_pipeline(
+        _detection(BIG, label="cup", score=0.9),
+        _detection(BIG, label="cup", score=0.8),
+        _detection(BIG, label="cup", score=0.7),
+        _detection(BIG, label="cup", score=0.6),
+        _detection(SMALL, label="cup", score=0.5),
+        embedder=embedder,
+        object_embeddings_enabled=True,
+        object_crops_enabled=True,
+    )
+    detections = pipeline.detect_on_demand(IMAGE, _header(), _info()).objects.detections
+    # Four large boxes, more than the stream's limit of three, and one under 32 px.
+    assert [len(d.embedding) for d in detections] == [embedder.dim] * 4 + [0]
+    assert [d.embedding_model for d in detections] == [embedder.model_name] * 4 + [""]
+    assert [bool(len(d.crop.data)) for d in detections] == [True] * 4 + [False]
+
+
+def test_on_demand_fills_points_and_colour_shares_with_geometry_and_masks():
+    mask = box_mask(48, 64, BIG)
+    det = Detection(box=np.array(BIG), label="cup", score=0.8, mask=mask)
+    pipeline = _on_demand_pipeline(det, embedder=FakeEmbedder(), geometry_enabled=True, object_embeddings_enabled=True)
+    [got] = pipeline.detect_on_demand(IMAGE, _header(), _info(), _plain_depth()).objects.detections
+    assert got.points.width > 0 and got.points.header == _header()
+    assert got.view_quality > 0.0
+    assert len(got.color_shares) == 12
+
+
+def test_on_demand_with_the_additions_off_does_no_added_work(monkeypatch):
+    # Flags stay orthogonal: on-demand alone gives boxes, and nothing more.
+    _forbid(monkeypatch, "frame_laplacian", "lift_mask", "depth_cover", "view_quality", "resize_mask")
+    monkeypatch.setattr(embeddings_module, "encode_crop", _raises_if_called)
+    monkeypatch.setattr(embeddings_module, "mask_color_shares", _raises_if_called)
+    det = Detection(box=np.array(BIG), label="cup", score=0.8, mask=box_mask(48, 64, BIG))
+    [got] = _on_demand_pipeline(det).detect_on_demand(IMAGE, _header(), _info(), _plain_depth()).objects.detections
+    assert got.points.width == 0 and len(got.embedding) == 0 and len(got.crop.data) == 0 and len(got.color_shares) == 0
+
+
+def test_on_demand_prepares_only_its_own_detector():
+    pipeline = _on_demand_pipeline(_detection(label="bowl"))
+    assert pipeline.on_demand_classes == ["cup"]
+    pipeline.prepare_on_demand(["bowl"])
+    assert pipeline.on_demand_classes == ["bowl"]
+    assert pipeline.classes == CLASSES
+    assert list(pipeline.detect_on_demand(IMAGE, _header(), _info()).objects.classes) == ["bowl"]
+
+
+def test_a_successful_on_demand_array_can_be_empty():
+    array = _on_demand_pipeline().detect_on_demand(IMAGE, _header(), _info()).objects
+    assert len(array.detections) == 0 and list(array.classes) == ["cup"] and array.stream_id
 
 
 def test_set_classes_is_called_once_when_the_classes_differ():

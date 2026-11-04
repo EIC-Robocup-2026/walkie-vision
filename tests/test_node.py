@@ -33,11 +33,17 @@ from rclpy.time import Time as RosTime
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
-from walkie_vision_msgs.srv import DescribeCrop, EmbedCrop, EmbedText, GetPersonCrop
+from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
 
 from walkie_vision import crop, embeddings, requests
 from walkie_vision import node as node_module
-from walkie_vision.convert import MAX_MESSAGE_CHARS, bbox_to_box, box_to_bbox, vectors_from_response
+from walkie_vision.convert import (
+    MAX_MESSAGE_CHARS,
+    bbox_to_box,
+    box_to_bbox,
+    check_object_detection_array,
+    vectors_from_response,
+)
 from walkie_vision.depth import RgbdBuffer, frame_laplacian, view_quality
 from walkie_vision.fakes import (
     FakeEmbedder,
@@ -211,6 +217,7 @@ class Harness:
             "embed_text_service": f"{prefix}/embed_text",
             "embed_crop_service": f"{prefix}/embed_crop",
             "describe_crop_service": f"{prefix}/describe_crop",
+            "detect_objects_service": f"{prefix}/detect_objects",
             "depth_topic": f"{prefix}/depth",
             "depth_camera_info_topic": f"{prefix}/depth_camera_info",
         }
@@ -272,7 +279,12 @@ class Harness:
 
     def call(self, service_type, request):
         """Send a request to one of the bounded services and return its future."""
-        name = {EmbedText: "embed_text_service", EmbedCrop: "embed_crop_service", DescribeCrop: "describe_crop_service"}
+        name = {
+            EmbedText: "embed_text_service",
+            EmbedCrop: "embed_crop_service",
+            DescribeCrop: "describe_crop_service",
+            DetectObjects: "detect_objects_service",
+        }
         client = self._service_clients.get(service_type)
         if client is None:
             client = self.helper.create_client(service_type, self.topics[name[service_type]])
@@ -582,6 +594,7 @@ def test_an_empty_classes_list_fails_at_construction(ctx):
         ("depth_min_m", 5.0),
         ("depth_max_m", 0.1),
         ("depth_max_m", float("inf")),
+        ("detect_objects_service", "no_slash"),
     ],
 )
 def test_a_bad_parameter_fails_at_construction(ctx, name, value):
@@ -620,6 +633,7 @@ def test_the_real_parameter_files(ctx):
         assert node.config.embed_text_service == "/walkie_vision/embed_text"
         assert node.config.embed_crop_service == "/walkie_vision/embed_crop"
         assert node.config.describe_crop_service == "/walkie_vision/describe_crop"
+        assert node.config.detect_objects_service == "/walkie_vision/detect_objects"
         assert node.config.captions_enabled is False
     finally:
         assert node.close()
@@ -633,6 +647,7 @@ def test_the_real_parameter_files(ctx):
         assert node.config.embed_text_service == "/walkie_vision/sim/embed_text"
         assert node.config.embed_crop_service == "/walkie_vision/sim/embed_crop"
         assert node.config.describe_crop_service == "/walkie_vision/sim/describe_crop"
+        assert node.config.detect_objects_service == "/walkie_vision/sim/detect_objects"
         assert node.config.classes == ("chair", "sofa", "armchair", "stool")
     finally:
         assert node.close()
@@ -642,7 +657,10 @@ def test_the_memory_task_turns_on_object_memory_without_a_person_class(ctx):
     files = [CONFIG / "vision.yaml", CONFIG / "tasks" / "memory.yaml"]
     args = ["--ros-args"] + [a for f in files for a in ("--params-file", str(f))]
     node = VisionNode(
-        fake_providers_with_embedder(FakeObjectDetector([], classes=list(MEMORY_CLASSES))),
+        dataclasses.replace(
+            fake_providers_with_embedder(FakeObjectDetector([], classes=list(MEMORY_CLASSES))),
+            on_demand=FakeObjectDetector([]),
+        ),
         track_ids=TrackIdBase(start_ns=0),
         context=ctx,
         cli_args=args,
@@ -652,6 +670,7 @@ def test_the_memory_task_turns_on_object_memory_without_a_person_class(ctx):
         assert "person" not in node.config.classes
         assert node.config.geometry_enabled and node.config.require_depth
         assert node.config.object_crops_enabled and node.config.object_embeddings_enabled
+        assert node.config.on_demand_enabled
     finally:
         assert node.close()
 
@@ -659,7 +678,13 @@ def test_the_memory_task_turns_on_object_memory_without_a_person_class(ctx):
 def test_the_hri_task_keeps_every_object_addition_off():
     for path in (CONFIG / "vision.yaml", CONFIG / "tasks" / "hri.yaml"):
         values = _yaml_parameters(path)
-        for flag in ("geometry_enabled", "require_depth", "object_crops_enabled", "object_embeddings_enabled"):
+        for flag in (
+            "geometry_enabled",
+            "require_depth",
+            "object_crops_enabled",
+            "object_embeddings_enabled",
+            "on_demand_enabled",
+        ):
             assert not values.get(flag, False), f"{path.name}: {flag}"
 
 
@@ -1745,3 +1770,431 @@ def test_describe_crop_answers_disabled_with_no_worker(harness, enabled):
     assert response.caption == "" and response.attributes_json == "" and response.printed_text == ""
     assert response.caption_model == "" and response.prompt_version == ""
     assert h.node.service_jobs == 0
+
+
+# --- DetectObjects ---------------------------------------------------------
+
+
+class OnDemandDetector(FakeObjectDetector):
+    """An on-demand detector that a test can stop or fail in either of its two steps.
+
+    It records each list it prepares, and the first byte of each image it sees,
+    which is the image's stamp.
+    """
+
+    def __init__(self, objects=(), classes=("cup",)) -> None:
+        super().__init__(objects, classes=classes)
+        self.prepared: list[list[str]] = []
+        self.images: list[int] = []
+        self.block_prepare = self.block_detect = False
+        self.fail_prepare = self.fail_detect = False
+        self.during_detect = None
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def _block(self) -> None:
+        self.entered.set()
+        self.release.wait(DEADLINE_S)
+
+    def set_classes(self, classes) -> None:
+        self.prepared.append(list(classes))
+        if self.block_prepare:
+            self._block()
+        if self.fail_prepare:
+            self._classes = []
+            raise RuntimeError("the text encoder failed")
+        super().set_classes(classes)
+
+    def detect(self, image):
+        self.images.append(int(image[0, 0, 0]))
+        if self.block_detect:
+            self._block()
+        if self.fail_detect:
+            raise RuntimeError("the detector failed")
+        if self.during_detect is not None:
+            self.during_detect()
+        return super().detect(image)
+
+
+STREAM_OBJECTS = FakeObjectDetector(
+    [Detection(box=np.array(LEFT), label="chair", score=0.8, track_id=5)], classes=CLASSES
+)
+CUP = Detection(box=np.array(BOX), label="cup", score=0.8, track_id=9)
+BIG_CUP = Detection(box=np.array(LEFT), label="cup", score=0.8, track_id=9)
+
+
+def _detect_request(*classes: str, max_image_age_s: float = 0.3, timeout_s: float = 4.0) -> DetectObjects.Request:
+    return DetectObjects.Request(
+        classes=list(classes or ("cup",)), max_image_age_s=max_image_age_s, timeout_s=timeout_s
+    )
+
+
+def _on_demand_harness(harness, on_demand=None, *, objects=NO_OBJECTS, sec=1, **overrides) -> Harness:
+    providers = dataclasses.replace(
+        fake_providers_with_embedder(objects=objects), on_demand=on_demand or OnDemandDetector([CUP])
+    )
+    h = harness(providers, on_demand_enabled=True, **overrides)
+    h.set_clock(sec * SECOND_NS + 100_000_000)
+    h.wait_matched()
+    return h
+
+
+def _assert_failed(response, code: str) -> None:
+    assert not response.success and response.error_code == code and response.message
+    assert len(response.message) <= MAX_MESSAGE_CHARS
+    assert len(response.objects.detections) == 0 and response.objects.stream_id == ""
+
+
+def test_detect_objects_answers_disabled_by_default_with_no_worker(harness):
+    h = harness()
+    assert h.node._current is None
+    _assert_failed(h.answer(h.call(DetectObjects, _detect_request())), requests.DISABLED)
+    assert h.node.service_jobs == 0
+
+
+def test_on_demand_needs_its_detector_at_start(ctx):
+    overrides = [Parameter("classes", value=CLASSES), Parameter("on_demand_enabled", value=True)]
+    with pytest.raises(ValueError, match="on-demand detector"):
+        _fake_node(ctx, parameter_overrides=overrides)
+
+
+def test_on_demand_alone_keeps_the_embedding_services_disabled(harness):
+    h = _on_demand_harness(harness)
+    assert h.answer(h.call(EmbedText, _text_request())).message.startswith(requests.DISABLED)
+    assert h.answer(h.call(EmbedCrop, _crop_request())).error_code == requests.DISABLED
+    assert h.node.service_jobs == 0
+
+
+@pytest.mark.parametrize(
+    ("request_", "reason"),
+    [
+        (DetectObjects.Request(classes=[], max_image_age_s=0.3, timeout_s=4.0), "empty"),
+        (_detect_request(*[f"class {i}" for i in range(33)]), "at most 32"),
+        (_detect_request("cup", "cup"), "duplicates"),
+        (_detect_request(max_image_age_s=0.0), "max_image_age_s"),
+        (_detect_request(timeout_s=5.5), "timeout_s"),
+    ],
+)
+def test_detect_objects_refuses_a_bad_request_before_the_worker(harness, request_, reason):
+    detector = OnDemandDetector()
+    h = _on_demand_harness(harness, detector)
+    response = h.answer(h.call(DetectObjects, request_))
+    _assert_failed(response, requests.INVALID)
+    assert reason in response.message
+    assert h.node.service_jobs == 0 and detector.prepared == [] and detector.images == []
+
+
+def test_detect_objects_without_an_image_answers_no_image(harness):
+    detector = OnDemandDetector([CUP])
+    h = _on_demand_harness(harness, detector)
+    _assert_failed(h.answer(h.call(DetectObjects, _detect_request())), requests.NO_IMAGE)
+    assert detector.images == []
+
+
+def test_detect_objects_without_a_camera_info_answers_no_image(harness):
+    detector = OnDemandDetector([CUP])
+    h = _on_demand_harness(harness, detector)
+    h.publish_image(1)
+    _assert_failed(h.answer(h.call(DetectObjects, _detect_request())), requests.NO_IMAGE)
+    assert detector.images == []
+
+
+def test_detect_objects_requiring_depth_refuses_an_image_with_no_pair(harness):
+    detector = OnDemandDetector([CUP])
+    h = _on_demand_harness(harness, detector, geometry_enabled=True, require_depth=True)
+    h.hold_infos()
+    h.publish_image(1)
+    response = h.answer(h.call(DetectObjects, _detect_request()))
+    _assert_failed(response, requests.NO_IMAGE)
+    assert "depth" in response.message
+    assert detector.images == []
+
+
+@pytest.mark.parametrize(
+    ("now_ns", "success"),
+    [
+        (SECOND_NS + 250_000_000, True),
+        (SECOND_NS + 250_000_001, False),
+        (SECOND_NS - 250_000_001, False),  # a stamp ahead of the clock, as after a sim restart
+    ],
+)
+def test_detect_objects_holds_the_image_age_in_ros_time(harness, now_ns, success):
+    detector = OnDemandDetector([CUP])
+    h = _on_demand_harness(harness, detector)
+    h.publish_frame(1)
+    h.set_clock(now_ns)
+    # 0.25 is exact in the request's float32, so the limit falls on this nanosecond.
+    response = h.answer(h.call(DetectObjects, _detect_request(max_image_age_s=0.25)))
+    if success:
+        assert response.success
+    else:
+        _assert_failed(response, requests.STALE_IMAGE)
+        assert detector.images == []
+
+
+def test_an_image_that_went_old_during_detection_is_not_labelled_current(harness):
+    detector = OnDemandDetector([CUP])
+    h = _on_demand_harness(harness, detector)
+    h.publish_frame(1)
+    detector.during_detect = lambda: h.set_clock(3 * SECOND_NS)
+    response = h.answer(h.call(DetectObjects, _detect_request()))
+    _assert_failed(response, requests.STALE_IMAGE)
+    assert "after detection" in response.message
+    assert detector.images == [1]
+
+
+def test_detect_objects_returns_its_own_array_and_publishes_nothing(harness):
+    h = _on_demand_harness(
+        harness,
+        OnDemandDetector([BIG_CUP]),
+        objects=STREAM_OBJECTS,
+        object_embeddings_enabled=True,
+        object_crops_enabled=True,
+    )
+    h.publish_frame(1)
+    assert h.spin_until(lambda: h.stamps("objects reliable") == [1] and _slot_free(h))
+    published = h.got["objects reliable"][0]
+    response = h.answer(h.call(DetectObjects, _detect_request()))
+    assert response.success and response.error_code == "" and response.message == ""
+    array = response.objects
+    assert array.header.stamp == Time(sec=1) and array.header.frame_id == FRAME
+    assert array.camera_info.header == array.header
+    assert list(array.classes) == ["cup"]
+    assert array.stream_id == published.stream_id == h.node.pipeline.stream_id
+    [det] = array.detections
+    assert det.label == "cup" and det.track_id == 0
+    assert len(det.embedding) == FakeEmbedder().dim and det.embedding_model == FakeEmbedder().model_name
+    assert det.crop.format == "jpeg" and len(det.crop.data) > 0
+    check_object_detection_array(array)
+    # The answer went to the caller alone.
+    h.spin_for(0.3)
+    assert h.stamps("objects reliable") == [1] and h.stamps("people reliable") == [1]
+    assert h.node.pipeline.processed_images == 1
+
+
+def test_detect_objects_with_nothing_found_is_a_success(harness):
+    h = _on_demand_harness(harness, OnDemandDetector([]))
+    h.publish_frame(1)
+    response = h.answer(h.call(DetectObjects, _detect_request()))
+    assert response.success and len(response.objects.detections) == 0
+    assert list(response.objects.classes) == ["cup"] and response.objects.stream_id
+
+
+def test_detect_objects_returns_at_most_the_cap(harness):
+    # Scores rise with the index and all pass the floor, so the cap must keep the last ones.
+    many = [Detection(box=np.array(LEFT), label="cup", score=0.5 + i / 100.0) for i in range(25)]
+    h = _on_demand_harness(harness, OnDemandDetector(many))
+    h.publish_frame(1)
+    response = h.answer(h.call(DetectObjects, _detect_request()))
+    assert response.success
+    scores = [round(float(d.score), 2) for d in response.objects.detections]
+    assert scores == [round(0.5 + (24 - i) / 100.0, 2) for i in range(20)]
+
+
+def _masked_cup() -> Detection:
+    return Detection(box=np.array(MASKED_BOX), label="cup", score=0.8, mask=box_mask(HEIGHT, WIDTH, MASKED_BOX))
+
+
+def test_detect_objects_fills_points_from_a_matching_pair(harness):
+    h = _on_demand_harness(harness, OnDemandDetector([_masked_cup()]), geometry_enabled=True)
+    h.hold_infos()
+    h.freeze_pair_clock()
+    h.publish_depth(_depth_msg(1, 1.5))
+    h.publish_image(1)
+    response = h.answer(h.call(DetectObjects, _detect_request()))
+    assert response.success
+    [det] = response.objects.detections
+    assert det.points.header == response.objects.header
+    assert det.points.width == 28 * 28 and det.view_quality > 0.0
+    check_object_detection_array(response.objects)
+
+
+def test_detect_objects_prefers_a_current_pair_and_falls_back_to_the_newest_image(harness):
+    h = _on_demand_harness(harness, OnDemandDetector([_masked_cup()]), geometry_enabled=True)
+    h.hold_infos()
+    h.freeze_pair_clock()
+    h.publish_depth(_depth_msg(1, 1.5))
+    h.publish_image(1)
+    # A newer colour image with no depth of its own, while the pair is still current.
+    newer = h.image(1)
+    newer.header.stamp = Time(sec=1, nanosec=50_000_000)
+    h.publish_msg(newer)
+    paired = h.answer(h.call(DetectObjects, _detect_request()))
+    assert paired.objects.header.stamp == Time(sec=1) and paired.objects.detections[0].points.width > 0
+    assert h.spin_until(lambda: _slot_free(h))
+    # The pair has gone old, so the newest image answers, with no points.
+    h.set_clock(2 * SECOND_NS + 100_000_000)
+    h.publish_image(2)
+    plain = h.answer(h.call(DetectObjects, _detect_request()))
+    assert plain.objects.header.stamp == Time(sec=2) and plain.objects.detections[0].points.width == 0
+
+
+def test_the_newest_image_is_chosen_after_new_classes_are_ready(harness):
+    detector = OnDemandDetector([Detection(box=np.array(BOX), label="bowl", score=0.8)])
+    detector.block_prepare = True
+    h = _on_demand_harness(harness, detector)
+    h.publish_frame(1)
+    try:
+        future = h.call(DetectObjects, _detect_request("bowl"))
+        assert h.spin_until(detector.entered.is_set)
+        # The preparation takes long enough to make the first image old.
+        h.set_clock(2 * SECOND_NS + 100_000_000)
+        h.publish_image(2)
+    finally:
+        detector.release.set()
+    response = h.answer(future)
+    assert response.success and response.objects.header.stamp == Time(sec=2)
+    assert detector.prepared == [["bowl"]] and detector.images == [2]
+    assert list(response.objects.classes) == ["bowl"]
+    assert h.node.classes_prepared == 1
+
+
+def test_the_same_list_prepares_nothing_and_a_new_order_prepares_again(harness):
+    detector = OnDemandDetector([CUP], classes=("cup", "bowl"))
+    h = _on_demand_harness(harness, detector)
+    now = [100.0]
+    h.node._class_gate = requests.ClassPrepareGate(clock=lambda: now[0])
+    h.publish_frame(1)
+    for _ in range(3):
+        assert h.answer(h.call(DetectObjects, _detect_request("cup", "bowl"))).success
+        assert h.spin_until(lambda: _slot_free(h))
+    assert detector.prepared == [] and h.node.classes_prepared == 0
+    assert h.answer(h.call(DetectObjects, _detect_request("bowl", "cup"))).success
+    assert detector.prepared == [["bowl", "cup"]] and h.node.classes_prepared == 1
+
+
+def test_a_new_list_within_the_period_is_refused_with_no_preparation(harness):
+    detector = OnDemandDetector([CUP])
+    h = _on_demand_harness(harness, detector)
+    now = [100.0]
+    h.node._class_gate = requests.ClassPrepareGate(2.0, clock=lambda: now[0])
+    h.publish_frame(1)
+    assert h.answer(h.call(DetectObjects, _detect_request("bowl"))).success
+    assert h.spin_until(lambda: _slot_free(h))
+    now[0] = 101.9
+    busy_before = h.node.service_busy
+    response = h.answer(h.call(DetectObjects, _detect_request("plate")))
+    _assert_failed(response, requests.BUSY)
+    assert "at most once every 2 s" in response.message
+    assert h.node.service_busy == busy_before + 1
+    assert detector.prepared == [["bowl"]]
+    # The list in place still answers within the period.
+    assert h.spin_until(lambda: _slot_free(h))
+    assert h.answer(h.call(DetectObjects, _detect_request("bowl"))).success
+    assert h.spin_until(lambda: _slot_free(h))
+    now[0] = 102.0
+    assert h.answer(h.call(DetectObjects, _detect_request("plate"))).success
+    assert detector.prepared == [["bowl"], ["plate"]]
+
+
+def test_a_second_request_gets_busy_across_the_services(harness):
+    detector = OnDemandDetector([CUP])
+    detector.block_detect = True
+    h = _on_demand_harness(harness, detector, object_embeddings_enabled=True)
+    h.publish_frame(1)
+    try:
+        first = h.call(DetectObjects, _detect_request())
+        assert h.spin_until(detector.entered.is_set)
+        _assert_failed(h.answer(h.call(DetectObjects, _detect_request())), requests.BUSY)
+        assert h.answer(h.call(EmbedText, _text_request())).message.startswith(requests.BUSY)
+        assert h.node.service_busy == 2
+    finally:
+        detector.release.set()
+    assert h.answer(first).success
+    assert h.spin_until(lambda: _slot_free(h))
+    # Neither refused request ran later.
+    assert detector.images == [1] and h.node.service_jobs == 1
+
+
+def test_detect_objects_stops_at_its_deadline_and_the_stream_goes_on(harness):
+    detector = OnDemandDetector([CUP])
+    detector.block_detect = True
+    h = _on_demand_harness(harness, detector, objects=STREAM_OBJECTS)
+    h.publish_frame(1)
+    assert h.spin_until(lambda: h.stamps("objects reliable") == [1] and _slot_free(h))
+    try:
+        future = h.call(DetectObjects, _detect_request(timeout_s=0.2))
+        assert h.spin_until(detector.entered.is_set)
+        h.publish_image(2)
+        _assert_failed(h.answer(future), requests.TIMEOUT)
+        # The model still runs, so the slot stays taken and image 2 waits.
+        assert h.stamps("objects reliable") == [1]
+    finally:
+        detector.release.set()
+    assert h.spin_until(lambda: h.node.late_results == 1)
+    assert h.spin_until(lambda: 2 in h.stamps("objects reliable"))
+    assert h.spin_until(lambda: _slot_free(h))
+    assert [d.track_id for d in h.got["objects reliable"][-1].detections] == [
+        d.track_id for d in h.got["objects reliable"][0].detections
+    ]
+
+
+def test_a_deadline_during_the_preparation_runs_no_detector(harness):
+    detector = OnDemandDetector([CUP])
+    detector.block_prepare = True
+    h = _on_demand_harness(harness, detector)
+    h.publish_frame(1)
+    try:
+        future = h.call(DetectObjects, _detect_request("bowl", timeout_s=0.2))
+        assert h.spin_until(detector.entered.is_set)
+        _assert_failed(h.answer(future), requests.TIMEOUT)
+    finally:
+        detector.release.set()
+    assert h.spin_until(lambda: h.node.late_results == 1)
+    assert h.spin_until(lambda: _slot_free(h))
+    assert detector.images == []
+    assert h.node.classes_prepared == 1 and h.node.pipeline.on_demand_classes == ["bowl"]
+
+
+def test_a_failed_preparation_answers_model_unavailable_and_prepares_again(harness):
+    detector = OnDemandDetector([CUP])
+    detector.fail_prepare = True
+    h = _on_demand_harness(harness, detector, objects=STREAM_OBJECTS)
+    now = [100.0]
+    h.node._class_gate = requests.ClassPrepareGate(2.0, clock=lambda: now[0])
+    h.publish_frame(1)
+    assert h.spin_until(lambda: h.stamps("objects reliable") == [1] and _slot_free(h))
+    response = h.answer(h.call(DetectObjects, _detect_request("bowl")))
+    _assert_failed(response, requests.MODEL_UNAVAILABLE)
+    assert "text encoder" in response.message
+    assert h.node.classes_prepared == 0 and detector.images == []
+    assert h.spin_until(lambda: _slot_free(h))
+    # A failure also takes a place in the period, and the list stays empty.
+    _assert_failed(h.answer(h.call(DetectObjects, _detect_request("bowl"))), requests.BUSY)
+    assert h.spin_until(lambda: _slot_free(h))
+    now[0] = 102.0
+    detector.fail_prepare = False
+    assert h.answer(h.call(DetectObjects, _detect_request("cup"))).success
+    assert detector.prepared == [["bowl"], ["cup"]]
+    assert h.node.frames_failed == 0
+
+
+def test_a_failed_detection_answers_inference_failed_and_leaves_the_stream_alone(harness):
+    detector = OnDemandDetector([CUP])
+    detector.fail_detect = True
+    h = _on_demand_harness(harness, detector, objects=STREAM_OBJECTS)
+    h.publish_frame(1)
+    assert h.spin_until(lambda: h.stamps("objects reliable") == [1] and _slot_free(h))
+    response = h.answer(h.call(DetectObjects, _detect_request()))
+    _assert_failed(response, requests.INFERENCE_FAILED)
+    assert "the detector failed" in response.message
+    assert h.spin_until(lambda: _slot_free(h))
+    assert h.node.frames_failed == 0
+    h.publish_image(2)
+    assert h.spin_until(lambda: 2 in h.stamps("objects reliable"))
+
+
+def test_a_new_list_leaves_the_streaming_detector_alone(harness):
+    stream = FakeObjectDetector(STREAM_OBJECTS.objects, classes=CLASSES)
+    detector = OnDemandDetector([Detection(box=np.array(BOX), label="bowl", score=0.8)])
+    h = _on_demand_harness(harness, detector, objects=stream)
+    h.publish_frame(1)
+    assert h.spin_until(lambda: h.stamps("objects reliable") == [1] and _slot_free(h))
+    assert h.answer(h.call(DetectObjects, _detect_request("bowl"))).success
+    assert h.spin_until(lambda: _slot_free(h))
+    h.publish_image(2)
+    assert h.spin_until(lambda: h.stamps("objects reliable") == [1, 2])
+    first, second = h.got["objects reliable"]
+    assert list(first.classes) == list(second.classes) == CLASSES
+    assert [d.track_id for d in first.detections] == [d.track_id for d in second.detections]
+    assert stream.classes == CLASSES

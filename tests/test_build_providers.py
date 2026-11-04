@@ -53,6 +53,7 @@ def manager(monkeypatch):
     manager = mock.Mock()
     for module, name in (
         (yolo, "YoloeTracker"),
+        (yolo, "YoloeDetector"),
         (yolo, "YoloPoseTracker"),
         (identifier, "OSNetReIdentifier"),
         (face, "FaceAnalyzer"),
@@ -118,6 +119,33 @@ def test_every_provider_is_built_from_the_config_in_order(models, manager):
         faces=manager.HeadFaceRecognizer.return_value,
         reid=manager.OSNetReIdentifier.return_value,
     )
+
+
+def test_the_second_yoloe_is_built_at_start_only_with_on_demand(models, manager):
+    config = VisionConfig(classes=CLASSES, on_demand_enabled=True, objects_min_score=0.4)
+    result = build_providers(config, manager.logger)
+    ultralytics = (models / ULTRALYTICS_DIR).absolute()
+    assert manager.YoloeDetector.mock_calls == [
+        mock.call(
+            ultralytics / config.objects_weights,
+            list(CLASSES),
+            device="cuda:0",
+            imgsz=640,
+            conf=0.4,
+            agnostic_nms=True,
+            max_det=20,
+        ),
+    ]
+    assert result.on_demand is manager.YoloeDetector.return_value
+    assert result.objects is manager.YoloeTracker.return_value
+    # The streaming tracker gets exactly what it gets with the flag off.
+    assert "keep_masks" not in manager.YoloeTracker.call_args.kwargs
+    assert manager.YoloeTracker.call_args.kwargs["conf"] == 0.1
+
+
+def test_the_second_yoloe_asks_for_masks_with_geometry(models, manager):
+    build_providers(VisionConfig(classes=CLASSES, on_demand_enabled=True, geometry_enabled=True), manager.logger)
+    assert manager.YoloeDetector.call_args.kwargs["keep_masks"] is True
 
 
 def test_geometry_asks_the_object_detector_for_masks(models, manager):

@@ -2,7 +2,8 @@
 
     pixi run vision                 # the HRI task's classes
     pixi run vision task:=hri
-    pixi run vision sim:=true       # sim time, and the sim output topics
+    pixi run vision sim:=true       # sim time, and the sim topics and services
+    pixi run vision task:=memory sim:=true  # object memory, also DetectObjects
 
 walkie-vision is a Pixi project, not an ament package, so there is no
 executable for launch_ros to look up. The node runs as a plain process:

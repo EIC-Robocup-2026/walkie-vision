@@ -20,6 +20,8 @@ walkie_vision:
     # They answer DISABLED until object_embeddings_enabled is on (ADR-0015).
     embed_text_service: /walkie_vision/embed_text
     embed_crop_service: /walkie_vision/embed_crop
+    # Answers DISABLED unless on_demand_enabled is true.
+    detect_objects_service: /walkie_vision/detect_objects
     # Always answers DISABLED in this build.
     describe_crop_service: /walkie_vision/describe_crop
 
@@ -115,5 +117,9 @@ walkie_vision:
     # `pixi run fetch-models` puts in the Hugging Face cache; the node never
     # downloads them.
     object_embeddings_enabled: false
+    # Serve DetectObjects with a second YOLOE, built at start. Off for HRI: the
+    # model does not load and the service answers DISABLED. New classes stop the
+    # stream for about 1.5 s, because one worker runs every model.
+    on_demand_enabled: false
     # This build has no caption model, so the node refuses true at startup.
     captions_enabled: false

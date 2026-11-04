@@ -11,3 +11,4 @@ walkie_vision:
     require_depth: true
     object_crops_enabled: true
     object_embeddings_enabled: true
+    on_demand_enabled: true

@@ -16,6 +16,10 @@ and one sampler serves both. A sampled detection gets its crop, its vector or
 both, and the colour shares of its mask. The time counts in the build stage.
 With both off, no embedder runs, and no JPEG or colour share is computed.
 
+With on_demand_enabled, detect_on_demand() runs a separate detector on one image
+for DetectObjects. It returns one array to its caller, and it does not touch the
+streaming detector, its classes, its track ids or the sampler's counter.
+
 A single bad value from a model (a box or a vector that is not finite, or an
 object score outside [0, 1]) leaves out that field or that detection, and is
 counted in FrameResult.dropped. A provider that raises, or that returns the wrong
@@ -60,6 +64,8 @@ from .providers import (
 
 TRACK_ID_SPACE = 2**32 - 1
 """The number of non-zero uint32 values, which a published track id can take."""
+ON_DEMAND_MAX_OBJECTS = 20
+"""DetectObjects returns and works on at most this many detections, those with the highest scores."""
 
 
 class TrackIdBase:
@@ -91,13 +97,18 @@ class TrackIdBase:
 
 @dataclass(frozen=True)
 class Providers:
-    """The models the vision node runs. embedder is set only with object embeddings on."""
+    """The models the vision node runs.
+
+    embedder is set only with object embeddings on, and on_demand only with
+    on-demand detection on. on_demand is never the same object as objects.
+    """
 
     objects: ObjectDetector
     pose: PoseEstimator
     faces: PersonFaceRecognizer
     reid: ReIdentifier
     embedder: Embedder | None = None
+    on_demand: ObjectDetector | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +143,14 @@ class FrameResult:
     """Bad fields or detections left out of this image: object, person, face, appearance, embedding."""
     duplicates: int = 0
     """Poses left out of this image as a second box of a person already in it."""
+
+
+@dataclass
+class OnDemandResult:
+    """One DetectObjects array, and the bad fields or detections left out of it."""
+
+    objects: ObjectDetectionArray
+    dropped: collections.Counter[str] = field(default_factory=collections.Counter)
 
 
 def _check_classes(classes: Sequence[str]) -> list[str]:
@@ -212,6 +231,10 @@ class VisionPipeline:
 
     A fake embedder needs allow_fake_embedder, which only an injected set of
     providers gets. The real path can then never publish a fake's vectors.
+
+    The on-demand detector's classes change with the requests, through
+    prepare_on_demand(). It must be its own object, so a request can never reach
+    the stream's detector.
     """
 
     def __init__(
@@ -231,8 +254,14 @@ class VisionPipeline:
         object_crops_enabled: bool = False,
         object_embeddings_enabled: bool = False,
         allow_fake_embedder: bool = False,
+        on_demand_enabled: bool = False,
     ) -> None:
         self._classes = _check_classes(classes)
+        if on_demand_enabled:
+            if providers.on_demand is None:
+                raise ValueError("on_demand_enabled needs an on-demand detector")
+            if providers.on_demand is providers.objects:
+                raise ValueError("the on-demand detector must not be the streaming detector")
         if object_embeddings_enabled:
             if providers.embedder is None:
                 raise ValueError("object_embeddings_enabled needs an embedder")
@@ -278,6 +307,61 @@ class VisionPipeline:
     def processed_images(self) -> int:
         """Images that process() has returned arrays for. The sampler counts on it."""
         return self._processed_images
+
+    @property
+    def on_demand_classes(self) -> list[str]:
+        """The classes the on-demand detector looks for now: the last list it prepared."""
+        return list(self._providers.on_demand.classes)
+
+    def prepare_on_demand(self, classes: Sequence[str]) -> None:
+        """Make the on-demand detector look for these classes. Can take about 1.5 s. Raises when it fails."""
+        self._providers.on_demand.set_classes(_check_classes(classes))
+
+    def detect_on_demand(
+        self, image: np.ndarray, header: Header, camera_info: CameraInfo, depth: RegisteredDepth | None = None
+    ) -> OnDemandResult:
+        """Run the on-demand detector on one BGR image and return its array for the caller.
+
+        The array has the image's header, a copy of camera_info, the detector's
+        classes and this pipeline's stream id. Every track id is 0. Only the
+        highest ON_DEMAND_MAX_OBJECTS scores are kept, before any later work.
+        Each kept detection with a large enough box gets what the flags allow:
+        its crop, its vector and its colour shares, with no 1-in-10 sampling.
+        Raises when a provider raises or returns the wrong shape.
+        """
+        detector = self._providers.on_demand
+        dropped: collections.Counter[str] = collections.Counter()
+        found: list[Detection] = []
+        for det in detector.detect(image):
+            if not _box_ok(det.box) or not 0.0 <= float(det.score) <= 1.0:
+                dropped["object"] += 1
+            elif det.score >= self._objects_min_score:
+                found.append(dataclasses.replace(det, track_id=0))
+        found.sort(key=lambda det: -float(det.score))
+        kept = found[:ON_DEMAND_MAX_OBJECTS]
+
+        info = copy.deepcopy(camera_info)
+        info.header = header
+        height, width = image.shape[:2]
+        objects = [
+            convert.to_object_detection(
+                det,
+                points=points,
+                view_quality=quality,
+                crop=sample.crop,
+                embedding=sample.embedding,
+                embedding_model=sample.embedding_model,
+                color_shares=sample.color_shares,
+            )
+            for det, (points, quality), sample in zip(
+                kept,
+                self._geometry(image, header, kept, depth),
+                self._fill_samples(image, header, kept, embeddings.usable_samples(kept, width, height), dropped),
+                strict=True,
+            )
+        ]
+        array = convert.to_object_detection_array(header, info, detector.classes, objects, stream_id=self._stream_id)
+        return OnDemandResult(objects=array, dropped=dropped)
 
     def process(
         self, image: np.ndarray, header: Header, camera_info: CameraInfo, depth: RegisteredDepth | None = None
@@ -412,13 +496,28 @@ class VisionPipeline:
         embedder raises or returns the wrong shape, or for a mask that does
         not have the image's size.
         """
-        samples = [_Sample()] * len(detections)
         if not (self._crops_enabled or self._embeddings_enabled):
-            return samples
+            return [_Sample()] * len(detections)
         height, width = image.shape[:2]
         chosen = embeddings.select_samples(detections, self._processed_images, width, height)
-        if not chosen:
+        return self._fill_samples(image, header, detections, chosen, dropped)
+
+    def _fill_samples(
+        self,
+        image: np.ndarray,
+        header: Header,
+        detections: Sequence[Detection],
+        chosen: Sequence[int],
+        dropped: collections.Counter[str],
+    ) -> list[_Sample]:
+        """Return what the flags add to the chosen detections, and nothing for the others.
+
+        With crops and embeddings both off, that is nothing at all.
+        """
+        samples = [_Sample()] * len(detections)
+        if not chosen or not (self._crops_enabled or self._embeddings_enabled):
             return samples
+        height, width = image.shape[:2]
         sources = [embeddings.padded_crop(image, detections[i].box) for i in chosen]
         vectors = self._embed(sources, dropped) if self._embeddings_enabled else [None] * len(chosen)
         model = self._providers.embedder.model_name if self._embeddings_enabled else ""

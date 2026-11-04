@@ -33,7 +33,7 @@ from walkie_vision_msgs.msg import (
     PersonDetection,
     PersonDetectionArray,
 )
-from walkie_vision_msgs.srv import EmbedCrop, EmbedText, GetPersonCrop
+from walkie_vision_msgs.srv import DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
 
 from .crop import COLOR_NAMES, CropStatus, PersonCrop
 from .providers import CLIP_VIT_B16, Detection, Embedder, Face, PersonPose
@@ -519,6 +519,11 @@ def check_model_dim(embedder: Embedder) -> None:
 def embed_text_failure(code: str, message: str) -> EmbedText.Response:
     """An EmbedText failure. The type has no error code field, so the code starts the message."""
     return EmbedText.Response(success=False, message=bounded_message(f"{code}: {message}"))
+
+
+def detect_objects_failure(code: str, message: str) -> DetectObjects.Response:
+    """A DetectObjects failure, with the default empty array."""
+    return DetectObjects.Response(success=False, error_code=code, message=bounded_message(message))
 
 
 def embed_crop_failure(code: str, message: str) -> EmbedCrop.Response:

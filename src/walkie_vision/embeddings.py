@@ -91,6 +91,15 @@ def select_samples(detections: Sequence[Detection], counter: int, width: int, he
     return eligible[:SAMPLE_MAX_OBJECTS]
 
 
+def usable_samples(detections: Sequence[Detection], width: int, height: int) -> list[int]:
+    """Return the indices of every detection whose box is large enough to sample, in order.
+
+    For DetectObjects, which has no period and no limit of its own here: the
+    caller asked for this one image.
+    """
+    return [i for i, det in enumerate(detections) if _short_side(det.box, width, height) >= SAMPLE_MIN_SIDE_PX]
+
+
 def padded_crop(image: np.ndarray, box: np.ndarray) -> np.ndarray:
     """The pixels of a box grown by CROP_PADDING on each side and clipped to the image. A view, not a copy.
 

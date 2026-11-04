@@ -34,11 +34,13 @@ from walkie_vision.providers import ObjectDetector, PoseEstimator  # noqa: E402
 from walkie_vision.yolo import (  # noqa: E402
     MOBILECLIP_FILE,
     TRACKER_NAMES,
+    YoloeDetector,
     YoloeTracker,
     YoloPoseTracker,
     detections_from_arrays,
     mask_to_native,
     poses_from_arrays,
+    untracked_detections_from_arrays,
     validate_classes,
     validate_tracker,
 )
@@ -104,6 +106,30 @@ def test_detection_arrays_of_different_lengths_raise():
         detections_from_arrays(
             np.zeros((2, 4)), np.array([0.9]), np.array([0, 0]), np.array([1, 2]), ["chair"], SHAPE
         )
+
+
+def test_untracked_detections_have_track_id_zero_and_clipped_boxes():
+    xyxy = np.array([[-5.0, 20.0, 700.0, 220.0], [650.0, 10.0, 700.0, 50.0]], dtype=np.float32)
+    dets = untracked_detections_from_arrays(xyxy, np.array([0.5, 0.9]), np.array([1, 0]), ["chair", "sofa"], SHAPE)
+    assert [(d.label, d.track_id) for d in dets] == [("sofa", 0)]
+    np.testing.assert_array_equal(dets[0].box, [0.0, 20.0, 640.0, 220.0])
+    assert type(dets[0].score) is float and dets[0].mask is None
+
+
+def test_a_kept_untracked_box_has_the_mask_of_its_own_row():
+    # Row 0 lies outside the image and is dropped: row 1 must keep its own mask.
+    xyxy = np.array([[700.0, 0.0, 800.0, 10.0], [0.0, 0.0, 10.0, 10.0]])
+    masks = np.zeros((2, 480, 640), dtype=np.float32)
+    masks[0, 0:5, 0:5] = 1.0
+    masks[1, 100:105, 100:105] = 1.0
+    [det] = untracked_detections_from_arrays(xyxy, np.array([0.9, 0.8]), np.array([0, 0]), ["chair"], SHAPE, masks)
+    assert det.mask.dtype == bool and det.mask.shape == SHAPE
+    assert det.mask[102, 102] and not det.mask[2, 2]
+
+
+def test_untracked_arrays_of_different_lengths_raise():
+    with pytest.raises(ValueError):
+        untracked_detections_from_arrays(np.zeros((2, 4)), np.array([0.9]), np.array([0, 0]), ["chair"], SHAPE)
 
 
 # --- masks ------------------------------------------------------------------
@@ -321,6 +347,12 @@ class _StubModel:
             return [self.results]
         return [types.SimpleNamespace(boxes=Boxes(torch.zeros((0, 6)), image.shape[:2]), names={}, keypoints=None)]
 
+    def predict(self, image: np.ndarray, **kwargs):
+        self.calls.append(("predict", image.shape, kwargs))
+        if self.results is not None:
+            return [self.results]
+        return [types.SimpleNamespace(boxes=Boxes(torch.zeros((0, 6)), image.shape[:2]), names={}, masks=None)]
+
 
 @pytest.fixture
 def stub_ultralytics(monkeypatch):
@@ -402,6 +434,116 @@ def test_yoloe_detect_converts_tracked_boxes(tmp_path, stub_ultralytics):
     assert tracker.detect(image) == []
     tracker._model.results = types.SimpleNamespace(boxes=None, names={})
     assert tracker.detect(image) == []
+
+
+def test_the_detector_checks_its_arguments_before_any_model(tmp_path, stub_ultralytics):
+    with pytest.raises(ValueError):
+        YoloeDetector(tmp_path / "yoloe.pt", ["chair", "chair"])
+    with pytest.raises(FileNotFoundError, match="fetch-models"):
+        YoloeDetector(tmp_path / "yoloe.pt", ["chair"])
+    with pytest.raises(FileNotFoundError, match=MOBILECLIP_FILE):
+        YoloeDetector(_weights(tmp_path, "yoloe.pt"), ["chair"])
+
+
+def test_the_detector_loads_in_the_weights_folder_and_warms_up_with_no_tracker(tmp_path, stub_ultralytics):
+    weights = _weights(tmp_path, "yoloe.pt", MOBILECLIP_FILE)
+    cwd = os.getcwd()
+    detector = YoloeDetector(weights, ("chair", "sofa"), device="cpu", imgsz=64, conf=0.3, max_det=7)
+    assert os.getcwd() == cwd
+    assert isinstance(detector, ObjectDetector)
+    calls = detector._model.calls
+    assert [c[0] for c in calls] == ["init", "set_classes", "predict"]
+    assert calls[0][1:] == (str(weights.resolve()), str(tmp_path))
+    assert calls[1][1:] == (["chair", "sofa"], str(tmp_path))
+    assert calls[2][1] == (64, 64, 3)
+    assert calls[2][2] == {
+        "conf": 0.3,
+        "imgsz": 64,
+        "agnostic_nms": True,
+        "max_det": 7,
+        "device": "cpu",
+        "verbose": False,
+    }
+    assert detector.classes == ["chair", "sofa"]
+
+
+def test_the_detector_gives_track_id_zero_and_masks_only_when_asked(tmp_path, stub_ultralytics):
+    files = _weights(tmp_path, "yoloe.pt", MOBILECLIP_FILE)
+    image = np.zeros(SHAPE + (3,), np.uint8)
+    # x1, y1, x2, y2, score, class
+    boxes = Boxes(torch.tensor([[10.0, 20.0, 700.0, 220.0, 0.8, 1.0]]), SHAPE)
+    mask = torch.zeros((1, 480, 640))
+    mask[0, 30:60, 30:60] = 1.0
+    result = types.SimpleNamespace(boxes=boxes, names={0: "chair", 1: "sofa"}, masks=types.SimpleNamespace(data=mask))
+
+    plain = YoloeDetector(files, ["chair", "sofa"], device="cpu")
+    plain._model.results = result
+    [det] = plain.detect(image)
+    assert (det.label, det.track_id, det.mask) == ("sofa", 0, None)
+    np.testing.assert_array_equal(det.box, [10.0, 20.0, 640.0, 220.0])
+
+    masked = YoloeDetector(files, ["chair", "sofa"], device="cpu", keep_masks=True)
+    masked._model.results = result
+    [det] = masked.detect(image)
+    assert det.track_id == 0 and det.mask.shape == SHAPE and det.mask[40, 40]
+
+    plain._model.results = types.SimpleNamespace(boxes=None, names={}, masks=None)
+    assert plain.detect(image) == []
+
+
+def test_a_failed_set_classes_leaves_the_detector_with_no_list(tmp_path, stub_ultralytics, monkeypatch):
+    detector = YoloeDetector(_weights(tmp_path, "yoloe.pt", MOBILECLIP_FILE), ["chair"], device="cpu")
+
+    def broken(classes):
+        raise RuntimeError("the text encoder failed")
+
+    monkeypatch.setattr(detector._model, "set_classes", broken)
+    with pytest.raises(RuntimeError):
+        detector.set_classes(["sofa"])
+    assert detector.classes == []
+
+
+def test_a_failed_warm_up_leaves_the_detector_with_no_list(tmp_path, stub_ultralytics, monkeypatch):
+    detector = YoloeDetector(_weights(tmp_path, "yoloe.pt", MOBILECLIP_FILE), ["chair"], device="cpu")
+
+    def broken(image, **kwargs):
+        raise RuntimeError("the model failed")
+
+    monkeypatch.setattr(detector._model, "predict", broken)
+    with pytest.raises(RuntimeError):
+        detector.set_classes(["sofa"])
+    assert detector.classes == []
+
+
+def test_two_model_objects_keep_the_streams_classes_and_track_ids(tmp_path, stub_ultralytics):
+    files = _weights(tmp_path, "yoloe.pt", MOBILECLIP_FILE)
+    tracker = YoloeTracker(files, ["chair", "sofa"], device="cpu")
+    detector = YoloeDetector(files, ["chair", "sofa"], device="cpu")
+    assert tracker._model is not detector._model
+
+    image = np.zeros(SHAPE + (3,), np.uint8)
+    # x1, y1, x2, y2, track id, score, class
+    tracks = torch.tensor([[10.0, 20.0, 100.0, 220.0, 4.0, 0.8, 1.0]])
+    tracker._model.results = types.SimpleNamespace(boxes=Boxes(tracks, SHAPE), names={0: "chair", 1: "sofa"})
+    before = [(d.label, d.track_id) for d in tracker.detect(image)]
+    assert before == [("sofa", 4)]
+    stream_calls = list(tracker._model.calls)
+    stream_trackers = tracker._model.predictor.trackers
+    resets = stream_trackers[0].resets
+
+    detector.set_classes(["cup"])
+    detector.detect(image)
+    detector.set_classes(["bottle", "bowl"])
+    detector.detect(image)
+
+    # Nothing reached the stream's model, its tracker or its list.
+    assert tracker._model.calls == stream_calls
+    assert tracker._model.predictor.trackers is stream_trackers and stream_trackers[0].resets == resets
+    assert tracker.classes == ["chair", "sofa"]
+    assert [(d.label, d.track_id) for d in tracker.detect(image)] == before
+    # And the detector never tracked.
+    assert "track" not in [c[0] for c in detector._model.calls]
+    assert detector.classes == ["bottle", "bowl"]
 
 
 def _tracked_result(names: dict[int, str]) -> Results:

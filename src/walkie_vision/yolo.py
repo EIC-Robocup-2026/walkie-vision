@@ -1,4 +1,4 @@
-"""YOLOE-26 with ByteTrack, and YOLO26 pose with a tracker, as walkie_vision.providers detectors.
+"""YOLOE-26 with and without a tracker, and YOLO26 pose with a tracker, as walkie_vision.providers detectors.
 
 YoloeTracker is an ObjectDetector that looks for text prompts. YoloPoseTracker
 is a PoseEstimator; its default tracker is BoT-SORT, whose camera-motion
@@ -10,6 +10,10 @@ until it is confirmed on the next frame, so a new object or person appears
 one processed frame late. The tracker's first frame after a reset is the
 exception: it activates every track at once. That is why both classes reset
 their tracker after the warm-up.
+
+YoloeDetector is a second, separate YOLOE for DetectObjects. It has no tracker,
+and its classes change with the requests, so the stream's classes and track ids
+never do.
 
 Ultralytics is imported only inside the constructors, so the pure helpers
 below can be imported and tested without it.
@@ -106,6 +110,40 @@ def detections_from_arrays(
                 label=names[int(class_id)],
                 score=float(score),
                 track_id=int(track_id),
+                mask=None if masks is None else mask_to_native(masks[row], (height, width)),
+            )
+        )
+    return found
+
+
+def untracked_detections_from_arrays(
+    xyxy: np.ndarray,
+    scores: np.ndarray,
+    class_ids: np.ndarray,
+    names: Sequence[str] | Mapping[int, str],
+    image_shape: tuple[int, int],
+    masks: np.ndarray | None = None,
+) -> list[Detection]:
+    """Turn the boxes of a detector with no tracker into Detections with track id 0.
+
+    Otherwise the rules of detections_from_arrays apply: boxes are clipped, a
+    box with no area left is dropped, and a kept box takes the mask of its own
+    row.
+    """
+    xyxy = np.asarray(xyxy, dtype=np.float64).reshape(-1, 4)
+    _check_rows(len(xyxy), scores=scores, class_ids=class_ids, masks=masks)
+    height, width = image_shape[:2]
+    found = []
+    for row, (box, score, class_id) in enumerate(zip(xyxy, scores, class_ids)):
+        clipped = _clip_box(box, width, height)
+        if clipped is None:
+            continue
+        found.append(
+            Detection(
+                box=clipped,
+                label=names[int(class_id)],
+                score=float(score),
+                track_id=0,
                 mask=None if masks is None else mask_to_native(masks[row], (height, width)),
             )
         )
@@ -292,6 +330,93 @@ class YoloeTracker:
             b.conf.cpu().numpy(),
             b.cls.int().cpu().numpy(),
             None if b.id is None else b.id.int().cpu().numpy(),
+            r.names,
+            image.shape[:2],
+            masks,
+        )
+
+
+class YoloeDetector:
+    """YOLOE-26 on text prompts with no tracker: a walkie_vision.providers.ObjectDetector for DetectObjects.
+
+    This is its own model object next to the stream's YoloeTracker. weights is
+    the YOLOE checkpoint; MOBILECLIP_FILE must sit next to it. Every detection
+    has track id 0. conf is the detector threshold: with no tracker, nothing
+    needs the low-score boxes. max_det bounds the boxes and the masks that are
+    copied to the CPU. Only with keep_masks are masks returned, at the image's
+    size.
+
+    The node builds this at start only with on_demand_enabled, and warms it up
+    there, so a first request does not pay for the load.
+    """
+
+    def __init__(
+        self,
+        weights: str | Path,
+        classes: Sequence[str],
+        *,
+        device: str = "cuda:0",
+        imgsz: int = 640,
+        conf: float = 0.25,
+        agnostic_nms: bool = True,
+        max_det: int = 20,
+        keep_masks: bool = False,
+    ) -> None:
+        validate_classes(classes)
+        self._weights = Path(weights).resolve()
+        _require(self._weights)
+        _require(self._weights.parent / MOBILECLIP_FILE)
+        self._device = device
+        self._imgsz = imgsz
+        self._conf = conf
+        self._agnostic_nms = agnostic_nms
+        self._max_det = max_det
+        self._keep_masks = keep_masks
+        self._classes: list[str] = []
+
+        from ultralytics import YOLOE
+
+        with contextlib.chdir(self._weights.parent):
+            self._model = YOLOE(str(self._weights))
+        self.set_classes(classes)
+
+    @property
+    def classes(self) -> list[str]:
+        """The text prompts that detect() looks for, as given. Empty after a failed set_classes()."""
+        return list(self._classes)
+
+    def set_classes(self, classes: Sequence[str]) -> None:
+        """Look for these text prompts, then warm up, so the next detect() starts at once.
+
+        A failure can leave the model between two lists. The classes then stay
+        empty, so the next request prepares its own list again.
+        """
+        names = validate_classes(classes)
+        self._classes = []
+        with contextlib.chdir(self._weights.parent):
+            self._model.set_classes(list(names))
+        self.detect(np.zeros((self._imgsz, self._imgsz, 3), np.uint8))
+        self._classes = names
+
+    def detect(self, image: np.ndarray) -> list[Detection]:
+        """Return the objects in a BGR image, each with track id 0."""
+        r = self._model.predict(
+            image,
+            conf=self._conf,
+            imgsz=self._imgsz,
+            agnostic_nms=self._agnostic_nms,
+            max_det=self._max_det,
+            device=self._device,
+            verbose=False,
+        )[0]
+        b = r.boxes
+        if b is None or len(b) == 0:
+            return []
+        masks = r.masks.data.cpu().numpy() if self._keep_masks and r.masks is not None else None
+        return untracked_detections_from_arrays(
+            b.xyxy.cpu().numpy(),
+            b.conf.cpu().numpy(),
+            b.cls.int().cpu().numpy(),
             r.names,
             image.shape[:2],
             masks,

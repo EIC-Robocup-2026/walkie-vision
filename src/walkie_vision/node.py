@@ -5,7 +5,15 @@ and one ObjectDetectionArray, both with the image's header and a copy of
 its camera_info. The contract that consumers rely on is in
 docs/architecture/vision.md#contract. It also serves GetPersonCrop: one
 person's crop and colour shares from the next image (ADR-0011). And it serves
-EmbedText, EmbedCrop and DescribeCrop, with one bounded service job (ADR-0015).
+EmbedText, EmbedCrop, DescribeCrop and DetectObjects, with one bounded service
+job (ADR-0015).
+
+DetectObjects answers its caller only, and publishes nothing. It runs a separate
+detector on the newest image after its classes are ready. It returns at most
+pipeline.ON_DEMAND_MAX_OBJECTS detections, those with the highest scores, each
+with track id 0. New classes are prepared at most once every
+requests.CLASS_PREPARE_PERIOD_S, and a preparation stops the stream for about
+1.5 s, because one worker runs every model (ADR-0009).
 
 Threads:
 
@@ -22,8 +30,8 @@ Threads:
 - The GetPersonCrop callback has its own callback group. It leaves the
   request in a one-slot mailbox and waits for the worker's answer, while
   another of the executor's threads runs the callbacks above.
-- The EmbedText, EmbedCrop and DescribeCrop callbacks share a reentrant group.
-  Each checks its request and tries to leave one job in the slot of
+- The EmbedText, EmbedCrop, DescribeCrop and DetectObjects callbacks share a
+  reentrant group. Each checks its request and tries to leave one job in the slot of
   walkie_vision.requests. One that gets the slot waits for the worker, up to
   a deadline in wall time. Another gets BUSY at once, on another thread.
 - One worker thread takes the newest image, runs walkie_vision.pipeline on
@@ -73,13 +81,13 @@ from rclpy.validate_full_topic_name import validate_full_topic_name
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
-from walkie_vision_msgs.srv import DescribeCrop, EmbedCrop, EmbedText, GetPersonCrop
+from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
 
 from . import convert, crop, requests
 from .crop import CropStatus
 from .depth import DepthRefused, RegisteredDepth, RgbdBuffer, read_registered_depth, stamp_ns
 from .image import camera_info_problem, image_to_bgr
-from .pipeline import Providers, TrackIdBase, VisionPipeline
+from .pipeline import ON_DEMAND_MAX_OBJECTS, Providers, TrackIdBase, VisionPipeline
 
 NODE_NAME = "walkie_vision"
 
@@ -156,6 +164,7 @@ class VisionConfig:
     embed_text_service: str = "/walkie_vision/embed_text"
     embed_crop_service: str = "/walkie_vision/embed_crop"
     describe_crop_service: str = "/walkie_vision/describe_crop"
+    detect_objects_service: str = "/walkie_vision/detect_objects"
     device: str = "cuda:0"
     objects_weights: str = "yoloe-26s-seg.pt"
     objects_imgsz: int = 640
@@ -190,6 +199,7 @@ class VisionConfig:
     depth_max_m: float = 3.0
     object_crops_enabled: bool = False
     object_embeddings_enabled: bool = False
+    on_demand_enabled: bool = False
     captions_enabled: bool = False
 
     def __post_init__(self) -> None:
@@ -218,7 +228,13 @@ class VisionConfig:
                 validate_full_topic_name(topic)
             except NameValidationException as e:
                 raise ValueError(f"{name} must be an absolute, valid topic name, not {topic!r}: {e}") from e
-        for name in ("person_crop_service", "embed_text_service", "embed_crop_service", "describe_crop_service"):
+        for name in (
+            "person_crop_service",
+            "embed_text_service",
+            "embed_crop_service",
+            "describe_crop_service",
+            "detect_objects_service",
+        ):
             service = getattr(self, name)
             try:
                 validate_full_topic_name(service, is_service=True)
@@ -522,7 +538,8 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
     downloaded. A model that fails to load raises its own error.
 
     CLIP is checked and loaded only with object_embeddings_enabled, and only
-    from the cache: it never downloads here.
+    from the cache: it never downloads here. The second YOLOE is built only with
+    on_demand_enabled, and here at start, so a first request never loads a model.
     """
     started = time.perf_counter()
     from .embeddings import ClipEmbedder, clip_checkpoint
@@ -560,8 +577,15 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
             ) from e
     clip_path = clip_checkpoint() if config.object_embeddings_enabled else None
 
-    from walkie_vision.yolo import YoloeTracker, YoloPoseTracker
+    from walkie_vision.yolo import YoloeDetector, YoloeTracker, YoloPoseTracker
 
+    # Asked for only when geometry or sampling reads them: copying masks to
+    # the CPU costs time.
+    keep_masks = (
+        {"keep_masks": True}
+        if config.geometry_enabled or config.object_crops_enabled or config.object_embeddings_enabled
+        else {}
+    )
     objects = YoloeTracker(
         objects_path,
         list(config.classes),
@@ -570,13 +594,22 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
         conf=config.objects_conf,
         agnostic_nms=config.objects_agnostic_nms,
         tracker=config.objects_tracker,
-        # Asked for only when geometry or sampling reads them: copying masks to
-        # the CPU costs time.
-        **(
-            {"keep_masks": True}
-            if config.geometry_enabled or config.object_crops_enabled or config.object_embeddings_enabled
-            else {}
-        ),
+        **keep_masks,
+    )
+    # With no tracker, nothing reads a box under the published floor.
+    on_demand = (
+        YoloeDetector(
+            objects_path,
+            list(config.classes),
+            device=config.device,
+            imgsz=config.objects_imgsz,
+            conf=config.objects_min_score,
+            agnostic_nms=config.objects_agnostic_nms,
+            max_det=ON_DEMAND_MAX_OBJECTS,
+            **keep_masks,
+        )
+        if config.on_demand_enabled
+        else None
     )
     pose = YoloPoseTracker(
         pose_path,
@@ -618,7 +651,7 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
         # text encoder that set_classes() drops, so ONNX Runtime can use them.
         torch.cuda.empty_cache()
     logger.info(f"loaded the models in {time.perf_counter() - started:.1f} s")
-    return Providers(objects=objects, pose=pose, faces=faces, reid=reid, embedder=embedder)
+    return Providers(objects=objects, pose=pose, faces=faces, reid=reid, embedder=embedder, on_demand=on_demand)
 
 
 class VisionNode(Node):
@@ -666,6 +699,7 @@ class VisionNode(Node):
             object_crops_enabled=cfg.object_crops_enabled,
             object_embeddings_enabled=cfg.object_embeddings_enabled,
             allow_fake_embedder=injected,
+            on_demand_enabled=cfg.on_demand_enabled,
         )
         self.track_ids = track_ids
 
@@ -681,9 +715,11 @@ class VisionNode(Node):
         self.crop_requests = 0
         """GetPersonCrop requests that reached the worker's mailbox."""
         self.service_jobs = 0
-        """EmbedText and EmbedCrop requests that the worker took."""
+        """EmbedText, EmbedCrop and DetectObjects requests that the worker took."""
         self.service_busy = 0
-        """EmbedText and EmbedCrop requests refused because the slot was taken."""
+        """Those requests refused because the slot was taken, or new classes came too soon."""
+        self.classes_prepared = 0
+        """The on-demand class lists that the worker prepared. Each one stops the stream for about 1.5 s."""
         self.late_results = 0
         """Service answers discarded because they came after their deadline."""
         self.fatal: str | None = None
@@ -703,8 +739,14 @@ class VisionNode(Node):
         self._crops = CropMailbox()
         self._embedder = providers.embedder
         self._jobs = requests.JobSlot(self._mailbox.wake)
-        # Only what EmbedCrop can answer from. Off, no image outlives its processing.
-        self._current = requests.CurrentImage() if cfg.object_embeddings_enabled else None
+        # Only what EmbedCrop and DetectObjects can answer from. Off, no image
+        # outlives its processing.
+        self._current = (
+            requests.CurrentImage(round(cfg.max_pair_gap_s * 1e9))
+            if cfg.object_embeddings_enabled or cfg.on_demand_enabled
+            else None
+        )
+        self._class_gate = requests.ClassPrepareGate()
         self._rate_replaced = 0
         self._camera_info: CameraInfo | None = None
         self._depth_camera_info: CameraInfo | None = None
@@ -746,6 +788,9 @@ class VisionNode(Node):
         self._describe_crop_service = self.create_service(
             DescribeCrop, cfg.describe_crop_service, self._on_describe_crop, callback_group=service_group
         )
+        self._detect_objects_service = self.create_service(
+            DetectObjects, cfg.detect_objects_service, self._on_detect_objects, callback_group=service_group
+        )
         self._worker = threading.Thread(target=self._work, daemon=True, name="walkie_vision_worker")
         self._worker.start()
         self.get_logger().info(
@@ -766,6 +811,11 @@ class VisionNode(Node):
             )
         if cfg.object_embeddings_enabled:
             self.get_logger().info(f"serving {cfg.embed_text_service} and {cfg.embed_crop_service}")
+        if cfg.on_demand_enabled:
+            self.get_logger().info(
+                f"serving {cfg.detect_objects_service} with a second detector: at most {ON_DEMAND_MAX_OBJECTS} objects; "
+                f"new classes at most once every {requests.CLASS_PREPARE_PERIOD_S:g} s, and they stop the stream"
+            )
 
     # --- counters and state --------------------------------------------
 
@@ -883,6 +933,14 @@ class VisionNode(Node):
             success=False, error_code=requests.DISABLED, message="this build has no caption model"
         )
 
+    def _on_detect_objects(self, request: DetectObjects.Request, response: DetectObjects.Response) -> DetectObjects.Response:
+        if not self.config.on_demand_enabled:
+            return convert.detect_objects_failure(requests.DISABLED, "on_demand_enabled is off")
+        problem = requests.detect_objects_problem(request)
+        if problem is not None:
+            return convert.detect_objects_failure(requests.INVALID, problem)
+        return self._serve(request, float(request.timeout_s), convert.detect_objects_failure)
+
     def _serve(self, request: Any, deadline_s: float, fail: Callable[[str, str], Any]) -> Any:
         """Leave one job for the worker and wait for its answer, up to deadline_s of wall time."""
         job = requests.ServiceJob(request, time.monotonic() + deadline_s, fail)
@@ -914,7 +972,7 @@ class VisionNode(Node):
                 counts["depth"] = self.depth_received
                 counts["paired"] = self.depth_paired
                 counts["no_depth"] = sum(self.no_depth.values())
-            if self.config.object_embeddings_enabled:
+            if self.config.object_embeddings_enabled or self.config.on_demand_enabled:
                 counts["jobs"] = self.service_jobs
                 counts["busy"] = self.service_busy
                 counts["late"] = self.late_results
@@ -986,13 +1044,15 @@ class VisionNode(Node):
             return  # its callback answers TIMEOUT
         with self._counts_lock:
             self.service_jobs += 1
-        self._busy_since = time.monotonic()
+        started = self._busy_since = time.monotonic()
         try:
             if isinstance(job.request, EmbedText.Request):
                 response = convert.fill_embed_text_response(EmbedText.Response(), self._embedder, job.request.texts)
                 if not response.success:
                     self._warn_throttled("service job", f"a service job failed: {response.message}")
                     response = job.fail(requests.INFERENCE_FAILED, response.message)
+            elif isinstance(job.request, DetectObjects.Request):
+                response = self._detect_objects(job)
             else:
                 response = self._embed_crop(job.request)
         except Exception as e:
@@ -1003,7 +1063,84 @@ class VisionNode(Node):
         if not job.finish(response):
             with self._counts_lock:
                 self.late_results += 1
-            self._warn_throttled("late", "a service answer came after its deadline and was discarded")
+            # A deadline cannot stop a model call. The stream waited this long.
+            self._warn_throttled(
+                "late",
+                f"a service answer came after its deadline and was discarded; the job held the worker for "
+                f"{time.monotonic() - started:.2f} s",
+            )
+
+    def _detect_objects(self, job: requests.ServiceJob) -> DetectObjects.Response:
+        """Answer a DetectObjects job from the newest image after its classes are ready.
+
+        The image is chosen only after the classes are prepared, so a slow
+        preparation cannot make it old before the detector runs. Its age is
+        checked again before success, so an old image is never labelled current.
+        """
+        request = job.request
+        fail = convert.detect_objects_failure
+        cfg = self.config
+        classes = list(request.classes)
+        if self.pipeline.on_demand_classes != classes:
+            if not self._class_gate.open():
+                with self._counts_lock:
+                    self.service_busy += 1
+                return fail(requests.BUSY, f"new classes are prepared at most once every {self._class_gate.period_s:g} s")
+            try:
+                self.pipeline.prepare_on_demand(classes)
+            except Exception as e:
+                self._warn_throttled("service job", f"preparing on-demand classes failed: {type(e).__name__}: {e}")
+                return fail(requests.MODEL_UNAVAILABLE, f"the classes could not be prepared: {type(e).__name__}: {e}")
+            finally:
+                self._class_gate.mark()
+            with self._counts_lock:
+                self.classes_prepared += 1
+        if job.given_up or job.remaining() <= 0:
+            return fail(requests.TIMEOUT, "the deadline passed while the classes were prepared")
+
+        max_age_s = float(request.max_image_age_s)
+        msg, depth_msg = self._newest_bundle(max_age_s)
+        if msg is None:
+            return fail(requests.NO_IMAGE, f"no image has arrived on {cfg.image_topic}")
+        problem = requests.image_age_problem(msg, self.get_clock().now().nanoseconds, max_age_s)
+        if problem is not None:
+            return fail(requests.STALE_IMAGE, problem)
+        with self._camera_info_lock:
+            info = self._camera_info
+        problem = camera_info_problem(info, int(msg.width), int(msg.height))
+        if problem is not None:
+            return fail(requests.NO_IMAGE, f"{problem} on {cfg.camera_info_topic}")
+        depth = self._current_depth(msg, depth_msg)
+        if depth is None and cfg.require_depth:
+            return fail(requests.NO_IMAGE, f"the newest image has no usable depth from {cfg.depth_topic}")
+        try:
+            image = image_to_bgr(msg)
+        except ValueError as e:
+            return fail(requests.NO_IMAGE, f"the newest image cannot be read: {e}")
+
+        header = Header(stamp=msg.header.stamp, frame_id=msg.header.frame_id)
+        result = self.pipeline.detect_on_demand(image, header, info, depth)
+        if result.dropped:
+            with self._counts_lock:
+                self.dropped.update(result.dropped)
+        problem = requests.image_age_problem(msg, self.get_clock().now().nanoseconds, max_age_s)
+        if problem is not None:
+            return fail(requests.STALE_IMAGE, f"after detection, {problem}")
+        return DetectObjects.Response(success=True, objects=result.objects)
+
+    def _newest_bundle(self, max_age_s: float) -> tuple[Image | None, Image | None]:
+        """Return the newest image, with its depth when geometry is on and a matching pair is still current.
+
+        A pair can be one image older than the newest colour. That is better
+        than an image with no points, as long as the pair is within the age.
+        """
+        colour, _ = self._current.read()
+        if self.config.geometry_enabled:
+            pair = self._current.read_pair()
+            now_ns = self.get_clock().now().nanoseconds
+            if pair is not None and requests.image_age_problem(pair[0], now_ns, max_age_s) is None:
+                return pair
+        return colour, None
 
     def _embed_crop(self, request: EmbedCrop.Request) -> EmbedCrop.Response:
         """Answer an EmbedCrop request from the current image, if the request names it."""
