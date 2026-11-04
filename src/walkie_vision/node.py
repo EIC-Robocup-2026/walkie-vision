@@ -175,6 +175,8 @@ class VisionConfig:
     max_pair_gap_s: float = 0.005
     pair_wait_s: float = 0.020
     require_depth: bool = False
+    depth_min_m: float = 0.2
+    depth_max_m: float = 3.0
 
     def __post_init__(self) -> None:
         # Lists become tuples, so the config stays hashable and immutable.
@@ -262,6 +264,10 @@ class VisionConfig:
             raise ValueError(f"pair_wait_s must be in (0, {MAX_PAIR_WINDOW_S:g}], not {self.pair_wait_s}")
         if self.require_depth and not self.geometry_enabled:
             raise ValueError("require_depth needs geometry_enabled: without it the node does not subscribe to depth")
+        if not 0.0 < self.depth_min_m < math.inf:
+            raise ValueError(f"depth_min_m must be positive and finite, not {self.depth_min_m}")
+        if not self.depth_min_m < self.depth_max_m < math.inf:
+            raise ValueError(f"depth_max_m must be finite and above depth_min_m, not {self.depth_max_m}")
 
     @classmethod
     def from_node(cls, node: Node) -> VisionConfig:
@@ -535,6 +541,8 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
         conf=config.objects_conf,
         agnostic_nms=config.objects_agnostic_nms,
         tracker=config.objects_tracker,
+        # Asked for only with geometry: copying masks to the CPU costs time.
+        **({"keep_masks": True} if config.geometry_enabled else {}),
     )
     pose = YoloPoseTracker(
         pose_path,
@@ -616,6 +624,9 @@ class VisionNode(Node):
             people_min_score=cfg.people_min_score,
             objects_min_score=cfg.objects_min_score,
             people_dedupe_iou=cfg.people_dedupe_iou,
+            geometry_enabled=cfg.geometry_enabled,
+            depth_min_m=cfg.depth_min_m,
+            depth_max_m=cfg.depth_max_m,
         )
         self.track_ids = track_ids
 
@@ -893,6 +904,7 @@ class VisionNode(Node):
                 "the arrays use the image's",
                 once=True,
             )
+        depth: RegisteredDepth | None = None
         if cfg.geometry_enabled:
             depth = self._read_depth(msg, info, depth_msg)
             if depth is None and cfg.require_depth:
@@ -909,7 +921,7 @@ class VisionNode(Node):
         header = Header(stamp=msg.header.stamp, frame_id=msg.header.frame_id)
         self._busy_since = time.monotonic()
         try:
-            result = self.pipeline.process(image, header, info)
+            result = self.pipeline.process(image, header, info, depth)
         except Exception as e:
             self.consecutive_failures += 1
             with self._counts_lock:

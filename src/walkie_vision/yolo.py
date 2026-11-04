@@ -24,6 +24,7 @@ from typing import Any
 
 import numpy as np
 
+from .image import resize_mask
 from .providers import COCO_KEYPOINTS, Detection, PersonPose
 
 # YOLOE.set_classes() loads this text encoder by file name from the working
@@ -49,6 +50,25 @@ def _check_rows(n: int, **arrays: np.ndarray | None) -> None:
             raise ValueError(f"{name} has {len(array)} rows, but there are {n} boxes")
 
 
+def mask_to_native(mask: np.ndarray, image_shape: tuple[int, int]) -> np.ndarray:
+    """Return a mask at the letterboxed inference size as a bool array the size of the image.
+
+    Removes the padding by the rule of ultralytics.utils.ops.scale_masks, then
+    resizes by nearest neighbour. A mask of the image's size only becomes bool.
+    image_shape is (height, width).
+    """
+    height, width = image_shape[:2]
+    binary = np.asarray(mask) > 0.5
+    in_height, in_width = binary.shape
+    if (in_height, in_width) == (height, width):
+        return binary
+    gain = min(in_height / height, in_width / width)
+    pad_width, pad_height = (in_width - round(width * gain)) / 2, (in_height - round(height * gain)) / 2
+    top, left = round(pad_height - 0.1), round(pad_width - 0.1)
+    bottom, right = top + round(height * gain), left + round(width * gain)
+    return resize_mask(binary[top:bottom, left:right], height, width)
+
+
 def detections_from_arrays(
     xyxy: np.ndarray,
     scores: np.ndarray,
@@ -56,20 +76,25 @@ def detections_from_arrays(
     track_ids: np.ndarray | None,
     names: Sequence[str] | Mapping[int, str],
     image_shape: tuple[int, int],
+    masks: np.ndarray | None = None,
 ) -> list[Detection]:
     """Turn a tracker's boxes into Detections.
 
     Only tracked boxes are returned: no track ids gives [], and a row with a
     track id of 0 or less is dropped. Boxes are clipped to the image, and a
     box with no area left is dropped. image_shape is (height, width).
+
+    masks, when given, has one row per box at the inference size. A kept box
+    takes the mask of its own row, so dropping a row cannot shift a mask to a
+    neighbouring box.
     """
     if track_ids is None:
         return []
     xyxy = np.asarray(xyxy, dtype=np.float64).reshape(-1, 4)
-    _check_rows(len(xyxy), scores=scores, class_ids=class_ids, track_ids=track_ids)
+    _check_rows(len(xyxy), scores=scores, class_ids=class_ids, track_ids=track_ids, masks=masks)
     height, width = image_shape[:2]
     found = []
-    for box, score, class_id, track_id in zip(xyxy, scores, class_ids, track_ids):
+    for row, (box, score, class_id, track_id) in enumerate(zip(xyxy, scores, class_ids, track_ids)):
         if int(track_id) <= 0:
             continue
         clipped = _clip_box(box, width, height)
@@ -81,7 +106,7 @@ def detections_from_arrays(
                 label=names[int(class_id)],
                 score=float(score),
                 track_id=int(track_id),
-                mask=None,
+                mask=None if masks is None else mask_to_native(masks[row], (height, width)),
             )
         )
     return found
@@ -180,8 +205,8 @@ class YoloeTracker:
     own default for track(): the tracker's second matching stage needs
     low-score boxes. The vision node applies its published floor later.
     agnostic_nms keeps one label per box, so an armchair does not come out
-    as both chair and armchair. Masks are computed by the seg head and not
-    returned.
+    as both chair and armchair. The seg head always computes masks. Only with
+    keep_masks are they copied to the CPU and returned, at the image's size.
     """
 
     def __init__(
@@ -194,6 +219,7 @@ class YoloeTracker:
         conf: float = 0.1,
         agnostic_nms: bool = True,
         tracker: str = "bytetrack.yaml",
+        keep_masks: bool = False,
     ) -> None:
         validate_classes(classes)
         self._tracker = validate_tracker(tracker)
@@ -204,6 +230,7 @@ class YoloeTracker:
         self._imgsz = imgsz
         self._conf = conf
         self._agnostic_nms = agnostic_nms
+        self._keep_masks = keep_masks
         self._classes: list[str] = []
 
         from ultralytics import YOLOE
@@ -257,6 +284,9 @@ class YoloeTracker:
         b = r.boxes
         if b is None or len(b) == 0:
             return []
+        # Ultralytics filters a result's boxes and masks together, by row, so
+        # these rows still line up after the tracker dropped some.
+        masks = r.masks.data.cpu().numpy() if self._keep_masks and r.masks is not None else None
         return detections_from_arrays(
             b.xyxy.cpu().numpy(),
             b.conf.cpu().numpy(),
@@ -264,6 +294,7 @@ class YoloeTracker:
             None if b.id is None else b.id.int().cpu().numpy(),
             r.names,
             image.shape[:2],
+            masks,
         )
 
 

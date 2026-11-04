@@ -81,11 +81,19 @@ def _clip_box(box: np.ndarray, image: np.ndarray) -> np.ndarray | None:
     return np.array([x1, y1, x2, y2])
 
 
+def box_mask(height: int, width: int, box: Sequence[float]) -> np.ndarray:
+    """Return a bool mask of an image's size that fills an x1, y1, x2, y2 box, as a detector's mask for a test."""
+    x1, y1, x2, y2 = (int(v) for v in box)
+    mask = np.zeros((height, width), dtype=bool)
+    mask[y1:y2, x1:x2] = True
+    return mask
+
+
 class FakeObjectDetector:
     """Returns the given objects whose label is one of the current classes.
 
     Boxes are clipped to the image, and an object that lies outside the image
-    is left out. Track ids are returned as given.
+    is left out. Track ids and masks are returned as given.
     """
 
     def __init__(self, objects: Sequence[Detection], classes: Sequence[str] = ()) -> None:

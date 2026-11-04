@@ -20,6 +20,7 @@ from walkie_vision.convert import (
     box_to_bbox,
     check_object_detection_array,
     empty_cloud,
+    evenly_spaced_indices,
     fill_embed_text_response,
     fill_person_crop_response,
     new_stream_id,
@@ -612,6 +613,13 @@ def test_too_few_points_give_an_empty_cloud(points):
     cloud = to_point_cloud(_header(), points)
     _assert_cloud_layout(cloud, 0)
     assert cloud == empty_cloud(_header())
+
+
+def test_evenly_spaced_indices():
+    np.testing.assert_array_equal(evenly_spaced_indices(3, 5), [0, 1, 2])
+    np.testing.assert_array_equal(evenly_spaced_indices(5, 5), [0, 1, 2, 3, 4])
+    np.testing.assert_array_equal(evenly_spaced_indices(10, 4), [0, 2, 5, 7])
+    assert len(evenly_spaced_indices(0, 5)) == 0
 
 
 def test_the_cap_picks_evenly_spaced_points_in_input_order():

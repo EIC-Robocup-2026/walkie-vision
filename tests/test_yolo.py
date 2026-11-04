@@ -27,7 +27,8 @@ import yaml
 byte_tracker = pytest.importorskip("ultralytics.trackers.byte_tracker")
 
 import ultralytics  # noqa: E402
-from ultralytics.engine.results import Boxes, Keypoints  # noqa: E402
+from ultralytics.engine.results import Boxes, Keypoints, Results  # noqa: E402
+from ultralytics.utils import ops  # noqa: E402
 
 from walkie_vision.providers import ObjectDetector, PoseEstimator  # noqa: E402
 from walkie_vision.yolo import (  # noqa: E402
@@ -36,6 +37,7 @@ from walkie_vision.yolo import (  # noqa: E402
     YoloeTracker,
     YoloPoseTracker,
     detections_from_arrays,
+    mask_to_native,
     poses_from_arrays,
     validate_classes,
     validate_tracker,
@@ -101,6 +103,100 @@ def test_detection_arrays_of_different_lengths_raise():
     with pytest.raises(ValueError):
         detections_from_arrays(
             np.zeros((2, 4)), np.array([0.9]), np.array([0, 0]), np.array([1, 2]), ["chair"], SHAPE
+        )
+
+
+# --- masks ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("image_shape", "on_model", "native"),
+    [
+        # A wide image: gain 0.5, and 12 rows of padding above and below.
+        ((16, 64), (14, 16, 4, 10), (4, 8, 8, 20)),
+        # A tall image: gain 0.5, and 12 columns of padding left and right.
+        ((64, 16), (4, 10, 14, 16), (8, 20, 4, 8)),
+    ],
+)
+def test_a_letterboxed_mask_lands_on_its_native_pixels(image_shape, on_model, native):
+    top, bottom, left, right = on_model
+    mask = np.zeros((32, 32), np.uint8)
+    mask[top:bottom, left:right] = 1
+    top, bottom, left, right = native
+    expected = np.zeros(image_shape, bool)
+    expected[top:bottom, left:right] = True
+    result = mask_to_native(mask, image_shape)
+    assert result.dtype == bool
+    np.testing.assert_array_equal(result, expected)
+
+
+@pytest.mark.parametrize(
+    ("image_shape", "padding"),
+    [
+        ((16, 64), (slice(0, 12), slice(None))),
+        ((16, 64), (slice(20, 32), slice(None))),
+        ((64, 16), (slice(None), slice(0, 12))),
+        ((64, 16), (slice(None), slice(20, 32))),
+    ],
+)
+def test_the_letterbox_padding_never_reaches_the_image(image_shape, padding):
+    mask = np.zeros((32, 32), np.uint8)
+    mask[padding] = 1
+    assert not mask_to_native(mask, image_shape).any()
+
+
+def test_a_native_mask_only_becomes_bool():
+    mask = np.zeros(SHAPE, np.float32)
+    mask[3, 5] = 1.0
+    result = mask_to_native(mask, SHAPE)
+    assert result.dtype == bool and result.shape == SHAPE and np.count_nonzero(result) == 1 and result[3, 5]
+
+
+@pytest.mark.parametrize(
+    ("image_shape", "model_shape"),
+    [
+        ((1242, 2208), (384, 640)),  # The ZED's size at the default input size.
+        ((101, 211), (64, 128)),  # Odd padding, where the rounding shows.
+    ],
+)
+def test_the_padding_rule_matches_the_installed_ultralytics(image_shape, model_shape):
+    # An L shape, so that a flip or a shift would show. Ultralytics interpolates
+    # and this code takes the nearest pixel, so only the edges may differ.
+    height, width = model_shape
+    mask = np.zeros(model_shape, np.float32)
+    mask[height // 4 : 3 * height // 4, width // 8 : width // 4] = 1.0
+    mask[height // 2 : 3 * height // 4, width // 8 : 3 * width // 4] = 1.0
+    ours = mask_to_native(mask, image_shape)
+    theirs = ops.scale_masks(torch.from_numpy(mask)[None, None], image_shape)[0, 0].numpy() > 0.5
+    assert np.count_nonzero(ours & theirs) / np.count_nonzero(ours | theirs) > 0.95
+
+
+@pytest.mark.parametrize(
+    ("track_ids", "kept_ids", "kept_rows"),
+    [
+        ([0, 7, 9, 8], [7, 8], [1, 3]),
+        ([5, 0, 9, 8], [5, 8], [0, 3]),
+        ([5, 7, 9, 0], [5, 7], [0, 1]),
+    ],
+)
+def test_a_kept_box_has_the_mask_of_its_own_row(track_ids, kept_ids, kept_rows):
+    # Row 2 lies outside the image, and a track id of 0 drops one more row.
+    xyxy = np.array([[0, 0, 10, 10], [20, 0, 30, 10], [700, 0, 800, 10], [40, 0, 50, 10]], dtype=np.float64)
+    masks = np.zeros((4, *SHAPE), np.uint8)
+    for row in range(4):
+        masks[row, row, :] = 1
+    dets = detections_from_arrays(
+        xyxy, np.full(4, 0.9), np.zeros(4, int), np.array(track_ids), ["chair"], SHAPE, masks
+    )
+    assert [d.track_id for d in dets] == kept_ids
+    assert [np.flatnonzero(d.mask.any(axis=1)).tolist() for d in dets] == [[row] for row in kept_rows]
+
+
+def test_masks_of_another_row_count_raise():
+    with pytest.raises(ValueError, match="masks"):
+        detections_from_arrays(
+            np.zeros((2, 4)), np.array([0.9, 0.8]), np.array([0, 0]), np.array([1, 2]), ["chair"], SHAPE,
+            np.zeros((1, *SHAPE)),
         )
 
 
@@ -306,6 +402,63 @@ def test_yoloe_detect_converts_tracked_boxes(tmp_path, stub_ultralytics):
     assert tracker.detect(image) == []
     tracker._model.results = types.SimpleNamespace(boxes=None, names={})
     assert tracker.detect(image) == []
+
+
+def _tracked_result(names: dict[int, str]) -> Results:
+    """Return a real Results object after the steps of Ultralytics' tracker callback.
+
+    A wide 16 x 64 image and masks at 32 x 32, with 12 rows of padding. The
+    predictor found three rows. The tracker keeps rows 2 and 0, in that order.
+    """
+    image = np.zeros((16, 64, 3), np.uint8)
+    boxes = torch.tensor(
+        [[0.0, 0.0, 8.0, 8.0, 0.9, 0.0], [10.0, 0.0, 18.0, 8.0, 0.8, 1.0], [20.0, 0.0, 28.0, 8.0, 0.7, 1.0]]
+    )
+    masks = torch.zeros((3, 32, 32))
+    for row in range(3):
+        masks[row, 12 + 2 * row, 4:8] = 1.0
+    tracks = torch.tensor([[20.0, 0.0, 28.0, 8.0, 7.0, 0.7, 1.0], [0.0, 0.0, 8.0, 8.0, 8.0, 0.9, 0.0]])
+    result = Results(image, path="", names=names, boxes=boxes, masks=masks)[torch.tensor([2, 0])]
+    result.update(boxes=tracks)
+    return result
+
+
+def test_yoloe_keeps_each_row_mask_through_the_tracker_filter(tmp_path, stub_ultralytics):
+    tracker = YoloeTracker(
+        _weights(tmp_path, "yoloe.pt", MOBILECLIP_FILE), ["chair", "sofa"], device="cpu", keep_masks=True
+    )
+    tracker._model.results = _tracked_result({0: "chair", 1: "sofa"})
+    first, second = tracker.detect(np.zeros((16, 64, 3), np.uint8))
+    assert (first.label, first.track_id, second.label, second.track_id) == ("sofa", 7, "chair", 8)
+    # Row 2's mask is on model row 16, native rows 8 and 9. Row 0's is on model row 12, native rows 0 and 1.
+    assert first.mask.shape == (16, 64) and first.mask.dtype == bool
+    assert np.flatnonzero(first.mask.any(axis=1)).tolist() == [8, 9]
+    assert np.flatnonzero(second.mask.any(axis=1)).tolist() == [0, 1]
+    assert np.flatnonzero(first.mask.any(axis=0)).tolist() == list(range(8, 16))
+
+
+class _MasksMustNotBeRead(types.SimpleNamespace):
+    @property
+    def masks(self):
+        raise AssertionError("a tracker that was not asked for masks read them")
+
+
+def test_yoloe_without_keep_masks_does_not_read_the_masks(tmp_path, stub_ultralytics):
+    tracker = YoloeTracker(_weights(tmp_path, "yoloe.pt", MOBILECLIP_FILE), ["chair"], device="cpu")
+    data = torch.tensor([[10.0, 20.0, 100.0, 220.0, 4.0, 0.8, 0.0]])
+    tracker._model.results = _MasksMustNotBeRead(boxes=Boxes(data, SHAPE), names={0: "chair"})
+    (det,) = tracker.detect(np.zeros((480, 640, 3), np.uint8))
+    assert det.mask is None
+
+
+def test_yoloe_with_keep_masks_accepts_a_result_without_masks(tmp_path, stub_ultralytics):
+    tracker = YoloeTracker(
+        _weights(tmp_path, "yoloe.pt", MOBILECLIP_FILE), ["chair"], device="cpu", keep_masks=True
+    )
+    data = torch.tensor([[10.0, 20.0, 100.0, 220.0, 4.0, 0.8, 0.0]])
+    tracker._model.results = types.SimpleNamespace(boxes=Boxes(data, SHAPE), names={0: "chair"}, masks=None)
+    (det,) = tracker.detect(np.zeros((480, 640, 3), np.uint8))
+    assert det.mask is None
 
 
 def test_pose_tracker_warms_up_resets_and_converts(tmp_path, stub_ultralytics):

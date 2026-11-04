@@ -180,6 +180,7 @@ processed 52 in 10.0 s (5.2 Hz); received 150, replaced 98, skipped 0, failed 0,
 | Person crops answer `TIMEOUT`              | Images arrive but none is processed in `timeout_s`: skipped or failed images, see the latency line      |
 | `no_depth` or skipped images with `geometry_enabled` | No depth within the stamp gap and the wait, or a pair that was refused. The warning names the reason ([Depth pairing](../architecture/vision.md#depth-pairing)) |
 | `depth 0` in the latency line              | No depth arrives on `depth_topic`: the camera, the router or the domain                                 |
+| Empty `points` with `paired` above 0       | Under 30 valid pixels in the mask: a small object, or depth outside `depth_min_m` to `depth_max_m` ([Object points](../architecture/vision.md#contract-object-geometry)) |
 
 When images are skipped, the node warns every 5 s with the reason, for
 example "camera_info is 640x360 but the image is 2208x1242". The camera

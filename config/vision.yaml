@@ -80,8 +80,9 @@ walkie_vision:
     # Warn when an array is older than this when it is published, in seconds.
     stale_warn_s: 0.5
 
-    # Subscribe to depth and pair it with each image (ADR-0014). Off for HRI:
-    # no depth subscription, no added work.
+    # Subscribe to depth, pair it with each image, keep the detector's masks and
+    # fill each object's points and view quality (ADR-0014). Off for HRI: no depth
+    # subscription, no mask copied to the CPU and no added work.
     geometry_enabled: false
     # Rectified depth registered to the RGB image: 32FC1 in metres or 16UC1 in
     # millimetres. Unregistered depth is refused; this node reads no TF.
@@ -96,3 +97,7 @@ walkie_vision:
     # Skip an image that has no usable depth, instead of publishing it without
     # points. Needs geometry_enabled.
     require_depth: false
+    # Only depth in this range becomes points, in metres. A starting value for
+    # the ZED and the sim, to tune on recordings.
+    depth_min_m: 0.2
+    depth_max_m: 3.0

@@ -30,7 +30,7 @@ build, because `scripts/activate.sh` sources the overlay on activation.
   one process for every model (ADR-0010). `yolo.py` and `face/heads.py` are
   the detector, pose and head-crop face providers.
 - `src/walkie_vision/depth.py`: pairs colour with registered depth, bounded by
-  wall time (ADR-0014). Off by default.
+  wall time (ADR-0014), lifts masks to points and scores views. Off by default.
 - `config/`: the node's parameters (`vision.yaml`, `sim.yaml`).
   `launch/vision.launch.py` starts the node and restarts it when it exits.
 - `src/walkie_vision/fakes.py`: deterministic fakes for tests.

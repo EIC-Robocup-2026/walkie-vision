@@ -59,6 +59,20 @@ def camera_info_problem(info: CameraInfo | None, width: int, height: int) -> str
     return None
 
 
+def resize_mask(mask: np.ndarray, height: int, width: int) -> np.ndarray:
+    """Return a 2-D mask at another size, by nearest neighbour on pixel centres.
+
+    Output pixel i takes input pixel floor((i + 0.5) * input / output). An
+    equal size returns the mask itself.
+    """
+    in_height, in_width = mask.shape
+    if (in_height, in_width) == (height, width):
+        return mask
+    rows = ((np.arange(height) + 0.5) * in_height / height).astype(np.intp)
+    cols = ((np.arange(width) + 0.5) * in_width / width).astype(np.intp)
+    return mask[rows[:, None], cols]
+
+
 def calibration_problem(info: CameraInfo) -> str | None:
     """Return why a camera_info cannot be used to lift pixels, or None when it can.
 

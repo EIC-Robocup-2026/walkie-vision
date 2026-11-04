@@ -126,6 +126,13 @@ def empty_cloud(header: Header) -> PointCloud2:
     return _cloud(header, array.array("B"), 0)
 
 
+def evenly_spaced_indices(count: int, limit: int) -> np.ndarray:
+    """Return at most limit indices into count items, evenly spaced and in order. The same input gives the same indices."""
+    if count <= limit:
+        return np.arange(count)
+    return np.arange(limit) * count // limit
+
+
 def to_point_cloud(header: Header, points: Sequence[Sequence[float]] | np.ndarray) -> PointCloud2:
     """Build an object's cloud from an N x 3 array of x, y, z in metres, in the optical frame.
 
@@ -147,8 +154,7 @@ def to_point_cloud(header: Header, points: Sequence[Sequence[float]] | np.ndarra
     count = len(xyz)
     if count < MIN_CLOUD_POINTS:
         return empty_cloud(header)
-    if count > MAX_CLOUD_POINTS:
-        xyz = xyz[np.arange(MAX_CLOUD_POINTS) * count // MAX_CLOUD_POINTS]
+    xyz = xyz[evenly_spaced_indices(count, MAX_CLOUD_POINTS)]
     data = array.array("B")
     data.frombytes(xyz.astype("<f4").tobytes())
     return _cloud(header, data, len(xyz))

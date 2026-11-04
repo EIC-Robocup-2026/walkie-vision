@@ -119,6 +119,14 @@ def test_every_provider_is_built_from_the_config_in_order(models, manager):
     )
 
 
+def test_geometry_asks_the_object_detector_for_masks(models, manager):
+    # The call above pins that the default config does not ask. The autospec
+    # checks this keyword against the real signature.
+    build_providers(VisionConfig(classes=CLASSES, geometry_enabled=True), manager.logger)
+    assert manager.YoloeTracker.call_args.kwargs["keep_masks"] is True
+    assert "keep_masks" not in manager.YoloPoseTracker.call_args.kwargs
+
+
 def test_the_parameters_reach_the_providers(models, manager, tmp_path):
     weights = _touch(tmp_path / "elsewhere" / "custom-seg.pt")
     _touch(weights.parent / yolo.MOBILECLIP_FILE)

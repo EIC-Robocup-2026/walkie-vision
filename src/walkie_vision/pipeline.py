@@ -6,6 +6,10 @@ results into the two arrays that the vision node publishes for that image,
 with the image's header and a copy of its camera_info. It has no ROS node
 and imports no model library, so the tests run it with the fakes.
 
+With geometry_enabled, a detection with a mask also gets its points and its
+view quality (walkie_vision.depth). Without it, masks are ignored and no
+geometry work runs.
+
 A single bad value from a model (a box or a vector that is not finite, or an
 object score outside [0, 1]) leaves out that field or that detection, and is
 counted in FrameResult.dropped. A provider that raises, or that returns the wrong
@@ -29,11 +33,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
-from sensor_msgs.msg import CameraInfo
+from sensor_msgs.msg import CameraInfo, PointCloud2
 from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 
 from . import convert
+from .depth import RegisteredDepth, depth_cover, frame_laplacian, lift_mask, view_quality
+from .image import resize_mask
 from .providers import Detection, Face, ObjectDetector, PersonFaceRecognizer, PersonPose, PoseEstimator, ReIdentifier
 
 TRACK_ID_SPACE = 2**32 - 1
@@ -189,8 +195,13 @@ class VisionPipeline:
         objects_min_score: float = 0.0,
         people_dedupe_iou: float = 1.0,
         stream_id: str | None = None,
+        geometry_enabled: bool = False,
+        depth_min_m: float = 0.2,
+        depth_max_m: float = 3.0,
     ) -> None:
         self._classes = _check_classes(classes)
+        if not 0.0 < depth_min_m < depth_max_m < float("inf"):
+            raise ValueError(f"the depth range must be positive and finite, not {depth_min_m} to {depth_max_m}")
         for name, value in (("people_min_score", people_min_score), ("objects_min_score", objects_min_score)):
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be in [0, 1], not {value}")
@@ -205,6 +216,9 @@ class VisionPipeline:
         self._objects_min_score = float(objects_min_score)
         self._people_dedupe_iou = float(people_dedupe_iou)
         self._stream_id = convert.new_stream_id() if stream_id is None else stream_id
+        self._geometry_enabled = bool(geometry_enabled)
+        self._depth_min_m = float(depth_min_m)
+        self._depth_max_m = float(depth_max_m)
         if list(providers.objects.classes) != self._classes:
             providers.objects.set_classes(list(self._classes))
 
@@ -218,12 +232,15 @@ class VisionPipeline:
         """The id on every object array of this pipeline. A new process gets a new one."""
         return self._stream_id
 
-    def process(self, image: np.ndarray, header: Header, camera_info: CameraInfo) -> FrameResult:
+    def process(
+        self, image: np.ndarray, header: Header, camera_info: CameraInfo, depth: RegisteredDepth | None = None
+    ) -> FrameResult:
         """Run every model on one BGR image and return its two arrays.
 
         header is the image's own header; both arrays and the copy of
-        camera_info get it. Raises when a provider raises or returns the
-        wrong number or shape of results.
+        camera_info get it. depth is the image's checked depth, if it has one.
+        Raises when a provider raises or returns the wrong number or shape of
+        results.
         """
         p = self._providers
         times = StageTimes()
@@ -281,8 +298,10 @@ class VisionPipeline:
             for pose, face, vector in zip(poses, faces, appearances, strict=True)
         ]
         objects = [
-            convert.to_object_detection(dataclasses.replace(det, track_id=self._ids.map(det.track_id)))
-            for det in detections
+            convert.to_object_detection(
+                dataclasses.replace(det, track_id=self._ids.map(det.track_id)), points=points, view_quality=quality
+            )
+            for det, (points, quality) in zip(detections, self._geometry(image, header, detections, depth), strict=True)
         ]
         people_array = convert.to_person_detection_array(header, info, people)
         objects_array = convert.to_object_detection_array(
@@ -296,6 +315,34 @@ class VisionPipeline:
             dropped=dropped,
             duplicates=len(floored) - len(poses),
         )
+
+    def _geometry(
+        self, image: np.ndarray, header: Header, detections: Sequence[Detection], depth: RegisteredDepth | None
+    ) -> list[tuple[PointCloud2 | None, float]]:
+        """Return each detection's cloud and view quality; (None, 0) without a mask or with geometry off.
+
+        Without depth, the clouds stay empty and the quality's depth term is
+        0. Raises for a mask that does not have the image's size.
+        """
+        if not self._geometry_enabled or all(det.mask is None for det in detections):
+            return [(None, 0.0)] * len(detections)
+        height, width = image.shape[:2]
+        laplacian = frame_laplacian(image)
+        found: list[tuple[PointCloud2 | None, float]] = []
+        for det in detections:
+            if det.mask is None:
+                found.append((None, 0.0))
+                continue
+            mask = np.asarray(det.mask, dtype=bool)
+            if mask.shape != (height, width):
+                raise ValueError(f"a mask has shape {mask.shape}, but the image is {height}x{width}")
+            points, cover = None, 0.0
+            if depth is not None:
+                on_raster = resize_mask(mask, *depth.metres.shape)
+                cover = depth_cover(on_raster, depth.metres, self._depth_min_m, self._depth_max_m)
+                points = convert.to_point_cloud(header, lift_mask(on_raster, depth, self._depth_min_m, self._depth_max_m))
+            found.append((points, view_quality(mask, det.box, laplacian, cover)))
+        return found
 
     def _appearances(
         self, image: np.ndarray, poses: Sequence[PersonPose], dropped: collections.Counter[str]

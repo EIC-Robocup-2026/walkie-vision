@@ -9,10 +9,13 @@ it publishes, and why it is built this way.
     serves one person's crop on request ([Person crops](#person-crops)).
     The types for object memory are frozen
     ([ADR-0013](decisions/0013-memory-observation-contract.md)), but the
-    node does not fill them yet: object embeddings, points, object crops,
-    view quality and colour shares stay empty. With `geometry_enabled`, which
-    is off by default, it pairs each image with its depth
-    ([Depth pairing](#depth-pairing)). The `EmbedText`, `DetectObjects`,
+    node fills only part of them: object embeddings, object crops and colour
+    shares stay empty. With `geometry_enabled`, which is off by default, it
+    pairs each image with its depth ([Depth pairing](#depth-pairing)) and
+    fills each object's points and view quality
+    ([Object points and view quality](#contract-object-geometry)). This is
+    tested with fakes and has not run with a real model or camera. The
+    `EmbedText`, `DetectObjects`,
     `EmbedCrop` and `DescribeCrop` services and room vectors are not built
     yet.
 
@@ -209,12 +212,14 @@ sim output topics and the sim crop service. Write every double with a decimal po
 | `process_timeout_s`        | double   | 60.0                                     | One image taking longer means the GPU hangs: the node exits 1                                 |
 | `latency_log_period_s`     | double   | 10.0                                     | How often the latency line is logged, in seconds of wall time                                 |
 | `stale_warn_s`             | double   | 0.5                                      | Warn when an array is older than this when it is published                                    |
-| `geometry_enabled`         | bool     | false                                    | Subscribe to depth and pair it with each image. Off for HRI: no depth subscription and no added work |
+| `geometry_enabled`         | bool     | false                                    | Subscribe to depth, pair it with each image, keep the detector's masks and fill each object's points and view quality. Off for HRI: no depth subscription, no mask copied to the CPU and no added work |
 | `depth_topic`              | string   | `/zed_head/zed_node/depth/depth_registered` | Rectified depth registered to the RGB image, 32FC1 in metres or 16UC1 in millimetres. The sim publishes the same name |
 | `depth_camera_info_topic`  | string   | `/zed_head/zed_node/depth/camera_info`   | The calibration of the depth pixels. When it equals `camera_info_topic`, the node keeps one subscription |
 | `max_pair_gap_s`           | double   | 0.005                                    | The largest stamp difference of a pair, from 0 to 0.1. An exact stamp wins                    |
 | `pair_wait_s`              | double   | 0.020                                    | How long an image waits for its depth, in seconds of wall time, over 0 and at most 0.1        |
 | `require_depth`            | bool     | false                                    | Skip an image without usable depth, instead of publishing it with empty clouds. Needs `geometry_enabled` |
+| `depth_min_m`              | double   | 0.2                                      | Nearer depth becomes no point. Over 0. A starting value for the ZED and the sim, to tune on recordings |
+| `depth_max_m`              | double   | 3.0                                      | Farther depth becomes no point. Finite and above `depth_min_m`. A starting value too          |
 
 Why 0.25 for both score floors: it is Ultralytics' own `predict` default,
 and the trackers' `new_track_thresh` and `track_high_thresh`. A track can
@@ -323,7 +328,9 @@ processed 52 in 10.0 s (5.2 Hz); received 150, replaced 98, skipped 0, failed 0,
   published without one.
 - **The stages** are in milliseconds, as p50/p95. `wait` is the time an
   image waited in the mailbox. `faces` covers SCRFD and ArcFace on every
-  head crop.
+  head crop. With `geometry_enabled`, reading the depth counts in `convert`,
+  copying and resizing the masks in `objects`, and the lift and the view
+  quality in `build`. They have no stages of their own yet.
 - **`age`** is the time from the image's stamp to the publish, in
   milliseconds. The contract targets under 300 at p95.
 
@@ -494,6 +501,59 @@ walkie-database can cite each item by its link.
 - Headings come from `k[0]` and `k[2]`. Face size in radians comes from
   `k[0]` and `k[4]`. Left, centre and right are thirds of
   `camera_info.width`.
+
+### Object points and view quality {#contract-object-geometry}
+
+With `geometry_enabled`, an object that has a mask gets its points and its
+`view_quality`, from `walkie_vision.depth`. With it off, no mask is copied to
+the CPU and no grey image, Laplacian or lift runs. Every cloud then stays empty
+and every `view_quality` stays 0. The input is depth that passed the
+[pairing checks](#depth-pairing).
+
+**The mask.** The seg head gives masks at the letterboxed input size.
+`mask_to_native()` removes the padding, by the rule of Ultralytics'
+`scale_masks`, and resizes each mask once to the image's pixels by nearest
+neighbour. A box keeps the mask of its own row when the tracker or the box check
+drops other rows. Masks stay in the process and are never published.
+
+**The points.** These steps run on the depth raster. A raster of another size
+takes the mask by nearest neighbour.
+
+1. The erosion amount is `clamp(round(0.05 * min(width, height)), 1, 5)` px,
+   from the extent of the mask. The kernel is a square of side `2 * r + 1`, and
+   outside the raster counts as not in the mask.
+2. A depth must be finite and from `depth_min_m` to `depth_max_m`.
+3. A depth must be within `max(3 * 1.4826 * MAD, 0.01)` m of the median. The
+   1 cm floor keeps small valid noise when the MAD is zero.
+4. If fewer than 30 pixels are left, steps 2 and 3 run on the whole mask. If
+   fewer than 30 are still left, the cloud is empty.
+5. `x = (u - cx) * z / fx` and `y = (v - cy) * z / fy`, with the raster's own
+   calibration.
+6. At most 2000 points are kept, at evenly spaced indices in row-major order.
+   The same input gives the same points.
+
+Vision stops there. It does no random reshuffle, map transform, clustering,
+plane removal or box fit, and it never restamps a cloud.
+
+**The view quality** is `0.25 * (area + centred + depth_cover + sharpness)`,
+clamped to 0 to 1. `W` and `H` are the image's size.
+
+| Term          | Formula                                                                          | Notes                                                           |
+| ------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `area`        | `min(1, sqrt(mask_pixels / (0.10 * W * H)))`                                     | From the mask at the image's size                               |
+| `centred`     | `max(0, 1 - hypot((cx_box - W/2) / (W/2), (cy_box - H/2) / (H/2)) / sqrt(2))`    | From the box's centre                                           |
+| `depth_cover` | valid in-range depth pixels / mask pixels                                        | Before erosion, on the raster's mask. 0 without depth           |
+| `sharpness`   | `min(1, var(Laplacian(grey)[mask]) / 1000)`                                      | 0 under 50 mask pixels. From the mask at the image's size       |
+
+The Laplacian is OpenCV's on the uint8 grey image, with `CV_32F`, `ksize=3` and
+the default reflect-101 border, and it runs once per image. An object without a
+mask scores 0. An object with a mask and no depth still scores, with
+`depth_cover` at 0.
+
+These are initial formulas, not a calibrated probability. Tune them only on
+recordings, with a versioned recipe. The depth range is a starting value too.
+The checks in `checks/c12_vision_node.py` do not cover this yet. They are to be
+extended together with the per-stage logs.
 
 ### Freshness {#contract-freshness}
 
@@ -1277,9 +1337,9 @@ bodies, so the node finds no people there.
 - **The respawn gap.** After a crash, nothing is published until the
   launch has started the node again and its models have loaded: several
   seconds, or minutes on a GPU whose kernels are not compiled yet.
-- **Empty fields.** Object embeddings, points, crops and colour shares are
-  empty in every published object, and `view_quality` is 0. `EmbedText` is
-  not built.
+- **Empty fields.** Object embeddings, crops and colour shares are empty in
+  every published object. Without `geometry_enabled`, points are empty too and
+  `view_quality` is 0. `EmbedText` is not built.
 - **The trackers count processed frames.** A lost track is kept for 30
   processed frames, 3 s at 10 Hz but 6 s at 5 Hz. A slower node keeps lost
   ids longer.
@@ -1301,9 +1361,12 @@ bodies, so the node finds no people there.
 - **The mask's residual.** Another person's pixels inside the guest's box,
   and people the detector missed, are sent with a person crop
   ([The mask](#the-mask)).
-- **Depth and object crops.** The code that cuts a `PointCloud2` out of
-  the depth image with a mask, and that compresses an object's crop into
-  `ObjectDetection.crop`, belongs to the node and is not written. The
+- **Object points are not measured.** The cost of copying and resizing masks
+  and of the lift on HD2K images, the alignment of real YOLOE masks and the
+  usefulness of the view quality have not been checked with a real model or
+  camera. The tests use fake detectors and stand-ins for Ultralytics' results.
+- **Object crops.** The code that compresses an object's crop into
+  `ObjectDetection.crop` belongs to the node and is not written. The
   default camera_info topic is `depth/camera_info`,
   which walkie-ros documents. Check on the robot that its size matches the
   RGB image, and whether `rgb/color/rect/camera_info` exists.

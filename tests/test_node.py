@@ -42,6 +42,7 @@ from walkie_vision.fakes import (
     FakePersonFaceRecognizer,
     FakePoseEstimator,
     FakeReIdentifier,
+    box_mask,
     figure_pose,
 )
 from walkie_vision.node import IMAGE_QOS, NODE_NAME, CropJob, CropMailbox, VisionConfig, VisionNode
@@ -495,6 +496,11 @@ def test_an_empty_classes_list_fails_at_construction(ctx):
         ("pair_wait_s", 0.0),
         ("pair_wait_s", 0.2),
         ("require_depth", True),
+        ("depth_min_m", 0.0),
+        ("depth_min_m", float("nan")),
+        ("depth_min_m", 5.0),
+        ("depth_max_m", 0.1),
+        ("depth_max_m", float("inf")),
     ],
 )
 def test_a_bad_parameter_fails_at_construction(ctx, name, value):
@@ -1078,3 +1084,75 @@ def test_a_depth_is_not_paired_with_a_second_image(harness):
     h.publish_image(1)
     assert h.spin_until(lambda: h.node.no_depth["unpaired"] == 1)
     assert h.node.depth_paired == 1
+
+
+# --- points and view quality --------------------------------------------------------
+
+MASKED_BOX = (8.0, 8.0, 40.0, 40.0)  # 32 x 32 px, so a radius of 2.
+
+
+def _masked_providers() -> Providers:
+    detection = Detection(
+        box=np.array(MASKED_BOX), label="chair", score=0.8, track_id=5, mask=box_mask(HEIGHT, WIDTH, MASKED_BOX)
+    )
+    return fake_providers(objects=FakeObjectDetector([detection], classes=CLASSES))
+
+
+def _published_object(h: Harness):
+    assert h.spin_until(lambda: len(h.got["objects reliable"]) == 1)
+    array = h.got["objects reliable"][0]
+    (det,) = array.detections
+    return array, det
+
+
+def test_a_paired_image_publishes_points_in_the_optical_frame(harness):
+    h = harness(_masked_providers(), geometry_enabled=True, require_depth=True)
+    h.wait_matched()
+    h.hold_infos()
+    h.freeze_pair_clock()
+    h.publish_depth(_depth_msg(1, 1.5))
+    h.publish_image(1)
+    array, det = _published_object(h)
+    assert det.points.header == array.header
+    assert det.points.width == 28 * 28 and det.points.height == 1
+    xyz = np.frombuffer(bytes(det.points.data), dtype="<f4").reshape(-1, 3)
+    # K has fx = fy = 50 at (32, 24). Erosion leaves pixels 10 to 37.
+    np.testing.assert_array_equal(xyz[:, 2], 1.5)
+    np.testing.assert_allclose(
+        [xyz[:, 0].min(), xyz[:, 0].max(), xyz[:, 1].min(), xyz[:, 1].max()],
+        [(10 - 32) * 1.5 / 50, (37 - 32) * 1.5 / 50, (10 - 24) * 1.5 / 50, (37 - 24) * 1.5 / 50],
+        atol=1e-5,
+    )
+    assert 0.0 < det.view_quality <= 1.0
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"k": [0.0] * 9}, "depth_camera_info"),
+        ({"d": [0.1, 0.0, 0.0, 0.0, 0.0]}, "depth_calibration"),
+    ],
+)
+def test_a_refused_calibration_publishes_no_points(harness, change, reason):
+    h = harness(_masked_providers(), geometry_enabled=True)
+    h.wait_matched()
+    info = h.camera_info(1)
+    for name, value in change.items():
+        setattr(info, name, value)
+    h.hold_infos(depth_info=info)
+    h.freeze_pair_clock()
+    h.publish_depth(_depth_msg(1))
+    h.publish_image(1)
+    _, det = _published_object(h)
+    assert h.node.no_depth[reason] == 1
+    assert det.points.width == 0 and len(det.points.data) == 0
+    # The mask still scores, with no depth term.
+    assert 0.0 < det.view_quality < 0.75
+
+
+def test_a_mask_without_geometry_stays_out_of_the_message(harness):
+    h = harness(_masked_providers())
+    h.wait_matched()
+    h.publish_frame(1)
+    _, det = _published_object(h)
+    assert det.points.width == 0 and len(det.points.data) == 0 and det.view_quality == 0.0

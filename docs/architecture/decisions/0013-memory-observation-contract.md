@@ -3,6 +3,11 @@
 <!-- --8<-- [start:body] -->
 **Status:** Accepted · **Date:** 2026-11-05
 
+**Runs today:** the fake publisher fills the arrays with synthetic values. The
+vision node sets `stream_id` always, and fills `points` and `view_quality` when
+`geometry_enabled` is on. It fills no embedding, crop or colour share, and serves
+none of the new services.
+
 **Context**
 
 walkie-database will build object memory from the object arrays this node

@@ -71,7 +71,7 @@ class Detection:
     track_id: int = 0
     """The tracker's id, the same from image to image; 0 when not tracked."""
     mask: np.ndarray | None = None
-    """The object's pixels: a bool array the size of the image, or None."""
+    """This box's own pixels: a bool array the size of the image. None unless the detector was asked for masks."""
 
 
 @dataclass

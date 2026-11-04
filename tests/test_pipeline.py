@@ -11,7 +11,15 @@ from builtin_interfaces.msg import Time
 from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import Header
 
-from walkie_vision.fakes import FakeObjectDetector, FakePersonFaceRecognizer, FakePoseEstimator, FakeReIdentifier
+from walkie_vision import pipeline as pipeline_module
+from walkie_vision.depth import RegisteredDepth, frame_laplacian, view_quality
+from walkie_vision.fakes import (
+    FakeObjectDetector,
+    FakePersonFaceRecognizer,
+    FakePoseEstimator,
+    FakeReIdentifier,
+    box_mask,
+)
 from walkie_vision.node import LatencyLog
 from walkie_vision.pipeline import Providers, TrackIdBase, VisionPipeline, dedupe_poses
 from walkie_vision.providers import Detection, Face, PersonPose
@@ -105,6 +113,10 @@ def test_bad_classes_raise(classes):
         {"reid_min_crop_px": 0},
         {"people_dedupe_iou": 0.0},
         {"people_dedupe_iou": 1.5},
+        {"depth_min_m": 0.0},
+        {"depth_min_m": float("nan")},
+        {"depth_min_m": 2.0, "depth_max_m": 1.0},
+        {"depth_max_m": float("inf")},
     ],
 )
 def test_bad_settings_raise(kwargs):
@@ -394,6 +406,156 @@ def test_an_object_array_has_empty_parts_with_the_image_header():
     assert det.points.header == _header() and det.points.width == 0 and len(det.points.fields) == 3
     assert det.crop.header == _header() and len(det.crop.data) == 0
     assert det.view_quality == 0.0 and len(det.color_shares) == 0
+
+
+# --- geometry ---------------------------------------------------------------------
+
+IMAGE_H, IMAGE_W = IMAGE.shape[:2]
+LEFT_BOX = (4.0, 8.0, 24.0, 28.0)  # 20 x 20 px, on the depth's near half.
+RIGHT_BOX = (40.0, 8.0, 60.0, 28.0)  # 20 x 20 px, on the depth's far half.
+ERODED_POINTS = 18 * 18
+
+
+def _masked(box=LEFT_BOX, *, score=0.8, track_id=5, mask=None) -> Detection:
+    if mask is None:
+        mask = box_mask(IMAGE_H, IMAGE_W, box)
+    return Detection(box=np.array(box, dtype=np.float64), label="chair", score=score, track_id=track_id, mask=mask)
+
+
+def _plain_depth(value=1.0, height=IMAGE_H, width=IMAGE_W, fx=50.0, cx=32.0, cy=24.0) -> RegisteredDepth:
+    return RegisteredDepth(np.full((height, width), value, np.float32), fx, fx, cx, cy)
+
+
+def _geometry_pipeline(*detections, **kwargs) -> VisionPipeline:
+    kwargs.setdefault("geometry_enabled", True)
+    return _pipeline(_providers(objects=FakeObjectDetector(detections, classes=CLASSES)), **kwargs)
+
+
+def _xyz(det) -> np.ndarray:
+    return np.frombuffer(bytes(det.points.data), dtype="<f4").reshape(-1, 3)
+
+
+def _forbid(monkeypatch, *names):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("geometry work ran")
+
+    for name in names:
+        monkeypatch.setattr(pipeline_module, name, forbidden)
+
+
+def test_geometry_off_ignores_a_mask_and_a_depth_and_runs_no_geometry_work(monkeypatch):
+    _forbid(monkeypatch, "frame_laplacian", "lift_mask", "depth_cover", "view_quality", "resize_mask")
+    result = _geometry_pipeline(_masked(), geometry_enabled=False).process(IMAGE, _header(), _info(), _plain_depth())
+    (det,) = result.objects.detections
+    assert det.points.width == 0 and len(det.points.data) == 0 and det.view_quality == 0.0
+
+
+def test_geometry_fills_the_points_and_the_quality_of_a_detection():
+    (det,) = _geometry_pipeline(_masked()).process(IMAGE, _header(), _info(), _plain_depth()).objects.detections
+    assert det.points.header == _header()
+    assert det.points.width == ERODED_POINTS and det.points.height == 1
+    assert (_xyz(det)[:, 2] == 1.0).all()
+    expected = view_quality(box_mask(IMAGE_H, IMAGE_W, LEFT_BOX), np.array(LEFT_BOX), frame_laplacian(IMAGE), 1.0)
+    assert det.view_quality == pytest.approx(expected, abs=1e-6)
+    # The new fields of the message stay empty. V5 and V6 fill them.
+    assert len(det.embedding) == 0 and len(det.crop.data) == 0 and len(det.color_shares) == 0
+
+
+def test_the_laplacian_runs_once_per_image(monkeypatch):
+    calls = []
+
+    def counted(image):
+        calls.append(image.shape)
+        return frame_laplacian(image)
+
+    monkeypatch.setattr(pipeline_module, "frame_laplacian", counted)
+    pipeline = _geometry_pipeline(_masked(LEFT_BOX), _masked(RIGHT_BOX, track_id=6))
+    pipeline.process(IMAGE, _header(), _info(), _plain_depth())
+    assert calls == [IMAGE.shape]
+    pipeline.process(IMAGE, _header(), _info(), _plain_depth())
+    assert len(calls) == 2
+
+
+def test_no_mask_and_no_detection_run_no_geometry_work(monkeypatch):
+    _forbid(monkeypatch, "frame_laplacian", "lift_mask")
+    (det,) = _geometry_pipeline(_detection()).process(IMAGE, _header(), _info(), _plain_depth()).objects.detections
+    assert det.points.width == 0 and det.view_quality == 0.0
+    assert _geometry_pipeline().process(IMAGE, _header(), _info(), _plain_depth()).objects.detections == []
+
+
+def test_each_detection_gets_the_points_of_its_own_mask_after_the_filters():
+    metres = np.full((IMAGE_H, IMAGE_W), 2.0, np.float32)
+    metres[:, :32] = 1.0
+    depth = RegisteredDepth(metres, 50.0, 50.0, 32.0, 24.0)
+    pipeline = _geometry_pipeline(
+        # A row left out by the score floor, one by a bad box, and one without a mask.
+        _masked(RIGHT_BOX, score=0.1, track_id=1),
+        _masked(LEFT_BOX, track_id=2),
+        Detection(box=np.array([float("nan"), 0.0, 5.0, 5.0]), label="chair", score=0.8, track_id=3),
+        _detection(RIGHT_BOX, track_id=4),
+        _masked(RIGHT_BOX, track_id=5),
+        objects_min_score=0.25,
+    )
+    result = pipeline.process(IMAGE, _header(), _info(), depth)
+    assert [d.track_id for d in result.objects.detections] == [2, 4, 5]
+    left, plain, right = result.objects.detections
+    assert (_xyz(left)[:, 2] == 1.0).all() and left.points.width == ERODED_POINTS
+    assert plain.points.width == 0 and plain.view_quality == 0.0
+    assert (_xyz(right)[:, 2] == 2.0).all() and right.points.width == ERODED_POINTS
+    assert (_xyz(left)[:, 0] < 0).all() and (_xyz(right)[:, 0] > 0).all()
+
+
+def test_without_depth_the_cloud_is_empty_and_the_quality_has_no_cover():
+    (det,) = _geometry_pipeline(_masked()).process(IMAGE, _header(), _info(), None).objects.detections
+    assert det.points.width == 0 and len(det.points.data) == 0 and det.points.header == _header()
+    expected = view_quality(box_mask(IMAGE_H, IMAGE_W, LEFT_BOX), np.array(LEFT_BOX), frame_laplacian(IMAGE), 0.0)
+    assert det.view_quality == pytest.approx(expected, abs=1e-6)
+    assert det.view_quality > 0.0
+
+
+def test_a_depth_out_of_range_gives_no_points_and_no_cover():
+    # The test's depth is at 5 m, past the 3 m limit.
+    (det,) = _geometry_pipeline(_masked()).process(IMAGE, _header(), _info(), _plain_depth(5.0)).objects.detections
+    assert det.points.width == 0
+    expected = view_quality(box_mask(IMAGE_H, IMAGE_W, LEFT_BOX), np.array(LEFT_BOX), frame_laplacian(IMAGE), 0.0)
+    assert det.view_quality == pytest.approx(expected, abs=1e-6)
+
+
+def test_a_small_mask_gives_no_points_but_keeps_its_quality():
+    box = (4.0, 8.0, 9.0, 13.0)  # 25 px, under the point floor.
+    (det,) = _geometry_pipeline(_masked(box)).process(IMAGE, _header(), _info(), _plain_depth()).objects.detections
+    assert det.points.width == 0
+    assert det.view_quality > 0.0
+
+
+def test_the_configured_range_reaches_the_lift():
+    pipeline = _geometry_pipeline(_masked(), depth_min_m=2.0, depth_max_m=2.5)
+    (det,) = pipeline.process(IMAGE, _header(), _info(), _plain_depth(1.0)).objects.detections
+    assert det.points.width == 0
+    (det,) = pipeline.process(IMAGE, _header(), _info(), _plain_depth(2.2)).objects.detections
+    assert det.points.width == ERODED_POINTS
+
+
+def test_a_lower_resolution_raster_uses_its_own_intrinsics():
+    # Half the size: fx' = fx / 2 and cx' = (cx + 0.5) / 2 - 0.5. The native box
+    # 16..48 lands on raster columns 8..23, and a radius of 1 leaves 9..22.
+    box = (16.0, 8.0, 48.0, 40.0)
+    depth = RegisteredDepth(np.full((24, 32), 1.0, np.float32), 25.0, 25.0, 15.75, 11.75)
+    (det,) = _geometry_pipeline(_masked(box)).process(IMAGE, _header(), _info(), depth).objects.detections
+    xyz = _xyz(det)
+    assert det.points.width == 14 * 14
+    np.testing.assert_allclose(
+        [xyz[:, 0].min(), xyz[:, 0].max()], [(9 - 15.75) / 25.0, (22 - 15.75) / 25.0], atol=1e-6
+    )
+    # The area and the sharpness use the native mask, and the cover the raster mask.
+    expected = view_quality(box_mask(IMAGE_H, IMAGE_W, box), np.array(box), frame_laplacian(IMAGE), 1.0)
+    assert det.view_quality == pytest.approx(expected, abs=1e-6)
+
+
+def test_a_mask_of_another_size_fails_the_image():
+    mask = np.zeros((IMAGE_H // 2, IMAGE_W // 2), bool)
+    with pytest.raises(ValueError, match="mask"):
+        _geometry_pipeline(_masked(mask=mask)).process(IMAGE, _header(), _info(), _plain_depth())
 
 
 class _Raises:
