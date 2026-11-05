@@ -1,0 +1,54 @@
+name: Tests
+
+# Runs the fake-model test suite from a clean checkout. It needs no GPU, no
+# model files and no router. It installs from pixi.lock and uses the same
+# restrictions as the local recipe: Fast DDS on localhost, domain 77, no GPU,
+# and nothing downloaded from Hugging Face or by Ultralytics.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      ROS_DOMAIN_ID: "77"
+      ROS_LOCALHOST_ONLY: "1"
+      ROS_PYTHON_CHECK_FIELDS: "1"
+      CUDA_VISIBLE_DEVICES: ""
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      YOLO_AUTOINSTALL: "false"
+    steps:
+      - uses: actions/checkout@v7
+
+      # Installs from pixi.lock and fails if the lock file is out of date.
+      - uses: prefix-dev/setup-pixi@9dabb60412d3d2d967a8d682f7ce01317af40514 # v0.11.0
+        with:
+          environments: default
+          cache: true
+
+      - name: Build the messages
+        run: pixi run --locked build-msgs
+
+      # A second pixi run, because activation adds the message overlay to the
+      # environment only once it exists. See tests/conftest.py. env comes after
+      # pixi run because activation sets RMW_IMPLEMENTATION for every pixi run.
+      - name: Run the tests
+        run: >-
+          pixi run --locked env
+          RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+          ROS_DOMAIN_ID=77
+          ROS_LOCALHOST_ONLY=1
+          ROS_PYTHON_CHECK_FIELDS=1
+          CUDA_VISIBLE_DEVICES=
+          HF_HUB_OFFLINE=1
+          TRANSFORMERS_OFFLINE=1
+          YOLO_AUTOINSTALL=false
+          python -m pytest -q -rs --no-header

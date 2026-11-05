@@ -64,7 +64,7 @@ import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 import numpy as np
 import rclpy
@@ -87,9 +87,11 @@ from . import convert, crop, requests
 from .crop import CropStatus
 from .depth import DepthRefused, RegisteredDepth, RgbdBuffer, read_registered_depth, stamp_ns
 from .image import camera_info_problem, image_to_bgr
-from .pipeline import ON_DEMAND_MAX_OBJECTS, Providers, TrackIdBase, VisionPipeline
+from .pipeline import ON_DEMAND_MAX_OBJECTS, Providers, StageTimes, TrackIdBase, VisionPipeline
 
 NODE_NAME = "walkie_vision"
+
+_T = TypeVar("_T")
 
 # The camera's newest image only: a late image is worth less than none.
 IMAGE_QOS = QoSProfile(
@@ -474,13 +476,34 @@ class LatencyLog:
     take a lock. summary() swaps out the samples, so a sample is never lost
     or counted twice, and it reports the counts as the change since the
     previous summary.
+
+    A stage in OPTIONAL_STAGES or JOB_STAGES shows only when it has samples, so
+    the line of a run with every addition off keeps its old form.
     """
 
-    STAGES = ("wait", "convert", "objects", "pose", "faces", "reid", "build", "publish", "age")
+    STAGES = (
+        "wait",
+        "convert",
+        "depth",
+        "objects",
+        "mask",
+        "pose",
+        "faces",
+        "reid",
+        "lift",
+        "crop",
+        "embed",
+        "build",
+        "publish",
+        "age",
+    )
+    OPTIONAL_STAGES = frozenset({"depth", "mask", "lift", "crop", "embed"})
+    JOB_STAGES = ("service", "prepare")
+    """A whole service job, and the preparation of a new DetectObjects list inside it."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._samples: dict[str, list[float]] = {s: [] for s in self.STAGES}
+        self._samples: dict[str, list[float]] = {s: [] for s in self.STAGES + self.JOB_STAGES}
         self._processed = 0
         self._last_counts: dict[str, int] = {}
         self.last_processed = 0
@@ -498,6 +521,15 @@ class LatencyLog:
                 self._samples[stage].append(float(value))
             self._processed += 1
 
+    def add_job(self, **ms: float) -> None:
+        """Record one service job, which is no processed image: milliseconds by the names in JOB_STAGES."""
+        unknown = set(ms) - set(self.JOB_STAGES)
+        if unknown:
+            raise ValueError(f"unknown job stages: {sorted(unknown)}")
+        with self._lock:
+            for stage, value in ms.items():
+                self._samples[stage].append(float(value))
+
     def summary(self, elapsed_s: float, counts: Mapping[str, int]) -> str:
         """Return the line for the period that just ended, and start a new one.
 
@@ -505,7 +537,7 @@ class LatencyLog:
         one's change since the previous summary, in the order given.
         """
         with self._lock:
-            samples, self._samples = self._samples, {s: [] for s in self.STAGES}
+            samples, self._samples = self._samples, {s: [] for s in self.STAGES + self.JOB_STAGES}
             processed, self._processed = self._processed, 0
             deltas = {k: int(v) - self._last_counts.get(k, 0) for k, v in counts.items()}
             self._last_counts = {k: int(v) for k, v in counts.items()}
@@ -513,11 +545,17 @@ class LatencyLog:
         self.last_deltas = deltas
         rate = processed / elapsed_s if elapsed_s > 0 else 0.0
         counted = ", ".join(f"{k} {v}" for k, v in deltas.items())
-        stages = " ".join(f"{s} {_p50_p95(samples[s])}" for s in self.STAGES if s != "age")
+        stages = " ".join(
+            f"{s} {_p50_p95(samples[s])}"
+            for s in self.STAGES
+            if s != "age" and (s not in self.OPTIONAL_STAGES or samples[s])
+        )
         head = f"processed {processed} in {elapsed_s:.1f} s ({rate:.1f} Hz)"
         if counted:
             head += f"; {counted}"
-        return f"{head} | ms p50/p95: {stages} | age {_p50_p95(samples['age'])}"
+        line = f"{head} | ms p50/p95: {stages} | age {_p50_p95(samples['age'])}"
+        jobs = " ".join(f"{s} {_p50_p95(samples[s])}" for s in self.JOB_STAGES if samples[s])
+        return f"{line} | {jobs}" if jobs else line
 
 
 def _p50_p95(values: list[float]) -> str:
@@ -525,6 +563,15 @@ def _p50_p95(values: list[float]) -> str:
         return "-/-"
     p50, p95 = np.percentile(np.asarray(values, dtype=np.float64), [50, 95])
     return f"{p50:.0f}/{p95:.0f}"
+
+
+def _load(logger: StartupLogger, name: str, build: Callable[[], _T]) -> _T:
+    """Build one model, and name it in the log when it fails, before the error reaches main()."""
+    try:
+        return build()
+    except Exception as e:
+        logger.warning(f"the {name} model failed to load: {type(e).__name__}: {e}")
+        raise
 
 
 def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
@@ -535,7 +582,8 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
     Ultralytics is imported. Then the PyTorch models, then the ONNX Runtime
     sessions. Raises FileNotFoundError naming every missing file, and
     StartupError (a RuntimeError) when OSNet is not cached and cannot be
-    downloaded. A model that fails to load raises its own error.
+    downloaded. A model that fails to load logs its name and raises its own
+    error.
 
     CLIP is checked and loaded only with object_embeddings_enabled, and only
     from the cache: it never downloads here. The second YOLOE is built only with
@@ -586,43 +634,55 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
         if config.geometry_enabled or config.object_crops_enabled or config.object_embeddings_enabled
         else {}
     )
-    objects = YoloeTracker(
-        objects_path,
-        list(config.classes),
-        device=config.device,
-        imgsz=config.objects_imgsz,
-        conf=config.objects_conf,
-        agnostic_nms=config.objects_agnostic_nms,
-        tracker=config.objects_tracker,
-        **keep_masks,
-    )
-    # With no tracker, nothing reads a box under the published floor.
-    on_demand = (
-        YoloeDetector(
+    objects = _load(
+        logger,
+        "objects",
+        lambda: YoloeTracker(
             objects_path,
             list(config.classes),
             device=config.device,
             imgsz=config.objects_imgsz,
-            conf=config.objects_min_score,
+            conf=config.objects_conf,
             agnostic_nms=config.objects_agnostic_nms,
-            max_det=ON_DEMAND_MAX_OBJECTS,
+            tracker=config.objects_tracker,
             **keep_masks,
+        ),
+    )
+    # With no tracker, nothing reads a box under the published floor.
+    on_demand = (
+        _load(
+            logger,
+            "on-demand",
+            lambda: YoloeDetector(
+                objects_path,
+                list(config.classes),
+                device=config.device,
+                imgsz=config.objects_imgsz,
+                conf=config.objects_min_score,
+                agnostic_nms=config.objects_agnostic_nms,
+                max_det=ON_DEMAND_MAX_OBJECTS,
+                **keep_masks,
+            ),
         )
         if config.on_demand_enabled
         else None
     )
-    pose = YoloPoseTracker(
-        pose_path,
-        device=config.device,
-        imgsz=config.pose_imgsz,
-        conf=config.pose_conf,
-        tracker=config.pose_tracker,
+    pose = _load(
+        logger,
+        "pose",
+        lambda: YoloPoseTracker(
+            pose_path,
+            device=config.device,
+            imgsz=config.pose_imgsz,
+            conf=config.pose_conf,
+            tracker=config.pose_tracker,
+        ),
     )
 
     from walkie_vision.reid.identifier import OSNetReIdentifier
 
-    reid = OSNetReIdentifier(device=config.device, batch_size=config.reid_batch_size)
-    embedder = None if clip_path is None else ClipEmbedder(clip_path, device=config.device)
+    reid = _load(logger, "OSNet", lambda: OSNetReIdentifier(device=config.device, batch_size=config.reid_batch_size))
+    embedder = None if clip_path is None else _load(logger, "CLIP", lambda: ClipEmbedder(clip_path, device=config.device))
 
     import onnxruntime
 
@@ -635,12 +695,16 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
     # level when it is created, so this must come before FaceAnalyzer.
     onnxruntime.set_default_logger_severity(3)
     logger.info("warming up the face models; the first run on this GPU can take minutes")
-    faces = HeadFaceRecognizer(
-        FaceAnalyzer(face_dir, det_thresh=config.face_det_thresh),
-        HeadCropConfig(
-            input_sizes=tuple(config.face_input_sizes),
-            max_people=config.face_max_people,
-            max_face_offset=config.face_max_offset,
+    faces = _load(
+        logger,
+        "face",
+        lambda: HeadFaceRecognizer(
+            FaceAnalyzer(face_dir, det_thresh=config.face_det_thresh),
+            HeadCropConfig(
+                input_sizes=tuple(config.face_input_sizes),
+                max_people=config.face_max_people,
+                max_face_offset=config.face_max_offset,
+            ),
         ),
     )
 
@@ -720,6 +784,8 @@ class VisionNode(Node):
         """Those requests refused because the slot was taken, or new classes came too soon."""
         self.classes_prepared = 0
         """The on-demand class lists that the worker prepared. Each one stops the stream for about 1.5 s."""
+        self.sampled = 0
+        """Objects that got a crop or a vector, from the stream and from DetectObjects."""
         self.late_results = 0
         """Service answers discarded because they came after their deadline."""
         self.fatal: str | None = None
@@ -956,9 +1022,9 @@ class VisionNode(Node):
         self._jobs.withdraw(job)
         return fail(requests.TIMEOUT, f"no answer in {deadline_s:g} s")
 
-    def _on_latency_timer(self) -> None:
-        now = time.monotonic()
-        elapsed, self._period_start = now - self._period_start, now
+    def _latency_counts(self) -> dict[str, int]:
+        """Return the running totals of the latency line. An addition that is off adds none."""
+        cfg = self.config
         with self._counts_lock:
             counts = {
                 "received": self.frames_received,
@@ -968,15 +1034,25 @@ class VisionNode(Node):
                 "dropped": sum(self.dropped.values()),
                 "duplicates": self.duplicates,
             }
-            if self.config.geometry_enabled:
+            if cfg.geometry_enabled:
                 counts["depth"] = self.depth_received
                 counts["paired"] = self.depth_paired
                 counts["no_depth"] = sum(self.no_depth.values())
-            if self.config.object_embeddings_enabled or self.config.on_demand_enabled:
+                counts["unpaired"] = self.skipped["unpaired"] + self.no_depth["unpaired"]
+            if cfg.object_crops_enabled or cfg.object_embeddings_enabled:
+                counts["sampled"] = self.sampled
+            if cfg.object_embeddings_enabled or cfg.on_demand_enabled:
                 counts["jobs"] = self.service_jobs
                 counts["busy"] = self.service_busy
                 counts["late"] = self.late_results
-        self.get_logger().info(self.latency.summary(elapsed, counts))
+            if cfg.on_demand_enabled:
+                counts["prepared"] = self.classes_prepared
+        return counts
+
+    def _on_latency_timer(self) -> None:
+        now = time.monotonic()
+        elapsed, self._period_start = now - self._period_start, now
+        self.get_logger().info(self.latency.summary(elapsed, self._latency_counts()))
         self.summaries_logged += 1
         if elapsed > 0:
             processed_hz = self.latency.last_processed / elapsed
@@ -1060,6 +1136,8 @@ class VisionNode(Node):
             response = job.fail(requests.INFERENCE_FAILED, f"{type(e).__name__}: {e}")
         finally:
             self._busy_since = None
+        held_s = time.monotonic() - started
+        self.latency.add_job(service=held_s * 1000.0)
         if not job.finish(response):
             with self._counts_lock:
                 self.late_results += 1
@@ -1067,7 +1145,7 @@ class VisionNode(Node):
             self._warn_throttled(
                 "late",
                 f"a service answer came after its deadline and was discarded; the job held the worker for "
-                f"{time.monotonic() - started:.2f} s",
+                f"{held_s:.2f} s",
             )
 
     def _detect_objects(self, job: requests.ServiceJob) -> DetectObjects.Response:
@@ -1086,6 +1164,7 @@ class VisionNode(Node):
                 with self._counts_lock:
                     self.service_busy += 1
                 return fail(requests.BUSY, f"new classes are prepared at most once every {self._class_gate.period_s:g} s")
+            started = time.perf_counter()
             try:
                 self.pipeline.prepare_on_demand(classes)
             except Exception as e:
@@ -1093,8 +1172,12 @@ class VisionNode(Node):
                 return fail(requests.MODEL_UNAVAILABLE, f"the classes could not be prepared: {type(e).__name__}: {e}")
             finally:
                 self._class_gate.mark()
+                prepare_ms = (time.perf_counter() - started) * 1000.0
+                self.latency.add_job(prepare=prepare_ms)
             with self._counts_lock:
                 self.classes_prepared += 1
+            # The stream had this gap too: no array stands in for it.
+            self.get_logger().info(f"prepared {len(classes)} on-demand classes in {prepare_ms:.0f} ms")
         if job.given_up or job.remaining() <= 0:
             return fail(requests.TIMEOUT, "the deadline passed while the classes were prepared")
 
@@ -1120,9 +1203,9 @@ class VisionNode(Node):
 
         header = Header(stamp=msg.header.stamp, frame_id=msg.header.frame_id)
         result = self.pipeline.detect_on_demand(image, header, info, depth)
-        if result.dropped:
-            with self._counts_lock:
-                self.dropped.update(result.dropped)
+        with self._counts_lock:
+            self.dropped.update(result.dropped)
+            self.sampled += result.sampled
         problem = requests.image_age_problem(msg, self.get_clock().now().nanoseconds, max_age_s)
         if problem is not None:
             return fail(requests.STALE_IMAGE, f"after detection, {problem}")
@@ -1220,8 +1303,11 @@ class VisionNode(Node):
                 once=True,
             )
         depth: RegisteredDepth | None = None
+        depth_ms = 0.0
         if cfg.geometry_enabled:
+            t = time.perf_counter()
             depth = self._read_depth(msg, info, depth_msg)
+            depth_ms = (time.perf_counter() - t) * 1000.0
             if depth is None and cfg.require_depth:
                 return True
         try:
@@ -1231,7 +1317,7 @@ class VisionNode(Node):
                 self.skipped["encoding"] += 1
             self._warn_throttled("encoding", f"skipping an image from {cfg.image_topic}: {e}")
             return True
-        convert_ms = (time.perf_counter() - start) * 1000.0
+        convert_ms = (time.perf_counter() - start) * 1000.0 - depth_ms
 
         header = Header(stamp=msg.header.stamp, frame_id=msg.header.frame_id)
         self._busy_since = time.monotonic()
@@ -1261,6 +1347,9 @@ class VisionNode(Node):
             # normal behaviour, not a bad field.
             with self._counts_lock:
                 self.duplicates += result.duplicates
+        if result.sampled:
+            with self._counts_lock:
+                self.sampled += result.sampled
         if result.dropped:
             with self._counts_lock:
                 self.dropped.update(result.dropped)
@@ -1298,6 +1387,7 @@ class VisionNode(Node):
             build=times.build,
             publish=publish_ms,
             age=age_s * 1000.0,
+            **self._added_stages(depth_ms, times),
         )
         if age_s > cfg.stale_warn_s:
             self._warn_throttled(
@@ -1308,6 +1398,20 @@ class VisionNode(Node):
         if job is not None:
             self._answer_crop(job, image, result.people)
         return True
+
+    def _added_stages(self, depth_ms: float, times: StageTimes) -> dict[str, float]:
+        """Return the stages of the additions that are on, so one that is off shows nothing in the line."""
+        cfg = self.config
+        stages: dict[str, float] = {}
+        if cfg.geometry_enabled:
+            stages.update(depth=depth_ms, lift=times.lift)
+        if cfg.geometry_enabled or cfg.object_crops_enabled or cfg.object_embeddings_enabled:
+            stages["mask"] = times.mask
+        if cfg.object_crops_enabled or cfg.object_embeddings_enabled:
+            stages["crop"] = times.crop
+        if cfg.object_embeddings_enabled:
+            stages["embed"] = times.embed
+        return stages
 
     def _answer_crop(self, job: CropJob, image: np.ndarray, people: PersonDetectionArray) -> None:
         """Answer a GetPersonCrop job from one image and its published people.

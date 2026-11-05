@@ -9,6 +9,9 @@ image_to_bgr() as the node reads its camera.
 The check creates no ROS node and does not call rclpy.init(): it only builds
 messages. It prints the start time, the stage latencies and the GPU memory,
 which ADR-0010 cites. The latency target is checked on the laptop only.
+
+With --memory FIXTURE it runs the memory task on a recorded colour and depth
+pair instead: see c12_memory.py. run_checks.py never passes that flag.
 """
 
 from __future__ import annotations
@@ -18,10 +21,13 @@ import os
 # As the vision node's launch does: no online checks from Ultralytics.
 os.environ.setdefault("YOLO_OFFLINE", "true")
 
+import argparse
 import array
 import logging
 import math
+import sys
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -29,6 +35,7 @@ from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 
+from c12_memory import load_memory_fixture, memory_config, p50_p95, run_memory
 from common import assets_dir, expect, finish, gpu_mem_of
 from walkie_vision.image import image_to_bgr
 from walkie_vision.node import VisionConfig, build_providers
@@ -64,9 +71,32 @@ def nonfinite(msg: object, path: str = "") -> list[str]:
     return bad
 
 
-def p50_p95(values: list[float]) -> tuple[float, float]:
-    return float(np.percentile(values, 50)), float(np.percentile(values, 95))
+parser = argparse.ArgumentParser(description="The vision node's start path and 20 HD2K frames in one process.")
+parser.add_argument(
+    "--memory",
+    type=Path,
+    metavar="FIXTURE",
+    help="run the memory task on this recorded colour and depth pair instead; c12_memory.py describes the file",
+)
+args = parser.parse_args()
 
+if args.memory is not None:
+    # The fixture first: a bad one must not cost a model load.
+    memory_color, memory_depth, memory_info = load_memory_fixture(args.memory)
+    logging.basicConfig(level=logging.INFO)
+    memory = memory_config()
+    t0 = time.perf_counter()
+    memory_providers = build_providers(memory, logging.getLogger("c12"))
+    print(f"build_providers: {time.perf_counter() - t0:.1f} s", flush=True)
+    run_memory(memory_color, memory_depth, memory_info, memory, memory_providers, expect)
+
+    import torch  # noqa: E402  (after the start, which imports it itself, as the node does)
+
+    print("GPU memory with the second YOLOE and CLIP loaded:")
+    print(f"  torch reserved {torch.cuda.memory_reserved() / 2**20:.0f} MiB | torch max allocated "
+          f"{torch.cuda.max_memory_allocated() / 2**20:.0f} MiB | nvidia-smi {gpu_mem_of()}")
+    finish()
+    sys.exit(0)
 
 logging.basicConfig(level=logging.INFO)
 config = VisionConfig(classes=("person", "tie"))

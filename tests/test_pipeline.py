@@ -782,6 +782,123 @@ def test_stage_times_are_measured():
         assert getattr(times, stage) >= 0.0
 
 
+class _StageClock:
+    """Stands in for the pipeline's time module: its clock moves only when a slowed call runs."""
+
+    def __init__(self) -> None:
+        self.ms = 0.0
+
+    def perf_counter(self) -> float:
+        return self.ms / 1000.0
+
+    def time_ns(self) -> int:
+        return 0
+
+    def slowed(self, call, ms: float):
+        def slow(*args, **kwargs):
+            self.ms += ms
+            return call(*args, **kwargs)
+
+        return slow
+
+
+class _MaskTimedDetector(FakeObjectDetector):
+    """A detector that reports how long its masks took, as the real detectors do."""
+
+    last_mask_ms = 2.0
+
+
+@pytest.fixture
+def stage_clock(monkeypatch) -> _StageClock:
+    """A clock with lifting and JPEG encoding each slowed by a known time."""
+    clock = _StageClock()
+    monkeypatch.setattr(pipeline_module, "time", clock)
+    monkeypatch.setattr(pipeline_module, "lift_mask", clock.slowed(pipeline_module.lift_mask, 5.0))
+    monkeypatch.setattr(embeddings_module, "encode_crop", clock.slowed(embeddings_module.encode_crop, 3.0))
+    return clock
+
+
+def _slowed_detector(clock: _StageClock, *detections, classes) -> FakeObjectDetector:
+    detector = _MaskTimedDetector(list(detections), classes=classes)
+    detector.detect = clock.slowed(detector.detect, 9.0)
+    return detector
+
+
+def _slowed_embedder(clock: _StageClock) -> FakeEmbedder:
+    embedder = FakeEmbedder()
+    embedder.embed_images = clock.slowed(embedder.embed_images, 11.0)
+    return embedder
+
+
+def _assert_stages(times, *, lift: float, crop: float, embed: float) -> None:
+    # 2 ms of the detector's 9 ms are its masks. Nothing else moved the clock.
+    assert times.objects == pytest.approx(7.0) and times.mask == pytest.approx(2.0)
+    assert times.lift == pytest.approx(lift)
+    assert times.crop == pytest.approx(crop)
+    assert times.embed == pytest.approx(embed)
+    assert times.build == pytest.approx(0.0)
+
+
+def test_each_added_stage_of_an_image_counts_once_and_build_leaves_them_out(stage_clock):
+    # Offset 9 maps tracker id 1 to 10, which the first image samples.
+    pipeline = _pipeline(
+        dataclasses.replace(
+            _providers(objects=_slowed_detector(stage_clock, _masked(BIG, track_id=1), classes=CLASSES)),
+            embedder=_slowed_embedder(stage_clock),
+        ),
+        start_ns=9_000_000,
+        geometry_enabled=True,
+        object_crops_enabled=True,
+        object_embeddings_enabled=True,
+        allow_fake_embedder=True,
+    )
+    result = pipeline.process(IMAGE, _header(), _info(), _plain_depth())
+    _assert_stages(result.times, lift=5.0, crop=3.0, embed=11.0)
+    assert result.sampled == 1
+
+
+def test_each_added_stage_of_a_detect_objects_call_counts_once(stage_clock):
+    pipeline = _pipeline(
+        dataclasses.replace(
+            _providers(objects=_ForbiddenDetector()),
+            on_demand=_slowed_detector(stage_clock, _masked(BIG), classes=("chair",)),
+            embedder=_slowed_embedder(stage_clock),
+        ),
+        on_demand_enabled=True,
+        geometry_enabled=True,
+        object_crops_enabled=True,
+        object_embeddings_enabled=True,
+        allow_fake_embedder=True,
+    )
+    result = pipeline.detect_on_demand(IMAGE, _header(), _info(), _plain_depth())
+    _assert_stages(result.times, lift=5.0, crop=3.0, embed=11.0)
+    assert result.sampled == 1
+
+
+def test_a_stage_whose_addition_is_off_stays_at_zero():
+    result = _pipeline(_providers(objects=FakeObjectDetector([_masked(BIG, track_id=10)], classes=CLASSES))).process(
+        IMAGE, _header(), _info(), _plain_depth()
+    )
+    times = result.times
+    assert (times.mask, times.lift, times.crop, times.embed) == (0.0, 0.0, 0.0, 0.0)
+    assert result.sampled == 0
+
+
+def test_the_objects_stage_cannot_go_below_zero_when_the_masks_took_all_of_it():
+    times = pipeline_module.StageTimes()
+    pipeline_module._split_detector_time(times, _MaskTimedDetector([], classes=CLASSES), 1.5)
+    assert (times.objects, times.mask) == (0.0, 2.0)
+
+
+def test_sampled_counts_only_the_objects_that_got_a_sample():
+    # Tracker ids 10 and 11 map to 10 and 11, and only the first is due on image 0.
+    detections = [_masked(BIG, track_id=10), _masked(BIG, track_id=11)]
+    pipeline = _pipeline(
+        _providers(objects=FakeObjectDetector(detections, classes=CLASSES)), object_crops_enabled=True
+    )
+    assert pipeline.process(IMAGE, _header(), _info()).sampled == 1
+
+
 # --- LatencyLog ---------------------------------------------------------
 
 
@@ -820,6 +937,45 @@ def test_latency_counts_are_the_change_since_the_previous_summary():
 def test_latency_add_rejects_unknown_stages():
     with pytest.raises(ValueError):
         LatencyLog().add(nope=1.0)
+
+
+BASE_STAGES = ("wait", "convert", "objects", "pose", "faces", "reid", "build", "publish", "age")
+
+
+def test_with_every_addition_off_the_latency_line_keeps_its_old_form():
+    log = LatencyLog()
+    log.add(**dict.fromkeys(BASE_STAGES, 1.0))
+    assert log.summary(1.0, {}) == (
+        "processed 1 in 1.0 s (1.0 Hz) "
+        "| ms p50/p95: wait 1/1 convert 1/1 objects 1/1 pose 1/1 faces 1/1 reid 1/1 build 1/1 publish 1/1 | age 1/1"
+    )
+
+
+def test_an_added_stage_shows_in_its_place_once_it_has_samples():
+    log = LatencyLog()
+    log.add(**dict.fromkeys(BASE_STAGES, 1.0), depth=2.0, mask=3.0, lift=4.0, crop=5.0, embed=6.0)
+    assert log.summary(1.0, {}) == (
+        "processed 1 in 1.0 s (1.0 Hz) | ms p50/p95: wait 1/1 convert 1/1 depth 2/2 objects 1/1 mask 3/3 pose 1/1 "
+        "faces 1/1 reid 1/1 lift 4/4 crop 5/5 embed 6/6 build 1/1 publish 1/1 | age 1/1"
+    )
+
+
+def test_a_service_job_shows_at_the_end_and_is_no_processed_image():
+    log = LatencyLog()
+    log.add_job(service=100.0)
+    line = log.summary(1.0, {})
+    assert line.startswith("processed 0 in 1.0 s")
+    assert line.endswith("| age -/- | service 100/100")
+    assert log.last_processed == 0
+
+    log.add_job(service=200.0, prepare=150.0)
+    assert log.summary(1.0, {}).endswith("| age -/- | service 200/200 prepare 150/150")
+    assert log.summary(1.0, {}).endswith("| age -/-")
+
+
+def test_latency_add_job_rejects_an_image_stage():
+    with pytest.raises(ValueError):
+        LatencyLog().add_job(wait=1.0)
 
 
 def test_latency_samples_are_never_lost_or_counted_twice():

@@ -579,6 +579,27 @@ def test_yoloe_keeps_each_row_mask_through_the_tracker_filter(tmp_path, stub_ult
     assert np.flatnonzero(first.mask.any(axis=0)).tolist() == list(range(8, 16))
 
 
+@pytest.mark.parametrize("make", [YoloeTracker, YoloeDetector])
+def test_only_kept_masks_report_a_time(tmp_path, stub_ultralytics, make):
+    files = _weights(tmp_path, "yoloe.pt", MOBILECLIP_FILE)
+    image = np.zeros((16, 64, 3), np.uint8)
+    masked = make(files, ["chair", "sofa"], device="cpu", keep_masks=True)
+    assert masked.last_mask_ms == 0.0
+    masked._model.results = _tracked_result({0: "chair", 1: "sofa"})
+    assert masked.detect(image)
+    assert masked.last_mask_ms > 0.0
+
+    # A later image with no box leaves no time behind from the one before.
+    masked._model.results = types.SimpleNamespace(boxes=None, names={}, masks=None)
+    assert masked.detect(image) == []
+    assert masked.last_mask_ms == 0.0
+
+    plain = make(files, ["chair", "sofa"], device="cpu")
+    plain._model.results = _tracked_result({0: "chair", 1: "sofa"})
+    assert plain.detect(image)
+    assert plain.last_mask_ms == 0.0
+
+
 class _MasksMustNotBeRead(types.SimpleNamespace):
     @property
     def masks(self):

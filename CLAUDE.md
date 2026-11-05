@@ -12,6 +12,7 @@ pixi run fetch-models   # model files into models/, checked by SHA-256
 pixi run build-msgs     # build ros2_ws/src/walkie_vision_msgs with colcon
 pixi run test           # pytest; fakes only, no GPU, no models, Fast DDS
 pixi run check-env      # every model on this GPU; logs in checks/output/
+pixi run python checks/c12_vision_node.py --memory pair.npz  # the memory task on a recording; GPU, never in check-env
 pixi run vision         # the vision node (launch/vision.launch.py); needs a router
 pixi run fake-detections  # synthetic object arrays, no models; Fast DDS, domain 77
 pixi run docs-build     # mkdocs build --strict; must pass with no warnings
@@ -28,7 +29,8 @@ build, because `scripts/activate.sh` sources the overlay on activation.
 - `src/walkie_vision/convert.py`: results to messages, with validation.
 - `src/walkie_vision/node.py`, `pipeline.py`, `image.py`: the vision node,
   one process for every model (ADR-0010). `yolo.py` and `face/heads.py` are
-  the detector, pose and head-crop face providers.
+  the detector, pose and head-crop face providers, including the second
+  detector behind `DetectObjects` (ADR-0009). Off by default.
 - `src/walkie_vision/depth.py`: pairs colour with registered depth, bounded by
   wall time (ADR-0014), lifts masks to points and scores views. Off by default.
 - `src/walkie_vision/embeddings.py`: the object sampler, padded crops, colour
@@ -46,7 +48,10 @@ build, because `scripts/activate.sh` sources the overlay on activation.
   Keep the licence headers and the change lists up to date.
 - `src/walkie_vision/models.py`: every downloaded file and Hugging Face
   commit, with checksums and licences.
-- `checks/`: the `check-env` checks, one process each.
+- `checks/`: the `check-env` checks, one process each. `c12_memory.py` is the
+  memory task's explicit mode of check 12; `check-env` does not start it.
+- `.github/workflows/`: `test.yml` runs the fake-model tests from a clean
+  checkout, and `docs.yml` publishes the site.
 - `tools/bakeoff/`, `tests/test_bakeoff*.py`, `docs/guides/bakeoff.md`: the
   embedding bake-off.
 

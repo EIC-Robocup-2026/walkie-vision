@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from sensor_msgs.msg import CameraInfo, CompressedImage, PointCloud2
 from std_msgs.msg import Header
-from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
+from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray, PersonDetectionArray
 
 from . import convert, embeddings
 from .depth import RegisteredDepth, depth_cover, frame_laplacian, lift_mask, view_quality
@@ -119,16 +119,26 @@ class _Sample:
     embedding: np.ndarray | None = None
     embedding_model: str = ""
     color_shares: np.ndarray | None = None
+    chosen: bool = False
 
 
 @dataclass
 class StageTimes:
-    """How long each stage of one image took, in milliseconds."""
+    """How long each stage of one image took, in milliseconds.
+
+    mask is the part of the detector's call that copies and resizes masks, and
+    objects leaves it out. lift, crop and embed are parts of building the arrays,
+    and build leaves them out. A stage whose addition is off stays 0.
+    """
 
     objects: float = 0.0
+    mask: float = 0.0
     pose: float = 0.0
     faces: float = 0.0
     reid: float = 0.0
+    lift: float = 0.0
+    crop: float = 0.0
+    embed: float = 0.0
     build: float = 0.0
 
 
@@ -143,14 +153,19 @@ class FrameResult:
     """Bad fields or detections left out of this image: object, person, face, appearance, embedding."""
     duplicates: int = 0
     """Poses left out of this image as a second box of a person already in it."""
+    sampled: int = 0
+    """Objects of this image chosen for a crop or a vector."""
 
 
 @dataclass
 class OnDemandResult:
-    """One DetectObjects array, and the bad fields or detections left out of it."""
+    """One DetectObjects array, its stage times, and the bad fields or detections left out of it."""
 
     objects: ObjectDetectionArray
+    times: StageTimes = field(default_factory=StageTimes)
     dropped: collections.Counter[str] = field(default_factory=collections.Counter)
+    sampled: int = 0
+    """Objects of this array chosen for a crop or a vector."""
 
 
 def _check_classes(classes: Sequence[str]) -> list[str]:
@@ -330,7 +345,9 @@ class VisionPipeline:
         Raises when a provider raises or returns the wrong shape.
         """
         detector = self._providers.on_demand
+        times = StageTimes()
         dropped: collections.Counter[str] = collections.Counter()
+        t = time.perf_counter()
         found: list[Detection] = []
         for det in detector.detect(image):
             if not _box_ok(det.box) or not 0.0 <= float(det.score) <= 1.0:
@@ -339,29 +356,22 @@ class VisionPipeline:
                 found.append(dataclasses.replace(det, track_id=0))
         found.sort(key=lambda det: -float(det.score))
         kept = found[:ON_DEMAND_MAX_OBJECTS]
+        _split_detector_time(times, detector, _ms_since(t))
 
+        t = time.perf_counter()
         info = copy.deepcopy(camera_info)
         info.header = header
         height, width = image.shape[:2]
-        objects = [
-            convert.to_object_detection(
-                det,
-                points=points,
-                view_quality=quality,
-                crop=sample.crop,
-                embedding=sample.embedding,
-                embedding_model=sample.embedding_model,
-                color_shares=sample.color_shares,
-            )
-            for det, (points, quality), sample in zip(
-                kept,
-                self._geometry(image, header, kept, depth),
-                self._fill_samples(image, header, kept, embeddings.usable_samples(kept, width, height), dropped),
-                strict=True,
-            )
-        ]
+        found_geometry = self._geometry(image, header, kept, depth, times)
+        started = time.perf_counter()
+        samples = self._fill_samples(image, header, kept, embeddings.usable_samples(kept, width, height), dropped, times)
+        times.crop = max(0.0, _ms_since(started) - times.embed)
+        objects = self._to_objects(kept, found_geometry, samples)
         array = convert.to_object_detection_array(header, info, detector.classes, objects, stream_id=self._stream_id)
-        return OnDemandResult(objects=array, dropped=dropped)
+        times.build = max(0.0, _ms_since(t) - times.lift - times.crop - times.embed)
+        return OnDemandResult(
+            objects=array, times=times, dropped=dropped, sampled=sum(sample.chosen for sample in samples)
+        )
 
     def process(
         self, image: np.ndarray, header: Header, camera_info: CameraInfo, depth: RegisteredDepth | None = None
@@ -384,7 +394,7 @@ class VisionPipeline:
                 dropped["object"] += 1
             elif det.score >= self._objects_min_score:
                 detections.append(det)
-        times.objects = _ms_since(t)
+        _split_detector_time(times, p.objects, _ms_since(t))
 
         t = time.perf_counter()
         # The floor and the dedupe come before faces and reid, so no work is
@@ -429,7 +439,32 @@ class VisionPipeline:
             for pose, face, vector in zip(poses, faces, appearances, strict=True)
         ]
         published = [dataclasses.replace(det, track_id=self._ids.map(det.track_id)) for det in detections]
-        objects = [
+        found_geometry = self._geometry(image, header, detections, depth, times)
+        samples = self._samples(image, header, published, dropped, times)
+        objects = self._to_objects(published, found_geometry, samples)
+        people_array = convert.to_person_detection_array(header, info, people)
+        objects_array = convert.to_object_detection_array(
+            header, info, self._classes, objects, stream_id=self._stream_id
+        )
+        times.build = max(0.0, _ms_since(t) - times.lift - times.crop - times.embed)
+        self._processed_images += 1
+        return FrameResult(
+            people=people_array,
+            objects=objects_array,
+            times=times,
+            dropped=dropped,
+            duplicates=len(floored) - len(poses),
+            sampled=sum(sample.chosen for sample in samples),
+        )
+
+    @staticmethod
+    def _to_objects(
+        detections: Sequence[Detection],
+        geometry: Sequence[tuple[PointCloud2 | None, float]],
+        samples: Sequence[_Sample],
+    ) -> list[ObjectDetection]:
+        """Return the message of each detection, with its geometry and its sample."""
+        return [
             convert.to_object_detection(
                 det,
                 points=points,
@@ -439,37 +474,26 @@ class VisionPipeline:
                 embedding_model=sample.embedding_model,
                 color_shares=sample.color_shares,
             )
-            for det, (points, quality), sample in zip(
-                published,
-                self._geometry(image, header, detections, depth),
-                self._samples(image, header, published, dropped),
-                strict=True,
-            )
+            for det, (points, quality), sample in zip(detections, geometry, samples, strict=True)
         ]
-        people_array = convert.to_person_detection_array(header, info, people)
-        objects_array = convert.to_object_detection_array(
-            header, info, self._classes, objects, stream_id=self._stream_id
-        )
-        times.build = _ms_since(t)
-        self._processed_images += 1
-        return FrameResult(
-            people=people_array,
-            objects=objects_array,
-            times=times,
-            dropped=dropped,
-            duplicates=len(floored) - len(poses),
-        )
 
     def _geometry(
-        self, image: np.ndarray, header: Header, detections: Sequence[Detection], depth: RegisteredDepth | None
+        self,
+        image: np.ndarray,
+        header: Header,
+        detections: Sequence[Detection],
+        depth: RegisteredDepth | None,
+        times: StageTimes,
     ) -> list[tuple[PointCloud2 | None, float]]:
         """Return each detection's cloud and view quality; (None, 0) without a mask or with geometry off.
 
         Without depth, the clouds stay empty and the quality's depth term is
-        0. Raises for a mask that does not have the image's size.
+        0. Raises for a mask that does not have the image's size. Records the
+        lift stage.
         """
         if not self._geometry_enabled or all(det.mask is None for det in detections):
             return [(None, 0.0)] * len(detections)
+        started = time.perf_counter()
         height, width = image.shape[:2]
         laplacian = frame_laplacian(image)
         found: list[tuple[PointCloud2 | None, float]] = []
@@ -484,23 +508,32 @@ class VisionPipeline:
                 cover = depth_cover(on_raster, depth.metres, self._depth_min_m, self._depth_max_m)
                 points = convert.to_point_cloud(header, lift_mask(on_raster, depth, self._depth_min_m, self._depth_max_m))
             found.append((points, view_quality(mask, det.box, laplacian, cover)))
+        times.lift = _ms_since(started)
         return found
 
     def _samples(
-        self, image: np.ndarray, header: Header, detections: Sequence[Detection], dropped: collections.Counter[str]
+        self,
+        image: np.ndarray,
+        header: Header,
+        detections: Sequence[Detection],
+        dropped: collections.Counter[str],
+        times: StageTimes,
     ) -> list[_Sample]:
         """Return what sampling adds to each detection, which carries its published track id.
 
         The vector and the crop come from the same padded pixels. A bad vector
         leaves the crop in place and counts as dropped. Raises when the
         embedder raises or returns the wrong shape, or for a mask that does
-        not have the image's size.
+        not have the image's size. Records the crop and embed stages.
         """
         if not (self._crops_enabled or self._embeddings_enabled):
             return [_Sample()] * len(detections)
+        started = time.perf_counter()
         height, width = image.shape[:2]
         chosen = embeddings.select_samples(detections, self._processed_images, width, height)
-        return self._fill_samples(image, header, detections, chosen, dropped)
+        samples = self._fill_samples(image, header, detections, chosen, dropped, times)
+        times.crop = max(0.0, _ms_since(started) - times.embed)
+        return samples
 
     def _fill_samples(
         self,
@@ -509,6 +542,7 @@ class VisionPipeline:
         detections: Sequence[Detection],
         chosen: Sequence[int],
         dropped: collections.Counter[str],
+        times: StageTimes,
     ) -> list[_Sample]:
         """Return what the flags add to the chosen detections, and nothing for the others.
 
@@ -519,7 +553,9 @@ class VisionPipeline:
             return samples
         height, width = image.shape[:2]
         sources = [embeddings.padded_crop(image, detections[i].box) for i in chosen]
+        started = time.perf_counter()
         vectors = self._embed(sources, dropped) if self._embeddings_enabled else [None] * len(chosen)
+        times.embed = _ms_since(started)
         model = self._providers.embedder.model_name if self._embeddings_enabled else ""
         for i, source, vector in zip(chosen, sources, vectors, strict=True):
             mask = detections[i].mask
@@ -530,6 +566,7 @@ class VisionPipeline:
                 color_shares=None
                 if mask is None
                 else embeddings.mask_color_shares(image, _native_mask(mask, height, width)),
+                chosen=True,
             )
         return samples
 
@@ -587,3 +624,13 @@ def _native_mask(mask: np.ndarray, height: int, width: int) -> np.ndarray:
 
 def _ms_since(start: float) -> float:
     return (time.perf_counter() - start) * 1000.0
+
+
+def _split_detector_time(times: StageTimes, detector: ObjectDetector, elapsed_ms: float) -> None:
+    """Record a detector's call as the objects and mask stages.
+
+    Only the real detectors measure their masks, and the ObjectDetector protocol
+    does not ask for it, so a detector without last_mask_ms has a mask stage of 0.
+    """
+    times.mask = float(getattr(detector, "last_mask_ms", 0.0))
+    times.objects = max(0.0, elapsed_ms - times.mask)

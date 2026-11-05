@@ -37,6 +37,7 @@ from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, Embed
 
 from walkie_vision import crop, embeddings, requests
 from walkie_vision import node as node_module
+from walkie_vision import pipeline as pipeline_module
 from walkie_vision.convert import (
     MAX_MESSAGE_CHARS,
     bbox_to_box,
@@ -2198,3 +2199,158 @@ def test_a_new_list_leaves_the_streaming_detector_alone(harness):
     assert list(first.classes) == list(second.classes) == CLASSES
     assert [d.track_id for d in first.detections] == [d.track_id for d in second.detections]
     assert stream.classes == CLASSES
+
+
+# --- the added work and the latency line ------------------------------------
+
+
+ADDED_STREAM_WORK = (
+    (pipeline_module, ("frame_laplacian", "lift_mask", "depth_cover", "view_quality", "resize_mask")),
+    (embeddings, ("select_samples", "padded_crop", "encode_crop", "mask_color_shares")),
+    (node_module, ("read_registered_depth",)),
+)
+ADDED_WORDS = {
+    # Stages.
+    "depth",
+    "mask",
+    "lift",
+    "crop",
+    "embed",
+    "service",
+    "prepare",
+    # Counts.
+    "paired",
+    "no_depth",
+    "unpaired",
+    "sampled",
+    "jobs",
+    "busy",
+    "late",
+    "prepared",
+}
+
+
+@pytest.fixture
+def added_work(monkeypatch) -> list[str]:
+    """The names of the added functions that ran. Each one still does its work."""
+    ran: list[str] = []
+
+    def spied(name: str, real):
+        def spy(*args, **kwargs):
+            ran.append(name)
+            return real(*args, **kwargs)
+
+        return spy
+
+    for module, names in ADDED_STREAM_WORK:
+        for name in names:
+            monkeypatch.setattr(module, name, spied(name, getattr(module, name)))
+    return ran
+
+
+def _due_object() -> FakeObjectDetector:
+    """A masked object that the sampler takes on the first image, whose counter is 0."""
+    detection = Detection(box=np.array(LEFT), label="chair", score=0.8, track_id=10, mask=box_mask(HEIGHT, WIDTH, LEFT))
+    return FakeObjectDetector([detection], classes=CLASSES)
+
+
+def _latency_words(h: Harness) -> set[str]:
+    """Return the words of the latency line, once every processed image has its samples."""
+    processed = h.node.frames_processed
+    assert h.spin_until(lambda: h.node.latency._processed == processed)
+    return set(h.node.latency.summary(1.0, h.node._latency_counts()).replace(",", " ").replace(";", " ").split())
+
+
+def test_the_default_config_adds_no_work_to_the_stream(harness, added_work):
+    # The detection is due for a sample and carries a mask, and a depth image is on the
+    # wire, so only the flags stand between this image and all of the added work.
+    h = harness(fake_providers(objects=_due_object()))
+    assert _subscribed(h) == sorted([h.topics["image_topic"], h.topics["camera_info_topic"]])
+    h.wait_matched()
+    h.depth_pub.publish(_depth_msg(1))
+    h.publish_frame(1)
+    assert h.spin_until(lambda: h.stamps("objects reliable") == [1])
+    array = h.got["objects reliable"][0]
+    # The new fields are present at their empty values, and stream_id is still set.
+    assert array.stream_id == h.node.pipeline.stream_id != ""
+    (det,) = array.detections
+    assert det.points.width == 0 and det.view_quality == 0.0
+    assert len(det.crop.data) == 0 and len(det.embedding) == 0 and len(det.color_shares) == 0
+    words = _latency_words(h)
+    assert added_work == []
+    assert h.node.frames_failed == 0
+    assert h.node.depth_received == 0 and h.node.sampled == 0 and h.node._current is None
+    assert h.node.pipeline._providers.embedder is None and h.node.pipeline._providers.on_demand is None
+    assert not words & ADDED_WORDS
+
+
+def test_with_every_addition_on_each_spy_and_the_latency_line_see_it(harness, added_work):
+    # The control for the test above: a spy that cannot fire would pass that test too.
+    bowl = dataclasses.replace(_masked_cup(), label="bowl")
+    h = _on_demand_harness(
+        harness,
+        OnDemandDetector([bowl]),
+        objects=_due_object(),
+        geometry_enabled=True,
+        object_crops_enabled=True,
+        object_embeddings_enabled=True,
+    )
+    h.hold_infos()
+    h.freeze_pair_clock()
+    h.publish_depth(_depth_msg(1, 1.5))
+    h.publish_image(1)
+    assert h.spin_until(lambda: h.stamps("objects reliable") == [1])
+    (det,) = h.got["objects reliable"][0].detections
+    assert det.points.width > 0 and len(det.crop.data) > 0 and len(det.embedding) > 0
+    assert set(added_work) == {name for _, names in ADDED_STREAM_WORK for name in names}
+
+    response = h.answer(h.call(DetectObjects, _detect_request("bowl")))
+    assert response.success and response.objects.detections[0].points.width > 0
+    assert h.spin_until(lambda: _slot_free(h))
+    assert ADDED_WORDS <= _latency_words(h)
+    deltas = h.node.latency.last_deltas
+    assert (deltas["depth"], deltas["paired"], deltas["no_depth"], deltas["unpaired"]) == (1, 1, 0, 0)
+    assert (deltas["sampled"], deltas["jobs"], deltas["prepared"]) == (2, 1, 1)
+
+
+@pytest.mark.parametrize("require_depth", [False, True])
+def test_the_latency_line_counts_an_unpaired_image_whether_it_was_published_or_not(harness, require_depth):
+    h = harness(geometry_enabled=True, require_depth=require_depth)
+    h.wait_matched()
+    h.hold_infos()
+    h.publish_image(1)
+    assert h.spin_until(lambda: h.node.skipped["unpaired"] + h.node.no_depth["unpaired"] == 1)
+    assert h.node._latency_counts()["unpaired"] == 1
+
+
+def test_the_crop_stage_shows_with_crops_alone_and_the_embed_stage_does_not(harness):
+    h = harness(fake_providers(objects=_due_object()), object_crops_enabled=True)
+    h.wait_matched()
+    h.publish_frame(1)
+    assert h.spin_until(lambda: h.stamps("objects reliable") == [1])
+    words = _latency_words(h)
+    assert {"mask", "crop", "sampled"} <= words
+    assert not words & {"depth", "lift", "embed", "paired", "unpaired", "jobs", "prepared"}
+    assert h.node.latency.last_deltas["sampled"] == 1
+
+
+def test_a_failed_preparation_shows_its_time_and_counts_no_list(harness):
+    detector = OnDemandDetector([CUP])
+    detector.fail_prepare = True
+    h = _on_demand_harness(harness, detector)
+    h.publish_frame(1)
+    assert h.spin_until(lambda: h.stamps("objects reliable") == [1] and _slot_free(h))
+    _assert_failed(h.answer(h.call(DetectObjects, _detect_request("bowl"))), requests.MODEL_UNAVAILABLE)
+    assert h.spin_until(lambda: _slot_free(h))
+    assert {"service", "prepare"} <= _latency_words(h)
+    assert h.node.latency.last_deltas["prepared"] == 0
+
+
+def test_a_list_that_needs_no_preparation_shows_no_prepare_time(harness):
+    h = _on_demand_harness(harness)
+    h.publish_frame(1)
+    assert h.spin_until(lambda: h.stamps("objects reliable") == [1] and _slot_free(h))
+    assert h.answer(h.call(DetectObjects, _detect_request())).success
+    assert h.spin_until(lambda: _slot_free(h))
+    words = _latency_words(h)
+    assert "service" in words and "prepare" not in words

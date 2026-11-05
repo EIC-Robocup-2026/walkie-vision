@@ -19,9 +19,12 @@ it publishes, and why it is built this way.
     ([Sampled crops and vectors](#contract-object-samples)). This is tested
     with fakes and has not run with a real model or camera. With
     `object_embeddings_enabled`, it also serves `EmbedText` and `EmbedCrop`
-    ([ADR-0015](decisions/0015-bounded-service-scheduling.md)). `DescribeCrop`
-    always answers `DISABLED`. The `DetectObjects` service and room vectors
-    are not built yet.
+    ([ADR-0015](decisions/0015-bounded-service-scheduling.md)). With
+    `on_demand_enabled`, also off by default, it serves `DetectObjects` from a
+    second detector ([On-demand DetectObjects](#on-demand-detectobjects)).
+    `DescribeCrop` always answers `DISABLED`. Room vectors are not built yet.
+    What these additions cost is not measured: see
+    [Unmeasured budgets](#unmeasured-budgets).
 
 ## Summary
 
@@ -347,22 +350,51 @@ processed 52 in 10.0 s (5.2 Hz); received 150, replaced 98, skipped 0, failed 0,
 - **The counts** are for that period. `received` counts images that
   arrived, and `replaced` those that a newer image replaced before the
   worker took them. `skipped` counts images with no matching `camera_info`
-  or an unsupported encoding. `failed` counts images on which a model
+  or an unsupported encoding, and with `require_depth` the images with no
+  usable depth. `failed` counts images on which a model
   raised. `dropped` counts single bad fields left out, such as a face with
   a broken vector. `duplicates` counts second boxes of one person that
   the dedupe left out. They are the pose model's normal behaviour, so the
-  node does not warn about them. With `geometry_enabled`, three more
-  follow: `depth` counts depth images that arrived, `paired` the images
-  processed with a depth that passed its checks, and `no_depth` the images
-  published without one.
+  node does not warn about them.
 - **The stages** are in milliseconds, as p50/p95. `wait` is the time an
   image waited in the mailbox. `faces` covers SCRFD and ArcFace on every
-  head crop. With `geometry_enabled`, reading the depth counts in `convert`,
-  copying and resizing the masks in `objects`, and the lift and the view
-  quality in `build`. Sampled crops, vectors and colour shares count in `build`
-  too. They have no stages of their own yet.
+  head crop.
 - **`age`** is the time from the image's stamp to the publish, in
   milliseconds. The contract targets under 300 at p95.
+
+With every addition off, as in the HRI task, the line has exactly that form. An
+addition that is on adds its own counts and stages, and one that is off adds
+nothing:
+
+```text
+processed 41 in 10.0 s (4.1 Hz); received 150, replaced 96, skipped 2, failed 0, dropped 0, duplicates 0, depth 148, paired 39, no_depth 0, unpaired 2, sampled 44, jobs 3, busy 1, late 0, prepared 1 | ms p50/p95: wait 4/10 convert 6/8 depth 3/5 objects 21/30 mask 4/6 pose 18/25 faces 12/40 reid 9/15 lift 5/9 crop 2/4 embed 7/12 build 1/2 publish 1/2 | age 130/220 | service 90/1600 prepare 1500/1500
+```
+
+The numbers in this example are invented, to show the form. Nothing has been
+measured with these additions yet.
+
+| Flag | Counts | Stages |
+| ---- | ------ | ------ |
+| `geometry_enabled` | `depth` arrived; `paired` processed with a depth that passed its checks; `no_depth` published without one; `unpaired` had no depth within the stamp gap and the wait, whether it was skipped or published | `depth` reads the raster; `lift` covers the Laplacian, the mask resize, the points and the view quality |
+| `geometry_enabled`, `object_crops_enabled` or `object_embeddings_enabled` | | `mask` copies the masks and the boxes to the CPU and resizes the masks. It is left out of `objects` |
+| `object_crops_enabled` or `object_embeddings_enabled` | `sampled` objects that got a crop or a vector, from the stream and from `DetectObjects` | `crop` covers the padded crop, the JPEG and the colour shares |
+| `object_embeddings_enabled` | `jobs`, `busy`, `late` | `embed` is the CLIP batch of the sampled crops |
+| `on_demand_enabled` | `jobs`, `busy`, `late`; `prepared` lists prepared | |
+
+`lift`, `crop` and `embed` are left out of `build`, and `depth` out of `convert`,
+so no time counts twice.
+
+`service` and `prepare` come last because they are not stages of an image. They
+appear in a period with a service job. `service` is the time one job held the
+worker, whether its answer came in time or not. `prepare` is the time one
+`DetectObjects` preparation took, and that one also logs its own line. `jobs`
+counts the jobs that ran, `busy` the requests refused with `BUSY`, and `late` the
+answers discarded after their deadline. No image is processed while either runs,
+and no array stands in for that gap: `replaced` and the rate show it.
+
+A model that fails to load logs a warning with its name, such as
+`the on-demand model failed to load: RuntimeError: CUDA out of memory`, before
+the node exits.
 
 ### Trackers
 
@@ -428,6 +460,48 @@ two people:
 
 Run `pixi run python checks/run_checks.py c12` to measure again; the log is
 in `checks/output/c12_vision_node.log`.
+
+### Unmeasured budgets {#unmeasured-budgets}
+
+The object memory additions have run only with fakes. Every value below is a
+target or a report from elsewhere, not a result. A passing test proves none of
+them. The 86.6 ms p50 and 108.2 ms p95 of `process()` above leave 13.4 ms against
+10 Hz at p50 and are already over it at p95, so do not expect the additions to
+keep 10 Hz. The target with them is 5 Hz, which gives 200 ms per processed image.
+Publish age also includes arrival, the queue and conversion, so it can pass 300 ms
+even so.
+
+| Addition | What is known | Budget, not measured | Off |
+| -------- | ------------- | --------------------- | --- |
+| Pairing, depth, masks and lifting | Nothing. CPU work and a mask copy per image are new | At most 8 ms p50 for all geometry, at 5 detections and 2000 points. An engineering target, never asserted | No depth subscription, no mask copy, no lift |
+| Crops, view quality and JPEG | Nothing | One Laplacian per image, at most 3 objects per image | No work |
+| CLIP ViT-B/16 | Its batch time and its share of the GPU are unknown. SigLIP's 4 ms per crop is not a CLIP measurement | A track once in 10 images and at most 3 per image: about one crop per image at 10 eligible tracks | No model, no Hugging Face access |
+| `DetectObjects` | About 1.5 s for a new list of 5 classes, from the setup log. The second YOLOE's GPU memory is unknown | One request at a time, one new list per 2 s. A new list can stop the stream for its whole preparation | No second model, no image kept |
+
+The combined GPU memory is unknown. Budget the robot as 24 GB until it is
+measured. The RTX 2060's 6 GB on the laptops is not evidence for the combined
+models next to MuJoCo, the ZED SDK and GraspNet.
+
+If the measurements miss the target:
+
+1. If geometry takes the rate under 5 Hz, lower the cap on detections, or lift
+   fewer objects by score, before changing how the processes are laid out.
+2. If the model additions still miss it, turn off `object_embeddings_enabled` or
+   `on_demand_enabled` in the task's file.
+3. Report the measured number as a miss. An estimate is not a pass.
+
+To measure, record a registered colour and depth pair and run the memory mode of
+check 12. It is an explicit GPU check, which `check-env` does not start, and it
+prints the stages and the three `DetectObjects` cases without judging them:
+
+```bash
+pixi run python checks/c12_vision_node.py --memory pair.npz
+```
+
+`checks/c12_memory.py` describes the file. No recording ships with this repository
+and this mode has only run with fake models. It does not measure a loaded node
+either: use the latency line on the robot for the real rate, age and service
+times. The test workflow, `.github/workflows/test.yml`, has not run on GitHub yet.
 
 ### First start
 
@@ -868,7 +942,8 @@ to be tuned on photos from the robot. On the robot, with HD2K images at
    the robot.
 5. `pixi run vision` starts the node with the HRI task's classes, and
    starts it again whenever it exits. Add `task:=<task>` for another task,
-   and `sim:=true` in simulation.
+   and `sim:=true` in simulation. `task:=memory sim:=true` runs object memory
+   in the sim, with depth, crops, CLIP vectors and `DetectObjects`.
 
 [Run the vision node](../guides/vision-node.md) has the details and a
 troubleshooting table.
@@ -1491,9 +1566,12 @@ bodies, so the node finds no people there.
   GPU memory on the laptop. On the robot, the ZED SDK's NEURAL_PLUS depth
   shares the GPU, and neither memory nor latency is measured there. ONNX
   Runtime has no memory limit set. Adding one needs a backward-compatible
-  change to `FaceAnalyzer`, which now compares provider names only.
+  change to `FaceAnalyzer`, which now compares provider names only. The second
+  YOLOE and CLIP of the memory task are not measured anywhere
+  ([Unmeasured budgets](#unmeasured-budgets)).
 - **Robot latency.** The node's rate and age at publish on HD2K images are
-  measured on the laptop (`c12`), not on the robot.
+  measured on the laptop (`c12`), not on the robot. The memory task's are not
+  measured at all.
 - **The score floors.** `people_min_score` and `objects_min_score` are 0.25
   from Ultralytics' defaults, not from robot data. They need tuning on the
   robot.

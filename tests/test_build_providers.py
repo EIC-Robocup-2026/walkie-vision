@@ -172,6 +172,38 @@ def test_no_embedder_is_built_without_object_embeddings(models, manager, monkeyp
     clip.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("provider", "name", "overrides"),
+    [
+        ("YoloeTracker", "objects", {}),
+        ("YoloeDetector", "on-demand", {"on_demand_enabled": True}),
+        ("YoloPoseTracker", "pose", {}),
+        ("OSNetReIdentifier", "OSNet", {}),
+        ("FaceAnalyzer", "face", {}),
+    ],
+)
+def test_a_model_that_fails_to_load_is_named_in_the_log(models, manager, provider, name, overrides):
+    getattr(manager, provider).side_effect = RuntimeError("out of memory")
+    with pytest.raises(RuntimeError, match="out of memory"):
+        build_providers(VisionConfig(classes=CLASSES, **overrides), manager.logger)
+    manager.logger.warning.assert_called_once_with(f"the {name} model failed to load: RuntimeError: out of memory")
+
+
+def test_clip_that_fails_to_load_is_named_in_the_log(models, manager, monkeypatch):
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: "/cache/clip.safetensors")
+    clip = mock.create_autospec(embeddings.ClipEmbedder, side_effect=RuntimeError("out of memory"))
+    monkeypatch.setattr(embeddings, "ClipEmbedder", clip)
+    config = VisionConfig(classes=CLASSES, device="cpu", object_embeddings_enabled=True)
+    with pytest.raises(RuntimeError, match="out of memory"):
+        build_providers(config, manager.logger)
+    manager.logger.warning.assert_called_once_with("the CLIP model failed to load: RuntimeError: out of memory")
+
+
+def test_a_clean_start_logs_no_load_failure(models, manager):
+    build_providers(VisionConfig(classes=CLASSES), manager.logger)
+    manager.logger.warning.assert_not_called()
+
+
 def test_object_embeddings_load_clip_offline_at_the_pinned_commit(models, manager, monkeypatch):
     calls = []
 

@@ -349,7 +349,7 @@ check to `checks/output/summary.txt`:
 | `c09_osnet`    | OSNet on person crops                                                          |
 | `c10_*`        | rclpy on Zenoh next to every ML library, imported in both orders, through a private router |
 | `c11_providers` | Each of the vision node's model wrappers on the GPU: YOLOE-26, YOLO26 pose with tracking (and a camera pan), faces from head crops, OSNet |
-| `c12_vision_node` | The vision node's start path and 20 HD2K frames through every model in one process, with latency and GPU memory |
+| `c12_vision_node` | The vision node's start path and 20 HD2K frames through every model in one process, with latency and GPU memory. `--memory FIXTURE` runs the memory task on a recording instead. `check-env` does not start that mode, and it has not run with real models ([Unmeasured budgets](../architecture/vision.md#unmeasured-budgets)) |
 
 `cuda-cuobjdump` is pinned to 12.8 because a 13.x `cuobjdump` pulls in
 conda's `cuda-version` 13, which declares that it needs a CUDA 13 driver.

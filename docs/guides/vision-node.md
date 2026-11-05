@@ -92,10 +92,16 @@ pixi run vision task:=memory
 pixi run vision task:=memory sim:=true
 ```
 
-It looks for household objects, and turns on depth, sampled crops and CLIP
-vectors ([Sampled crops and vectors](../architecture/vision.md#contract-object-samples)).
+It looks for household objects, and turns on depth, sampled crops, CLIP
+vectors ([Sampled crops and vectors](../architecture/vision.md#contract-object-samples))
+and `DetectObjects` ([On-demand DetectObjects](../architecture/vision.md#on-demand-detectobjects)).
 `sim:=true` chooses the clock, the topics and the services. It brings no fakes
 or oracle data.
+
+It loads a second YOLOE and CLIP on top of the HRI task's models, and a new
+`DetectObjects` list can stop the stream for about 1.5 s. Neither its rate nor
+its GPU memory is measured yet: see
+[Unmeasured budgets](../architecture/vision.md#unmeasured-budgets).
 
 ### The embedding services
 
@@ -115,6 +121,28 @@ Treat `BUSY` and `STALE_IMAGE` as normal answers. `BUSY` means another job holds
 the worker, and nothing queues. `STALE_IMAGE` means that the box's image is no
 longer the current one. The node has no older image, so ask with a newer image's
 stamp, or carry on without the vector.
+
+### The DetectObjects service
+
+With `on_demand_enabled`, which the memory task turns on, the node serves
+`DetectObjects` at `/walkie_vision/detect_objects`, or
+`/walkie_vision/sim/detect_objects` with `sim:=true`. A second YOLOE, with no
+tracker, looks for the request's classes in the newest image. Only the caller
+gets the answer: nothing is published on the objects topic.
+
+- Ask for 1 to 32 unique classes of at most 80 characters each. `max_image_age_s`
+  is over 0 and at most 1 s, and `timeout_s` over 0 and at most 5 s.
+- The answer holds at most 20 detections, those with the highest scores, each
+  with `track_id` 0. It has points with `geometry_enabled`, and every box of at
+  least 32 px on its short side gets the crop or the vector that its flags allow.
+- A new list of classes is prepared at most once every 2 s, and the stream stops
+  while it is prepared: about 1.5 s for 5 classes on the RTX 2060. The same list
+  again prepares nothing, so keep the list stable where you can.
+- Without the flag it answers `DISABLED`, and the second model does not load.
+
+[On-demand DetectObjects](../architecture/vision.md#on-demand-detectobjects)
+has the details, and [Bounded services](../architecture/vision.md#bounded-services)
+the error codes.
 
 ### The first start on a new GPU
 
@@ -200,11 +228,20 @@ processed 52 in 10.0 s (5.2 Hz); received 150, replaced 98, skipped 0, failed 0,
 - **`duplicates`** counts second boxes of one person that the node left
   out. The pose model gives these now and then, so a few are normal.
 - **`jobs`**, **`busy`** and **`late`** appear with
-  `object_embeddings_enabled`. They count the service jobs that ran, the
-  requests refused with `BUSY`, and the answers that came after their deadline
-  and were discarded.
-- **The stages** show where the time goes. [The latency line](../architecture/vision.md#the-latency-line)
-  explains each one.
+  `object_embeddings_enabled` or `on_demand_enabled`. They count the service
+  jobs that ran, the requests refused with `BUSY`, and the answers that came
+  after their deadline and were discarded.
+- **`depth`**, **`paired`**, **`no_depth`**, **`unpaired`**, **`sampled`** and
+  **`prepared`** appear with the addition they belong to.
+- **The stages** show where the time goes. An addition that is off adds no
+  stage. [The latency line](../architecture/vision.md#the-latency-line) explains
+  each one.
+
+A model that fails to load logs a warning with its name before the node exits:
+
+```text
+the on-demand model failed to load: RuntimeError: CUDA out of memory
+```
 
 ## Troubleshooting
 
@@ -230,6 +267,8 @@ processed 52 in 10.0 s (5.2 Hz); received 150, replaced 98, skipped 0, failed 0,
 | `EmbedText` or `EmbedCrop` answers `BUSY`  | Another service job holds the worker, or its image is still running. Try again later; nothing queues ([Bounded services](../architecture/vision.md#bounded-services)) |
 | `EmbedCrop` answers `STALE_IMAGE`          | The image the box belongs to is no longer the newest, or it is over 300 ms old. Often normal under load; `busy` and the image rate in the latency line show the load |
 | `late` above 0 in the latency line         | A service job finished after its caller's deadline, and its answer was discarded |
+| `DetectObjects` answers `BUSY` for a new list | Another job holds the worker, or the last new list was prepared under 2 s ago. The same list does not wait for that ([Bounded services](../architecture/vision.md#bounded-services)) |
+| The rate falls during `DetectObjects`      | Expected. A job runs between images, and a new list stops the stream for its whole preparation: see `service` and `prepare` in the latency line |
 
 When images are skipped, the node warns every 5 s with the reason, for
 example "camera_info is 640x360 but the image is 2208x1242". The camera
@@ -254,6 +293,59 @@ pixi run python checks/run_checks.py c11 c12
 `c11` checks each model wrapper on its own. `c12` loads the models the way
 the node does and runs 20 HD2K images through all of them, with the
 latency and the GPU memory. Their logs are in `checks/output/`.
+
+The memory task has its own mode of `c12`. `check-env` never starts it, because it
+needs a recording of your own: an `.npz` file with a registered colour and depth
+pair, which `checks/c12_memory.py` describes.
+
+```bash
+pixi run python checks/c12_vision_node.py --memory pair.npz
+```
+
+It prints every stage and the first, same-list and new-list cases of
+`DetectObjects`, with the budgets next to them for information. It decides no
+budget: read the numbers against
+[Unmeasured budgets](../architecture/vision.md#unmeasured-budgets). It has not yet
+run with real models. A fixture that cannot be used exits with status 2, before
+any model loads.
+
+### The test workflow
+
+`.github/workflows/test.yml` builds the messages and runs these tests from a clean
+checkout, with the same restrictions as the local run: Fast DDS on localhost,
+domain 77, no GPU, and no model downloads. It installs the whole default
+environment, about 9.6 GB. It has not run on GitHub yet, so the runner's disk
+and cache limits are not checked.
+
+### The pair check with walkie-database {#pair-check}
+
+The test workflow cannot check this repository against walkie-database, because a
+candidate pair of commits may not be published yet. walkie-database owns the local
+gate, `tools/pair_check.py`, which its own preparation work adds. Until that lands,
+the command below fails because the file is missing. The gate builds both sets of
+messages separately, compares every type hash, and runs the real wire exchange
+between the two repositories with fake models, in domain 78 on Fast DDS. Run it
+from walkie-database, on clean commits of both preparation worktrees, here at
+`/var/tmp/wv-prep` and `/var/tmp/wd-prep`:
+
+```bash
+wv_commit=$(git -C /var/tmp/wv-prep rev-parse HEAD)
+wd_commit=$(git -C /var/tmp/wd-prep rev-parse HEAD)
+cd /var/tmp/wd-prep
+env RMW_IMPLEMENTATION=rmw_fastrtps_cpp ROS_DOMAIN_ID=78 ROS_LOCALHOST_ONLY=1 \
+  CUDA_VISIBLE_DEVICES= HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  python3 tools/pair_check.py --vision-root /var/tmp/wv-prep --database-root /var/tmp/wd-prep \
+  --vision-commit "$wv_commit" --database-commit "$wd_commit" --domain 78 --build \
+  --report /var/tmp/wa-impl-prep/db-vision/build-reports/pair.json
+```
+
+On a shared machine, put `taskset -c <cpus>` before `env`, so that the builds
+leave other work alone. The command runs `python3` from the host, not from a Pixi
+environment, because the tool starts each repository's own Pixi environment
+itself. The result is the JSON report, which holds each check, the type hashes and
+the import paths. This is the local stand-in for CI of an unpublished pair. It does
+not show that either repository's remote CI passed, and it does not stand in for
+the agent or walkie-ros rebuilding against these types.
 
 ## Run the fake publisher {#fake-publisher}
 

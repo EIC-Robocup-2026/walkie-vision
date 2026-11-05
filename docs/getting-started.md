@@ -101,6 +101,7 @@ pixi run test
 The tests use fake models, so they need no GPU and no model files. They run
 on Fast DDS, so they need no Zenoh router either. All tests should pass. If
 you skipped step 4, they stop at once and tell you to run `build-msgs`.
+`.github/workflows/test.yml` runs the same tests from a clean checkout on GitHub.
 
 ## 7. Talk to other nodes
 
@@ -149,6 +150,11 @@ and the launch starts it again whenever it exits. It needs:
 In simulation, add `sim:=true`. The node then uses sim time and publishes
 on `/walkie_vision/sim/people` and `/walkie_vision/sim/objects`, because
 walkie-agent-ros's `oracle_perception` owns the normal topics there.
+
+For object memory, add `task:=memory`. It also reads depth, samples object crops
+and CLIP vectors, and serves `DetectObjects` from a second detector. These additions
+are off in the HRI task, and they have run only with fake models so far:
+[Unmeasured budgets](architecture/vision.md#unmeasured-budgets).
 
 On an RTX 50-series GPU the first start compiles the face models' kernels
 and can take minutes, like the first `check-env`. See

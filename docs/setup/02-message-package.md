@@ -30,7 +30,7 @@ The package `walkie_vision_msgs` has four messages and five services:
 | `PersonDetection`      | One person: body `bbox` and 17 keypoints, the face box and face embedding, and an appearance embedding |
 | `EmbedText` (service)  | Embeds texts with the object embedder, so that a text can be searched against stored object vectors |
 | `GetPersonCrop` (service) | One tracked person's crop from the next image, with other people greyed and the colour shares of the person's top and bottom ([Person crops](../architecture/vision.md#person-crops)) |
-| `DetectObjects` (service) | Named objects in the newest image, for the caller only. Defined, not served yet. |
+| `DetectObjects` (service) | Named objects in the newest image, for the caller only, with `on_demand_enabled` ([On-demand DetectObjects](../architecture/vision.md#on-demand-detectobjects)) |
 | `EmbedCrop` (service)  | One box's crop and embedding from the newest image ([Bounded services](../architecture/vision.md#bounded-services)) |
 | `DescribeCrop` (service) | Reserved for captions. Always answers `DISABLED` in this build. |
 

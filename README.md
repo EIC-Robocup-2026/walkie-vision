@@ -59,10 +59,10 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | ----------------------- | ---------------------------------------------------------------------------- |
 | `pixi run fetch-models` | Download the face and Ultralytics model files into `models/` and check their SHA-256. Fetch the CLIP weights into the Hugging Face cache. |
 | `pixi run build-msgs`   | Build the `walkie_vision_msgs` package in `ros2_ws/` with colcon.            |
-| `pixi run vision`       | Run the vision node, restarted if it exits. `task:=hri` or `task:=memory`, `sim:=true`. |
+| `pixi run vision`       | Run the vision node, restarted if it exits. `task:=hri` or `task:=memory`, `sim:=true`. The memory task also serves `DetectObjects`; its cost is not measured yet. |
 | `pixi run fake-detections` | Publish synthetic object arrays with no camera, GPU or model, on Fast DDS in domain 77. |
-| `pixi run test`         | Run the tests. They use fake models and need no GPU, no model files and no router. |
-| `pixi run check-env`    | Run the 18 checks: the GPU builds, every model, the vision node's models and rclpy on this computer. Logs in `checks/output/`. |
+| `pixi run test`         | Run the tests. They use fake models and need no GPU, no model files and no router. `.github/workflows/test.yml` runs them from a clean checkout. |
+| `pixi run check-env`    | Run the 18 checks: the GPU builds, every model, the vision node's models and rclpy on this computer. Logs in `checks/output/`. The memory task's check is separate and needs a recording: `python checks/c12_vision_node.py --memory pair.npz`. |
 | `pixi run bakeoff`      | Compare the object and room embedders on labelled images.                   |
 | `pixi run docs`         | Serve the documentation at <http://127.0.0.1:8000>.                          |
 | `pixi run docs-build`   | Build the documentation, failing on any warning.                            |
@@ -82,7 +82,7 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `src/walkie_vision/convert.py`      | Model results to messages, with checks                           |
 | `src/walkie_vision/crop.py`         | One person's crop, mask and colour shares for `GetPersonCrop`    |
 | `src/walkie_vision/fakes.py`        | Fake models for tests                                            |
-| `src/walkie_vision/yolo.py`         | YOLOE-26 and YOLO26 pose with their trackers                     |
+| `src/walkie_vision/yolo.py`         | YOLOE-26 and YOLO26 pose with their trackers, and YOLOE-26 with no tracker for `DetectObjects` |
 | `src/walkie_vision/face/`           | SCRFD and ArcFace on ONNX Runtime (vendored InsightFace code, MIT) |
 | `src/walkie_vision/face/heads.py`   | Faces from crops around each person's head                       |
 | `src/walkie_vision/reid/`           | OSNet re-identification (vendored deep-person-reid code, MIT)    |
@@ -92,7 +92,8 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `src/walkie_vision/models.py`       | Every model file and Hugging Face commit, with checksums. `fetch-models` runs it. |
 | `config/`                           | The vision node's parameters, and one file per task with its classes |
 | `launch/`                           | The launch file that runs the vision node and restarts it        |
-| `checks/`                           | The `check-env` checks                                           |
+| `checks/`                           | The `check-env` checks, and the memory task's explicit mode of check 12 |
+| `.github/workflows/`                | The test workflow and the documentation workflow                 |
 | `tools/bakeoff/`                    | The embedding bake-off                                           |
 | `tests/`                            | Tests for the messages, the conversions, the fakes, the model wrappers, the pipeline, the node and the launch |
 | `scripts/activate.sh`               | Adds the message build to every `pixi run` and `pixi shell`      |

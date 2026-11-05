@@ -22,6 +22,7 @@ below can be imported and tested without it.
 from __future__ import annotations
 
 import contextlib
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -270,6 +271,11 @@ class YoloeTracker:
         self._agnostic_nms = agnostic_nms
         self._keep_masks = keep_masks
         self._classes: list[str] = []
+        self.last_mask_ms = 0.0
+        """How long the last detect() took after the model to copy its masks and boxes to the CPU and resize each mask.
+
+        0 when it kept no mask. The box copy is small next to the masks.
+        """
 
         from ultralytics import YOLOE
 
@@ -319,13 +325,15 @@ class YoloeTracker:
             device=self._device,
             verbose=False,
         )[0]
+        self.last_mask_ms = 0.0
         b = r.boxes
         if b is None or len(b) == 0:
             return []
+        started = time.perf_counter()
         # Ultralytics filters a result's boxes and masks together, by row, so
         # these rows still line up after the tracker dropped some.
         masks = r.masks.data.cpu().numpy() if self._keep_masks and r.masks is not None else None
-        return detections_from_arrays(
+        found = detections_from_arrays(
             b.xyxy.cpu().numpy(),
             b.conf.cpu().numpy(),
             b.cls.int().cpu().numpy(),
@@ -334,6 +342,9 @@ class YoloeTracker:
             image.shape[:2],
             masks,
         )
+        if masks is not None:
+            self.last_mask_ms = (time.perf_counter() - started) * 1000.0
+        return found
 
 
 class YoloeDetector:
@@ -373,6 +384,8 @@ class YoloeDetector:
         self._max_det = max_det
         self._keep_masks = keep_masks
         self._classes: list[str] = []
+        self.last_mask_ms = 0.0
+        """As YoloeTracker.last_mask_ms: the copy and resize after the model, 0 when no mask was kept."""
 
         from ultralytics import YOLOE
 
@@ -409,11 +422,13 @@ class YoloeDetector:
             device=self._device,
             verbose=False,
         )[0]
+        self.last_mask_ms = 0.0
         b = r.boxes
         if b is None or len(b) == 0:
             return []
+        started = time.perf_counter()
         masks = r.masks.data.cpu().numpy() if self._keep_masks and r.masks is not None else None
-        return untracked_detections_from_arrays(
+        found = untracked_detections_from_arrays(
             b.xyxy.cpu().numpy(),
             b.conf.cpu().numpy(),
             b.cls.int().cpu().numpy(),
@@ -421,6 +436,9 @@ class YoloeDetector:
             image.shape[:2],
             masks,
         )
+        if masks is not None:
+            self.last_mask_ms = (time.perf_counter() - started) * 1000.0
+        return found
 
 
 class YoloPoseTracker:
