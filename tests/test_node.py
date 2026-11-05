@@ -43,6 +43,7 @@ from walkie_vision.convert import (
     bbox_to_box,
     box_to_bbox,
     check_object_detection_array,
+    embed_text_failure,
     vectors_from_response,
 )
 from walkie_vision.depth import RgbdBuffer, frame_laplacian, view_quality
@@ -1526,6 +1527,22 @@ def test_a_job_given_up_before_the_worker_reaches_it_runs_no_model(harness, monk
         pose.release.set()
     assert h.spin_until(lambda: 1 in h.stamps("people reliable"))
     assert embedder.calls == 0 and h.node.late_results == 0
+
+
+def test_a_job_that_ends_after_its_deadline_counts_as_late_before_its_caller_gives_up(harness):
+    now = [100.0]
+
+    class SlowEmbedder(FakeEmbedder):
+        def embed_texts(self, texts):
+            now[0] = 100.2  # the model ran past the deadline
+            return super().embed_texts(texts)
+
+    h = _service_harness(harness, SlowEmbedder())
+    job = requests.ServiceJob(_text_request(), 100.1, embed_text_failure, clock=lambda: now[0])
+    # The worker's own loop never sees this job. The caller has not woken yet.
+    h.node._run_job(job)
+    assert h.node.service_jobs == 1 and h.node.late_results == 1
+    assert job.wait() is None
 
 
 def test_closing_the_slot_answers_the_running_job_and_later_requests(harness, monkeypatch):

@@ -58,16 +58,26 @@ MAX_FUTURE_NS = 5_000_000
 class ServiceJob:
     """One admitted service request, from its callback to the worker and back.
 
-    The job gets one answer. A lock decides between the worker's finish() and
-    wait() ending first. An answer after that is discarded.
+    The job gets one answer, and only before its deadline. A lock decides
+    between the worker's finish() and wait() ending first. An answer after
+    that is discarded. finish() reads the clock under the lock, so an answer
+    after the deadline is discarded too, even when it gets the lock before the
+    waiting callback does.
     """
 
-    def __init__(self, request: Any, deadline: float, fail: Callable[[str, str], Any]) -> None:
+    def __init__(
+        self,
+        request: Any,
+        deadline: float,
+        fail: Callable[[str, str], Any],
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.request = request
         self.deadline = deadline
-        """When the callback stops waiting, on the time.monotonic() clock."""
+        """When the callback stops waiting, on clock: time.monotonic() unless a test gives another."""
         self.fail = fail
         """Builds this service's failure response from an error code and a message."""
+        self._clock = clock
         self._lock = threading.Lock()
         self._done = threading.Event()
         self._response: Any = None
@@ -75,7 +85,7 @@ class ServiceJob:
 
     def remaining(self) -> float:
         """The seconds left until the deadline. Negative after it."""
-        return self.deadline - time.monotonic()
+        return self.deadline - self._clock()
 
     @property
     def given_up(self) -> bool:
@@ -83,9 +93,9 @@ class ServiceJob:
             return self._given_up
 
     def finish(self, response: Any) -> bool:
-        """Answer the job. False when it has an answer already, or nobody waits for one."""
+        """Answer the job. False when it has an answer already, nobody waits for one, or the deadline has passed."""
         with self._lock:
-            if self._given_up or self._response is not None:
+            if self._given_up or self._response is not None or self.remaining() <= 0:
                 return False
             self._response = response
         self._done.set()
@@ -151,7 +161,11 @@ class JobSlot:
                 self._job = None
 
     def close(self) -> None:
-        """Refuse new jobs, and answer the one that holds the slot."""
+        """Refuse new jobs, and answer the one that holds the slot.
+
+        A job past its deadline takes no answer, as from the worker. Its
+        callback answers TIMEOUT.
+        """
         with self._lock:
             self._closed = True
             job = self._job

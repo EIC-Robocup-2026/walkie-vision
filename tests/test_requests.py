@@ -84,6 +84,34 @@ def test_a_job_past_its_deadline_takes_no_late_answer():
     assert job.wait() is None
 
 
+def test_a_job_refuses_an_answer_after_its_deadline_that_reaches_the_lock_first():
+    now = [100.0]
+    job = requests.ServiceJob(EmbedText.Request(texts=["cup"]), 100.1, convert.embed_text_failure, clock=lambda: now[0])
+    # The worker finishes late, before the waiting callback wakes and gives up.
+    now[0] = 100.2
+    assert not job.finish(EmbedText.Response(success=True))
+    assert job.wait() is None
+    assert job.given_up
+
+
+def test_a_job_on_the_monotonic_clock_refuses_a_late_answer_before_its_caller_gives_up():
+    job = _job(deadline_s=-0.1)
+    assert not job.finish(EmbedText.Response(success=True))
+    assert job.wait() is None
+
+
+@pytest.mark.parametrize(("finished_at", "taken"), [(100.0999, True), (100.1, False)])
+def test_a_job_takes_an_answer_only_before_its_deadline(finished_at, taken):
+    now = [100.0]
+    job = requests.ServiceJob(EmbedText.Request(texts=["cup"]), 100.1, convert.embed_text_failure, clock=lambda: now[0])
+    answer = EmbedText.Response(success=True)
+    now[0] = finished_at
+    assert job.finish(answer) is taken
+    # The caller may read the answer later. Only the time of finish() counts.
+    now[0] = 100.2
+    assert job.wait() is (answer if taken else None)
+
+
 # --- the slot --------------------------------------------------------------
 
 
@@ -143,6 +171,20 @@ def test_closing_the_slot_answers_its_job_and_refuses_new_ones():
     assert not slot.admit(_job())
     # The worker's answer after that is the late one.
     assert not job.finish(EmbedText.Response(success=True))
+
+
+def test_closing_the_slot_after_the_deadline_leaves_its_caller_the_timeout():
+    now = [100.0]
+    slot = requests.JobSlot(lambda: None)
+    job = requests.ServiceJob(EmbedText.Request(texts=["cup"]), 100.1, convert.embed_text_failure, clock=lambda: now[0])
+    assert slot.admit(job)
+    assert slot.claim() is job
+    now[0] = 100.2
+    slot.close()
+    assert slot.closed
+    # The deadline has passed, so the callback answers TIMEOUT, as it would without the shutdown.
+    assert job.wait() is None
+    assert not slot.admit(_job())
 
 
 # --- the newest input ------------------------------------------------------
