@@ -190,7 +190,8 @@ class CurrentImage:
 
     clear() forgets all of it. The node calls it when the sim clock goes back,
     as after a restart, because the stamps and the arrival times of the next
-    run can match those of the previous one.
+    run can match those of the previous one. It does not reach images that a
+    read already returned.
     """
 
     def __init__(
@@ -232,7 +233,7 @@ class CurrentImage:
             self._pair = (self._colour, self._depth)
 
     def clear(self) -> None:
-        """Forget every image and the pair, so nothing received before this call answers or pairs after it."""
+        """Forget every image and the pair, so no read after this call returns, or pairs, one put before it."""
         with self._lock:
             self._colour = self._depth = None
             self._colour_at = self._depth_at = 0.0

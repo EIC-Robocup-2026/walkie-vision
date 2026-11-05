@@ -139,9 +139,11 @@ gets the answer: nothing is published on the objects topic.
   `max_pair_gap_s`, and the two received within `pair_wait_s` of wall time of
   each other. A depth received later than that counts as none: no points, or
   `NO_IMAGE` under `require_depth`. A jump back of `/clock`, as at a sim
-  restart, drops every image the services hold, so no image or depth from the
-  old run answers. Until the next image arrives, `DetectObjects` and
-  `EmbedCrop` answer `NO_IMAGE`.
+  restart, drops every image the services hold, so none of them answers after
+  it. Until the next image arrives, `DetectObjects` and `EmbedCrop` answer
+  `NO_IMAGE`. On sim time the services keep no image stamped more than 1 s
+  ahead of `/clock`, so one from the old run that arrives late is kept out too,
+  unless the clock has come within 1 s of its stamp.
 - A new list of classes is prepared at most once every 2 s, and the stream stops
   while it is prepared: about 1.5 s for 5 classes on the RTX 2060. The same list
   again prepares nothing, so keep the list stable where you can.
@@ -277,6 +279,7 @@ the on-demand model failed to load: RuntimeError: CUDA out of memory
 | `DetectObjects` answers `NO_IMAGE` for depth, or has no points, while depth arrives | No pair within `max_image_age_s`: no depth within the stamp gap of an image, or none received within `pair_wait_s` of it, as on the stream ([Depth pairing](../architecture/vision.md#depth-pairing)) |
 | `EmbedCrop` scores no depth term while depth arrives | The newest image and the newest depth did not pair, by the same bounds. Each service checks its own input: `EmbedCrop` takes only the newest of each, and `DetectObjects` may take a pair one image older |
 | `DetectObjects` and `EmbedCrop` answer `NO_IMAGE` just after a sim restart, with a warning that the ROS clock jumped | Expected. A jump back of `/clock` drops the images the node holds, and the next camera image ends it ([Bounded services](../architecture/vision.md#bounded-services)) |
+| A warning that the services keep no image stamped seconds ahead of `/clock` | On sim time: images from before a restart that arrived after it, or images that came before the first `/clock`. If it goes on, `/clock` lags the camera or stopped: check the simulator's clock bridge |
 | `DetectObjects` answers `BUSY` for a new list | Another job holds the worker, or the last new list was prepared under 2 s ago. The same list does not wait for that ([Bounded services](../architecture/vision.md#bounded-services)) |
 | The rate falls during `DetectObjects`      | Expected. A job runs between images, and a new list stops the stream for its whole preparation: see `service` and `prepare` in the latency line |
 

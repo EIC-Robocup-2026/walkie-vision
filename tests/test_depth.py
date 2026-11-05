@@ -261,20 +261,23 @@ def test_clear_drops_a_held_depth_so_it_cannot_pair_within_the_wait(buffer, cloc
     assert _take(buffer) == (c, None)
 
 
-def test_clear_sends_a_waiting_colour_with_its_candidate(buffer):
-    ready_colour, ready_depth = colour(), depth()
-    buffer.put_depth(ready_depth)
-    buffer.put((ready_colour, 1.0))
+def test_clear_drops_a_waiting_colour_and_a_pair_the_worker_has_not_taken(buffer, clock):
+    buffer.put_depth(depth())
+    buffer.put((colour(), 1.0))
     waiting, candidate = colour(66.0), depth(62.0)
     buffer.put((waiting, 2.0))
     buffer.put_depth(candidate)
     buffer.clear()
-    # As a newer image does, the waiting one replaces the pair the worker has not taken.
-    assert buffer.replaced == 1
-    assert _take(buffer) == (waiting, candidate)
-    # Nothing from before the clear is left to pair with a new depth.
+    assert buffer.take(0.0) is None
+    clock.advance(WAIT_S)
+    assert buffer.take(0.0) is None and buffer.replaced == 0
+    # Nothing from before the clear pairs with a new depth, and new images pair as before.
     buffer.put_depth(depth(66.0))
     assert buffer.take(0.0) is None
+    after_colour, after_depth = colour(80.0), depth(80.0)
+    buffer.put((after_colour, 3.0))
+    buffer.put_depth(after_depth)
+    assert _take(buffer) == (after_colour, after_depth)
 
 
 def test_clear_with_nothing_held_changes_nothing(buffer):

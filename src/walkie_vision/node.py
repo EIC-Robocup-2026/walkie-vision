@@ -86,7 +86,7 @@ from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, Embed
 
 from . import convert, crop, requests
 from .crop import CropStatus
-from .depth import DepthRefused, RegisteredDepth, RgbdBuffer, read_registered_depth
+from .depth import DepthRefused, RegisteredDepth, RgbdBuffer, read_registered_depth, stamp_ns
 from .image import camera_info_problem, image_to_bgr
 from .pipeline import ON_DEMAND_MAX_OBJECTS, Providers, StageTimes, TrackIdBase, VisionPipeline
 
@@ -364,6 +364,11 @@ class NewestFrame:
             self._woken = False
             item, self._item = self._item, None
             return item
+
+    def clear(self) -> None:
+        """Drop the waiting item, as after a sim restart. An item that take() already returned goes on."""
+        with self._cond:
+            self._item = None
 
     def wake(self) -> None:
         """End the current or the next take() early, so the worker can look at a service job."""
@@ -803,7 +808,12 @@ class VisionNode(Node):
         self.no_depth: collections.Counter[str] = collections.Counter()
         """Images published without geometry, by reason. With require_depth they count in skipped instead."""
         self.clock_jumps = 0
-        """Jumps back of the ROS clock, as at a sim restart. Each one dropped the images held for pairing and the services."""
+        """Jumps back of the ROS clock, as at a sim restart, and turns of use_sim_time on or off.
+
+        Each one dropped the images held for pairing, for the worker and for the services.
+        """
+        self.ahead_of_clock = 0
+        """Images and depth images kept out of the services: on sim time, stamped over 1 s ahead of /clock."""
 
         self._counts_lock = threading.Lock()
         self._warned_at: dict[str, float] = {}
@@ -940,7 +950,7 @@ class VisionNode(Node):
 
     def _on_image(self, msg: Image) -> None:
         self.frames_received += 1
-        if self._current is not None:
+        if self._current is not None and self._fits_the_clock(msg, self.config.image_topic):
             self._current.put_colour(msg)
         self._mailbox.put((msg, time.perf_counter()))
 
@@ -950,7 +960,7 @@ class VisionNode(Node):
 
     def _on_depth(self, msg: Image) -> None:
         self.depth_received += 1
-        if self._current is not None:
+        if self._current is not None and self._fits_the_clock(msg, self.config.depth_topic):
             self._current.put_depth(msg)
         self._mailbox.put_depth(msg)
 
@@ -958,22 +968,50 @@ class VisionNode(Node):
         with self._camera_info_lock:
             self._depth_camera_info = msg
 
-    def _on_clock_jump(self, jump: TimeJump) -> None:
-        """Drop every image held for depth pairing or for the services, so none from before the jump is used after it.
+    def _fits_the_clock(self, msg: Image, topic: str) -> bool:
+        """Whether the services may keep msg: on sim time, not when it is stamped over 1 s ahead of /clock.
 
-        A bundle the worker already holds, or a job that already read its
-        images, goes on with them.
+        The camera and /clock share the simulator's time, so an image that far
+        ahead was taken before a jump back of the clock and delivered after it,
+        or came before the first /clock. No service accepts an image more than
+        MAX_REQUEST_IMAGE_AGE_S ahead, so this changes no answer now. Kept, the
+        image would answer once the clock reached its stamp. On system time a
+        camera on another computer can run ahead, so this keeps everything.
+        The stream does not check this, and publishes such an image as any other.
+        """
+        clock = self.get_clock()
+        if not clock.ros_time_is_active:
+            return True
+        lead_ns = stamp_ns(msg.header) - clock.now().nanoseconds
+        if lead_ns <= round(requests.MAX_REQUEST_IMAGE_AGE_S * 1e9):
+            return True
+        with self._counts_lock:
+            self.ahead_of_clock += 1
+        self._warn_throttled(
+            "ahead_of_clock",
+            f"the services keep no image from {topic} stamped {lead_ns / 1e9:.3f} s ahead of /clock, "
+            "as one taken before a sim restart or before /clock started",
+        )
+        return False
+
+    def _on_clock_jump(self, jump: TimeJump) -> None:
+        """Drop every image held for depth pairing, for the worker or for the services.
+
+        Nothing received before the jump is used after it, except a bundle
+        that the worker already took and a job that already read its images:
+        those go on with them. An image from before the jump that arrives after
+        it is new input; the services keep it only within 1 s of the clock
+        (_fits_the_clock).
         """
         if self._current is not None:
             self._current.clear()
-        if isinstance(self._mailbox, RgbdBuffer):
-            self._mailbox.clear()
+        self._mailbox.clear()
         with self._counts_lock:
             self.clock_jumps += 1
         self._warn_throttled(
             "clock_jump",
             f"the ROS clock jumped by {jump.delta.nanoseconds / 1e9:+.3f} s, as at a sim restart; "
-            "dropped the images held for depth pairing and the services",
+            "dropped the images held for depth pairing, for the worker and for the services",
         )
 
     def _on_get_person_crop(
@@ -1247,8 +1285,9 @@ class VisionNode(Node):
         A pair can be one image older than the newest colour. That is better
         than an image with no points, as long as the pair is within the age.
         A pair matches by the stream's rules, wall time included. A jump back
-        of the clock clears it (_on_clock_jump), so after a sim restart no
-        image or depth from before answers.
+        of the clock clears it (_on_clock_jump), so no image or depth held at a
+        sim restart answers after it. One taken before the restart and received
+        after it is kept only within 1 s of the clock (_fits_the_clock).
         """
         colour, _ = self._current.read()
         if self.config.geometry_enabled:

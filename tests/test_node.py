@@ -121,6 +121,9 @@ def fake_providers_with_embedder(objects=None, embedder=None, **kwargs) -> Provi
 class _SetClock:
     """Stands in for the node's ROS clock."""
 
+    ros_time_is_active = False
+    """As on system time, so the services keep every image whatever its stamp."""
+
     def __init__(self, ns: int) -> None:
         self.ns = ns
 
@@ -2218,6 +2221,98 @@ def test_a_clock_jump_back_drops_the_depth_the_stream_holds(harness, clock_back)
     assert h.spin_until(lambda: len(h.got["objects reliable"]) == 1)
     assert h.node.depth_paired == (0 if clock_back else 1)
     assert h.node.no_depth["unpaired"] == (1 if clock_back else 0)
+
+
+@pytest.mark.parametrize(
+    ("held", "clock_back"),
+    [("waiting", True), ("ready", True), ("newest", True), ("ready", False), ("newest", False)],
+    ids=["waiting-clock-back", "ready-clock-back", "newest-clock-back", "ready-clock-on", "newest-clock-on"],
+)
+def test_a_clock_jump_back_drops_the_frame_the_worker_has_not_taken(harness, held, clock_back):
+    pose = BlockingPose()
+    geometry = held != "newest"
+    h = harness(fake_providers(objects=_due_object(), pose=pose), geometry_enabled=geometry, use_sim_time=True)
+    h.wait_matched()
+    tick = _clock_ticker(h)
+    tick(10 * SECOND_NS + 100_000_000)
+    # The worker is busy with an earlier frame, and has not taken the next one.
+    if geometry:
+        h.hold_infos(10)
+        h.publish_image(1)
+    else:
+        h.publish_frame(1)
+    assert h.spin_until(pose.entered.is_set)
+    now = [100.0]
+    try:
+        if geometry:
+            # Stopped, so the image keeps waiting for a nearer depth.
+            h.node._mailbox._clock = lambda: now[0]
+        h.publish_image(10)
+        if geometry:
+            depth = _depth_msg(10, 2.0)
+            if held == "waiting":
+                # Just before the image, so the image holds it and waits for a nearer one.
+                depth.header.stamp = Time(sec=9, nanosec=999_000_000)
+            h.publish_depth(depth)
+            with h.node._mailbox._cond:
+                waiting = h.node._mailbox._colour
+                assert (waiting is not None and waiting.candidate is not None) if held == "waiting" else waiting is None
+                assert (h.node._mailbox._ready is not None) is (held == "ready")
+        tick(0 if clock_back else 10 * SECOND_NS + 150_000_000)
+        assert h.spin_until(lambda: h.node.clock_jumps == (1 if clock_back else 0))
+        assert h.node.frames_processed == 0
+    finally:
+        pose.release.set()
+    # Without the jump the worker goes on to the frame at 10 s. With it, nothing waits.
+    processed = 1 if clock_back else 2
+    assert h.spin_until(lambda: h.node.frames_processed == processed)
+    h.spin_for(0.2)
+    assert h.node.frames_processed == processed
+    # A frame after the jump comes through.
+    h.publish_image(11)
+    now[0] += 1.0
+    assert h.spin_until(lambda: 11 in h.stamps("objects reliable"))
+    assert h.stamps("objects reliable") == ([1, 11] if clock_back else [1, 10, 11])
+    if not clock_back and geometry:
+        old = h.got["objects reliable"][1]
+        assert old.detections[0].points.width > 0
+
+
+@pytest.mark.parametrize(("back_to_ns", "kept"), [(0, False), (9 * SECOND_NS + 200_000_000, True)])
+def test_the_services_keep_no_image_stamped_over_a_second_ahead_of_the_clock(harness, back_to_ns, kept):
+    h, tick = _sim_services_harness(harness)
+    tick(10 * SECOND_NS + 100_000_000)
+    # The previous run's last capture, delivered only after the sim restarted.
+    old_colour, old_depth = h.image(10), _depth_msg(10, 2.0)
+    tick(back_to_ns)
+    assert h.spin_until(lambda: h.node.clock_jumps == 1)
+    now = [100.0]
+    h.node._current._clock = lambda: now[0]
+    h.publish_depth(old_depth)
+    h.publish_msg(old_colour)
+    assert (h.node._current.read_pair() is not None) is kept
+    assert h.node.ahead_of_clock == (0 if kept else 2)
+    # The camera sends nothing more, for as long as it takes /clock to reach the old stamps.
+    now[0] += 1_000_000.0
+    tick(10 * SECOND_NS + 100_000_000)
+    detect = h.answer(h.call(DetectObjects, _detect_request()))
+    assert h.spin_until(lambda: _slot_free(h))
+    crop = h.answer(h.call(EmbedCrop, _crop_request(10)))
+    if kept:
+        assert detect.success and detect.objects.detections[0].points.width > 0
+        assert crop.success
+    else:
+        _assert_failed(detect, requests.NO_IMAGE)
+        assert not crop.success and crop.error_code == requests.NO_IMAGE
+
+
+def test_on_system_time_the_services_keep_an_image_stamped_ahead_of_the_clock(harness):
+    h = harness(fake_providers_with_embedder(objects=NO_OBJECTS), object_embeddings_enabled=True)
+    h.wait_matched()
+    ahead = h.image(int(time.time()) + 60)
+    h.publish_msg(ahead)
+    assert h.node._current.read()[0] is not None
+    assert h.node.ahead_of_clock == 0
 
 
 @pytest.mark.parametrize(("depth_after_s", "paired"), [(0.0625, True), (0.07, False)])

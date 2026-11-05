@@ -326,9 +326,10 @@ class RgbdBuffer:
     Wall time bounds every wait, so a paused or reset sim clock cannot hang
     the worker. For the same reason, a depth that waited longer than wait_s is
     dropped, so a reset clock cannot match it to a new image with an equal
-    stamp. Within wait_s, clear() does that: the node calls it when the sim
-    clock goes back. Pairing uses up both images, and a zero stamp never
-    pairs, because two zero stamps say nothing about the capture.
+    stamp. Within wait_s, clear() does that, and drops every image the worker
+    has not taken: the node calls it when the sim clock goes back. Pairing
+    uses up both images, and a zero stamp never pairs, because two zero stamps
+    say nothing about the capture.
     """
 
     def __init__(self, max_gap_s: float, wait_s: float, *, clock: Callable[[], float] = time.monotonic) -> None:
@@ -381,16 +382,17 @@ class RgbdBuffer:
             self._cond.notify()
 
     def clear(self) -> None:
-        """Pair nothing received before this call with anything received after it, as after a sim restart.
+        """Drop every image the worker has not taken, as after a sim restart.
 
-        The waiting colour image goes to the worker now, with the depth it
-        holds or with None. Like any newer image, it replaces a bundle the
-        worker has not taken. The newest unpaired depth is dropped.
+        The waiting colour image, the depth it holds, the newest unpaired
+        depth and a finished bundle are all dropped, so nothing received before
+        this call reaches the worker or pairs with anything received after it.
+        A bundle that take() already returned goes on.
         """
         with self._cond:
-            if self._colour is not None:
-                self._finish(self._colour, self._colour.candidate)
+            self._colour = None
             self._depth = None
+            self._ready = None
             self._cond.notify()
 
     def _offer(self, depth: Image) -> bool:

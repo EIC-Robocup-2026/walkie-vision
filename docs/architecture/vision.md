@@ -299,11 +299,16 @@ depth it holds, or without one. Several rules keep a pair from going stale:
 - A depth image is used once.
 - A depth image that waited over 20 ms is dropped when an image arrives, so a
   sim that restarts cannot match it to a new image with an equal stamp.
-- A jump back of the ROS clock, as at a sim restart, drops the depth that
-  waits at once, and sends the waiting image on with the depth it holds. The
-  next run repeats the stamps of the previous one, so nothing from before the
-  jump pairs with anything after it, even within 20 ms. walkie-database clears
-  its TF on the same jump.
+- A jump back of the ROS clock, as at a sim restart, drops every image the
+  worker has not taken: the waiting image with the depth it holds, the depth
+  that waits, and a finished pair. The next run repeats the stamps of the
+  previous one, so nothing held at the jump pairs with anything after it, even
+  within 20 ms, and nothing held reaches the arrays. Only the image the worker
+  already took goes on. Without depth the node drops its one waiting image the
+  same way. walkie-database clears its TF on the same jump.
+- An image taken before the jump and delivered after it is new input to the
+  stream, and is published with its own stamp, ahead of the clock. The node
+  cannot tell which run a stamp comes from.
 - A zero stamp never pairs.
 - An image that a newer one replaces counts as `replaced`, as it does without
   depth. If it held a depth, it is finished with that one instead.
@@ -312,8 +317,12 @@ The services that read depth, `EmbedCrop` and `DetectObjects`, keep their own
 pair by the same bounds: stamps within 5 ms, no zero stamp, and the two images
 received within 20 ms of wall time of each other, in either order. A depth
 received later than that gives a service no depth either. A jump back of the
-ROS clock drops the services' images and their pair, so after a sim restart no
-image or depth from before it answers, alone or paired
+ROS clock drops the services' images and their pair, so no image or depth held
+at a sim restart answers after it, alone or paired. On sim time the services
+also keep no image or depth stamped more than 1 s ahead of `/clock`, which no
+service accepts. Such an image was taken before a restart and delivered after
+it; kept, it would answer once the clock reached its stamp. One delivered
+later, within 1 s of the clock, looks like the new run's and is kept
 ([Bounded services](#bounded-services)).
 
 The worker then checks the pair, in `read_registered_depth()`. The node reads
@@ -1137,11 +1146,19 @@ each other. A depth received later than that leaves the depth term of
 `view_quality` at 0. The node keeps nothing older, so a request cannot reach a
 past image. A jump back of the ROS clock, as at a sim restart, drops the
 current image, the current depth and their pair, so `EmbedCrop` and
-`DetectObjects` answer `NO_IMAGE` until the next image arrives. A job that
-already read its images goes on with them. `DetectObjects` checks the image's
-age again after detection, and a stamp ahead of the clock counts as old, so
-after a jump back of more than `max_image_age_s` it answers `STALE_IMAGE`. The worker checks
-the request against the current image when it starts the job:
+`DetectObjects` answer `NO_IMAGE` until the next image arrives. On sim time the
+node keeps no image for them that is stamped more than 1 s ahead of `/clock`,
+as one taken before the restart and delivered after it
+([Depth pairing](#depth-pairing)).
+
+A job that already read its images goes on with them. `DetectObjects` checks
+the image's age again after detection: it answers only while the image's stamp
+is within `max_image_age_s` of the clock, behind it or ahead of it. The check
+does not see whether the clock jumped in between. If the clock does not move
+on during detection, a jump back answers `STALE_IMAGE` only when it is longer
+than the image's age at the start plus `max_image_age_s`. A clock that jumps
+back and comes up again before the check can pass it. The worker checks the
+request against the current image when it starts the job:
 
 | Check                  | Limit                                       |
 | ---------------------- | ------------------------------------------- |

@@ -81,7 +81,7 @@ gap:
   A pair matches by the stream's bounds in
   [ADR-0014](/architecture/decisions/0014-bounded-rgbd-and-service-work.md),
   wall time included. A jump back of the ROS clock, as at a sim restart, drops
-  the images and the pair the node holds, so no depth from before the restart
+  the images and the pair the node holds, so no depth it held at the restart
   pairs with a new image.
   It keeps no image and no detection after it answers, and returns no id for
   the image. Only the on-demand model's last class list stays loaded. The

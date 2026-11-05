@@ -598,6 +598,16 @@ def test_a_wake_before_the_wait_is_not_lost_and_is_used_once(make):
     assert time.monotonic() - started >= 0.04
 
 
+def test_clear_drops_the_waiting_image():
+    mailbox = NewestFrame()
+    mailbox.put((Image(), 0.0))
+    mailbox.clear()
+    assert mailbox.take(0.0) is None and mailbox.replaced == 0
+    item = (Image(), 1.0)
+    mailbox.put(item)
+    assert mailbox.take(0.0) is item
+
+
 def test_a_wake_leaves_a_waiting_image_in_place():
     mailbox = NewestFrame()
     item = (Image(), 0.0)
