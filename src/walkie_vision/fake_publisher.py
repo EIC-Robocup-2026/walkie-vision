@@ -58,10 +58,13 @@ _BACKGROUND_BGR = (60, 60, 60)
 _NO_COLOR_BGR = (128, 128, 128)
 _REFUSED_CLASS = "person"
 
+# The vision node's OUTPUT_QOS, repeated so that this module does not import the
+# node; tests/test_fake_publisher.py checks that the two are equal. RELIABLE
+# subscribers match it, and so do BEST_EFFORT ones such as walkie-database's.
 OBSERVATION_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
-    depth=1,
-    reliability=ReliabilityPolicy.BEST_EFFORT,
+    depth=5,
+    reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.VOLATILE,
 )
 # The usual profile of /tf_static, so that a late listener still gets the camera.

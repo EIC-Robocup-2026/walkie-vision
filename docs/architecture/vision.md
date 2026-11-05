@@ -335,7 +335,7 @@ The sim renders both from one camera.
 | Image, depth and `camera_info` | BEST_EFFORT | KEEP_LAST 1 | VOLATILE |
 | People and objects        | RELIABLE    | KEEP_LAST 5 | VOLATILE   |
 | The node's services       | RELIABLE    | KEEP_LAST 10 | VOLATILE  |
-| The fake publisher's objects | BEST_EFFORT | KEEP_LAST 1 | VOLATILE |
+| The fake publisher's objects | RELIABLE | KEEP_LAST 5 | VOLATILE |
 
 RELIABLE outputs match both RELIABLE and BEST_EFFORT subscribers. The
 services use rclpy's default profile for services.

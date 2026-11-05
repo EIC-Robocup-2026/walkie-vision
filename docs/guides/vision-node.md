@@ -387,9 +387,12 @@ pixi run env RMW_IMPLEMENTATION=rmw_fastrtps_cpp ROS_DOMAIN_ID=78 ROS_AUTOMATIC_
 A bad parameter or scene stops the start with exit code 2. A new process makes
 a new `stream_id`, which is in its first log line. It publishes no people.
 
-Its arrays are BEST_EFFORT, VOLATILE, KEEP_LAST 1, so a RELIABLE subscriber
-does not match them, and a slow subscriber can miss frames. A consumer test
-must wait for the frames it needs, not count them.
+Its arrays have the vision node's output profile: RELIABLE, VOLATILE,
+KEEP_LAST 5. RELIABLE and BEST_EFFORT subscribers both match it, such as
+walkie-database's BEST_EFFORT, KEEP_LAST 1. A frame published before a
+subscriber is discovered is lost, and a BEST_EFFORT or slow subscriber can
+still miss frames. A consumer test must wait for the frames it needs, not count
+them.
 
 The scene file has a fixed pinhole `camera` and its pose in `parent_frame`,
 the `classes`, axis-aligned `boxes` in that frame, and a `sequence` of phases:
