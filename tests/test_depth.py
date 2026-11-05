@@ -428,6 +428,16 @@ def test_16uc1_is_millimetres_with_any_padding_and_byte_order(bigendian, padding
     assert metres[1, 2] == pytest.approx(65.535)
 
 
+@pytest.mark.parametrize("bigendian", [False, True])
+def test_16uc1_gives_the_float32_metres_of_32fc1_for_every_millimetre(bigendian):
+    # A 32FC1 image of n mm carries float32(n / 1000), so the two encodings of one depth must agree exactly.
+    millimetres = np.arange(1, 65536, dtype=np.uint16).reshape(1, -1)
+    from_millimetres = depth_to_metres(_raster(millimetres, "16UC1", bigendian=bigendian, padding=2))
+    from_metres = depth_to_metres(_raster((millimetres / 1000).astype(np.float32), "32FC1", bigendian=bigendian))
+    np.testing.assert_array_equal(from_millimetres, from_metres)
+    assert from_millimetres[0, 2999] == 3.0
+
+
 def test_the_raster_is_a_copy():
     msg = _raster(METRES, "32FC1")
     metres = depth_to_metres(msg)
@@ -729,6 +739,23 @@ def test_the_range_limits_keep_a_depth_on_the_limit():
     assert len(_lift(_plane(1.0), _box(10, 5, 30, 25), min_m=0.5, max_m=1.0)) == 18 * 18
     assert len(_lift(_plane(1.0), _box(10, 5, 30, 25), min_m=1.5, max_m=2.0)) == 0
     assert len(_lift(_plane(3.0), _box(10, 5, 30, 25), min_m=0.2, max_m=2.0)) == 0
+
+
+@pytest.mark.parametrize(("millimetres", "kept"), [(199, False), (200, True), (3000, True), (3001, False)])
+def test_16uc1_and_32fc1_keep_the_same_depths_at_the_default_range_limits(millimetres, kept):
+    # MIN_M and MAX_M are the node's default range, 200 mm and 3000 mm, and both limits are inclusive.
+    mask = np.ones((1, 1), bool)
+    for raster in (_raster([[millimetres]], "16UC1"), _raster([[millimetres / 1000]], "32FC1")):
+        assert depth_cover(mask, depth_to_metres(raster), MIN_M, MAX_M) == (1.0 if kept else 0.0), raster.encoding
+
+
+@pytest.mark.parametrize("millimetres", [200, 3000])
+def test_a_16uc1_depth_on_a_range_limit_lifts_like_the_same_32fc1_depth(millimetres):
+    from_millimetres = _raster(np.full((RASTER_H, RASTER_W), millimetres), "16UC1")
+    from_metres = _raster(np.full((RASTER_H, RASTER_W), millimetres / 1000), "32FC1")
+    points = _lift(depth_to_metres(from_millimetres), _box(10, 5, 30, 25))
+    assert len(points) == 18 * 18
+    np.testing.assert_array_equal(points, _lift(depth_to_metres(from_metres), _box(10, 5, 30, 25)))
 
 
 def test_a_depth_far_from_the_median_is_dropped_by_the_mad_window():

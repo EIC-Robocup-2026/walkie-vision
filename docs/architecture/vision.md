@@ -314,7 +314,9 @@ no TF, so all of these must already hold:
   rule `fx' = sx * fx`, `cx' = sx * (cx + 0.5) - 0.5`, and likewise for y. The
   node does not make up intrinsics from the colour image's.
 - The encoding is 32FC1 in metres or 16UC1 in millimetres, where 0 means no
-  measurement. `step` and `is_bigendian` are honoured.
+  measurement. `step` and `is_bigendian` are honoured. A 16UC1 depth of n mm
+  reads as `float32(n / 1000)`, the value a 32FC1 depth of n / 1000 m holds,
+  so both encodings agree at the range limits.
 
 An unpaired image and a refused pair count alike, by reason: `unpaired`,
 `depth_frame`, `camera_info_frame`, `depth_camera_info`, `depth_calibration`,
@@ -626,7 +628,8 @@ takes the mask by nearest neighbour.
 1. The erosion amount is `clamp(round(0.05 * min(width, height)), 1, 5)` px,
    from the extent of the mask. The kernel is a square of side `2 * r + 1`, and
    outside the raster counts as not in the mask.
-2. A depth must be finite and from `depth_min_m` to `depth_max_m`.
+2. A depth must be finite and from `depth_min_m` to `depth_max_m`, both
+   included.
 3. A depth must be within `max(3 * 1.4826 * MAD, 0.01)` m of the median. The
    1 cm floor keeps small valid noise when the MAD is zero.
 4. If fewer than 30 pixels are left, steps 2 and 3 run on the whole mask. If
