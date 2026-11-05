@@ -295,7 +295,14 @@ def embed_crop_problem(request: EmbedCrop.Request) -> str | None:
         return f"bbox.center.theta must be 0, not {bbox.center.theta}"
     if bbox.size_x <= 0.0 or bbox.size_y <= 0.0:
         return f"bbox must have a positive area, not {bbox.size_x} by {bbox.size_y}"
-    if crop.intersect_rects(crop.outer_rect(convert.bbox_to_box(bbox)), (0, 0, width, height)) is None:
+    # Finite fields can still add up past the largest float. A corner that is
+    # not finite cannot become a whole pixel, so it is refused here.
+    box = convert.bbox_to_box(bbox)
+    if not np.all(np.isfinite(box)):
+        return "bbox has a corner that is not finite"
+    if not np.all(np.isfinite(crop.pad_box(box, embeddings.CROP_PADDING))):
+        return "bbox's padded crop has a corner that is not finite"
+    if crop.intersect_rects(crop.outer_rect(box), (0, 0, width, height)) is None:
         return f"bbox has no pixels in a {width}x{height} image"
     return None
 

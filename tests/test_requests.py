@@ -334,6 +334,43 @@ def test_a_good_crop_request_is_valid(timeout_s):
     assert requests.embed_crop_problem(_crop_request(timeout_s=timeout_s)) is None
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"x": 1.7e308, "size_x": 1.7e308},
+        {"x": -1.7e308, "size_x": 1.7e308},
+        {"y": 1.7e308, "size_y": 1.7e308},
+    ],
+    ids=["right", "left", "bottom"],
+)
+def test_a_crop_request_whose_box_corner_overflows_is_refused(fields):
+    # Every field is finite. Half the size added to the centre is not.
+    request = _crop_request(bbox=_bad_bbox(**fields))
+    assert all(math.isfinite(v) for v in fields.values())
+    problem = requests.embed_crop_problem(request)
+    assert problem is not None and "bbox" in problem and "not finite" in problem
+
+
+def test_a_crop_request_whose_padded_crop_overflows_is_refused():
+    # The corners are 0 and 1.79e308. The crop's padding adds 15% of the width beyond them.
+    request = _crop_request(bbox=_bad_bbox(x=0.895e308, size_x=1.79e308))
+    assert np.all(np.isfinite(convert.bbox_to_box(request.bbox)))
+    problem = requests.embed_crop_problem(request)
+    assert problem is not None and "bbox" in problem and "not finite" in problem
+
+
+def test_a_crop_request_with_a_huge_finite_box_is_valid_and_crops_the_whole_image():
+    request = _crop_request(bbox=_bad_bbox(x=0.0, y=0.0, size_x=1e300, size_y=1e300))
+    assert requests.embed_crop_problem(request) is None
+    image = np.random.default_rng(3).integers(0, 255, (HEIGHT, WIDTH, 3), dtype=np.uint8)
+    embedder = FakeEmbedder()
+    response = requests.embed_crop_answer(
+        embedder, image, Header(frame_id=FRAME), convert.bbox_to_box(request.bbox), None, 0.2, 3.0
+    )
+    np.testing.assert_allclose(response.embedding, embedder.embed_images([image])[0], rtol=1e-6)
+    assert 0.0 <= response.view_quality <= 1.0
+
+
 def test_the_current_image_answers_a_request_within_every_bound():
     # 5 ms from the image in both directions, an image 0.3 s old, and 5 ms ahead of the clock.
     gap = requests.MAX_STAMP_GAP_NS

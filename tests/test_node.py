@@ -1426,6 +1426,28 @@ def test_embed_crop_refuses_a_bad_request_before_the_worker(harness):
     assert h.node.service_jobs == 0
 
 
+@pytest.mark.parametrize(
+    ("x", "size_x"),
+    [(1.7e308, 1.7e308), (0.895e308, 1.79e308)],
+    ids=["corner", "padded crop"],
+)
+def test_embed_crop_refuses_a_finite_box_that_overflows_and_keeps_serving(harness, x, size_x):
+    embedder = BlockingEmbedder()
+    embedder.release.set()
+    h = _service_harness(harness, embedder)
+    h.set_clock(SECOND_NS + 100_000_000)
+    h.wait_matched()
+    h.publish_image(1)
+    request = _crop_request()
+    # Each field is finite. A corner, or the padded crop around the box, is not.
+    request.bbox.center.position.x, request.bbox.size_x = x, size_x
+    response = h.answer(h.call(EmbedCrop, request))
+    assert not response.success and response.error_code == requests.INVALID and "bbox" in response.message
+    assert h.node.service_jobs == 0 and embedder.calls == 0
+    # The executor still runs: the next request gets its answer.
+    assert h.answer(h.call(EmbedCrop, _crop_request())).success
+
+
 def test_a_second_request_gets_busy_and_nothing_queues(harness, monkeypatch):
     monkeypatch.setattr(requests, "EMBED_TEXT_DEADLINE_S", 30.0)
     embedder = BlockingEmbedder()

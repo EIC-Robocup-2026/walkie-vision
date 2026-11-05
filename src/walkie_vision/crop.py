@@ -226,11 +226,21 @@ def outer_rect(box: np.ndarray) -> Rect:
     return math.floor(x1), math.floor(y1), math.ceil(x2), math.ceil(y2)
 
 
+def pad_box(box: np.ndarray, padding: float) -> np.ndarray:
+    """The box grown by padding times its width and height on each side, in float pixels, not clipped.
+
+    A corner can overflow to infinity, with no warning. outer_rect() cannot
+    take such a box, so a request's box is checked with this first.
+    """
+    x1, y1, x2, y2 = (float(v) for v in np.asarray(box, dtype=np.float64))
+    grow = float(padding)
+    dx, dy = grow * (x2 - x1), grow * (y2 - y1)
+    return np.array([x1 - dx, y1 - dy, x2 + dx, y2 + dy])
+
+
 def pad_rect(box: np.ndarray, padding: float, width: int, height: int) -> Rect:
     """The box grown by padding times its width and height on each side, clipped to the image."""
-    x1, y1, x2, y2 = np.asarray(box, dtype=np.float64)
-    dx, dy = padding * (x2 - x1), padding * (y2 - y1)
-    x0, y0, x3, y3 = outer_rect(np.array([x1 - dx, y1 - dy, x2 + dx, y2 + dy]))
+    x0, y0, x3, y3 = outer_rect(pad_box(box, padding))
     return max(0, x0), max(0, y0), min(width, x3), min(height, y3)
 
 
