@@ -175,7 +175,8 @@ flowchart LR
       ([Bounded services](#bounded-services)).
     - With `object_embeddings_enabled` or `on_demand_enabled`, the image and
       depth callbacks also keep a reference to the newest of each, and to the
-      newest pair whose stamps match, for those services.
+      newest pair that matched by the bounds of
+      [Depth pairing](#depth-pairing), for those services.
     - Every 0.5 s, `main()` checks that the worker is alive and that no
       image or service job has taken longer than `process_timeout_s`.
 - **The worker thread** is the only thread that touches a model. It takes
@@ -244,7 +245,7 @@ sim output topics and the sim service names. Write every double with a decimal p
 | `depth_topic`              | string   | `/zed_head/zed_node/depth/depth_registered` | Rectified depth registered to the RGB image, 32FC1 in metres or 16UC1 in millimetres. The sim publishes the same name |
 | `depth_camera_info_topic`  | string   | `/zed_head/zed_node/depth/camera_info`   | The calibration of the depth pixels. When it equals `camera_info_topic`, the node keeps one subscription |
 | `max_pair_gap_s`           | double   | 0.005                                    | The largest stamp difference of a pair, from 0 to 0.1. An exact stamp wins                    |
-| `pair_wait_s`              | double   | 0.020                                    | How long an image waits for its depth, in seconds of wall time, over 0 and at most 0.1        |
+| `pair_wait_s`              | double   | 0.020                                    | How long an image waits for its depth, in seconds of wall time, over 0 and at most 0.1. The services' depth pairs within it too |
 | `require_depth`            | bool     | false                                    | Skip an image without usable depth, instead of publishing it with empty clouds. Needs `geometry_enabled` |
 | `depth_min_m`              | double   | 0.2                                      | Nearer depth becomes no point. Over 0. A starting value for the ZED and the sim, to tune on recordings |
 | `depth_max_m`              | double   | 3.0                                      | Farther depth becomes no point. Finite and above `depth_min_m`. A starting value too          |
@@ -301,6 +302,13 @@ depth it holds, or without one. Several rules keep a pair from going stale:
 - A zero stamp never pairs.
 - An image that a newer one replaces counts as `replaced`, as it does without
   depth. If it held a depth, it is finished with that one instead.
+
+The services that read depth, `EmbedCrop` and `DetectObjects`, keep their own
+pair by the same bounds: stamps within 5 ms, no zero stamp, and the two images
+received within 20 ms of wall time of each other, in either order. A depth
+received later than that gives a service no depth either. After a sim restart,
+a depth from before it never pairs with a new image of an equal stamp
+([Bounded services](#bounded-services)).
 
 The worker then checks the pair, in `read_registered_depth()`. The node reads
 no TF, so all of these must already hold:
@@ -1113,9 +1121,13 @@ job, the worker runs the newest image before it frees the slot, so a stream of
 requests cannot stop the arrays.
 
 `EmbedCrop` answers from the current image: the newest colour image, and the
-newest depth image when its stamp is within `max_pair_gap_s`. The node keeps
-nothing older, so a request cannot reach a past image. The worker checks the
-request against the current image when it starts the job:
+newest depth image when the two paired by the bounds of
+[Depth pairing](#depth-pairing). Their stamps are within `max_pair_gap_s`,
+neither is zero, and they were received within `pair_wait_s` of wall time of
+each other. A depth received later than that, or one from before a sim restart
+with the image's stamp, leaves the depth term of `view_quality` at 0. The node
+keeps nothing older, so a request cannot reach a past image. The worker checks
+the request against the current image when it starts the job:
 
 | Check                  | Limit                                       |
 | ---------------------- | ------------------------------------------- |
@@ -1314,8 +1326,9 @@ How it runs:
 
 - **On a current image.** The vision node is the only subscriber to the
   camera. It holds the newest RGB image, depth image and `camera_info`, and
-  the newest pair whose stamps match. The service reads those and adds no
-  subscriber. With `geometry_enabled` it uses the newest pair within
+  the newest pair that matched by the bounds of
+  [Depth pairing](#depth-pairing), wall time included. The service reads those
+  and adds no subscriber. With `geometry_enabled` it uses the newest pair within
   `max_image_age_s`. Without one, it uses the newest RGB image, with no points,
   or answers `NO_IMAGE` under `require_depth`. It keeps no image and no
   detection after it answers. Only the on-demand model's last class list stays

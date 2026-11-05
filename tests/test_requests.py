@@ -170,7 +170,8 @@ def test_the_current_image_keeps_only_the_newest_of_each():
 
 
 def test_the_current_image_keeps_the_newest_pair_with_matching_stamps():
-    current = requests.CurrentImage(max_pair_gap_ns=5_000_000)
+    # A still clock: every image arrives within the wait, so only the stamps decide.
+    current = requests.CurrentImage(max_pair_gap_ns=5_000_000, pair_wait_s=0.02, clock=lambda: 0.0)
     assert current.read_pair() is None
     colour_1, depth_1 = _image(1_000_000_000), _image(1_002_000_000)
     current.put_colour(colour_1)
@@ -193,6 +194,94 @@ def test_the_current_image_keeps_no_pair_without_a_gap():
     current.put_colour(_image(STAMP_NS))
     current.put_depth(_image(STAMP_NS))
     assert current.read_pair() is None
+
+
+PAIR_GAP_NS = 5_000_000
+PAIR_WAIT_S = 0.0625
+"""Exact in binary, so two arrivals can be exactly this far apart."""
+
+
+def _pairing(now: list[float]) -> requests.CurrentImage:
+    return requests.CurrentImage(max_pair_gap_ns=PAIR_GAP_NS, pair_wait_s=PAIR_WAIT_S, clock=lambda: now[0])
+
+
+def _assert_same(got, want) -> None:
+    """Assert identity, not equality: two images with equal fields can still be two captures."""
+    if want is None:
+        assert got is None
+    else:
+        assert got is not None and len(got) == len(want) and all(g is w for g, w in zip(got, want))
+
+
+def test_the_current_image_pairs_no_depth_from_before_a_clock_reset():
+    now = [100.0]
+    current = _pairing(now)
+    # The last depth of the previous episode, at 10 s, then a colour image at 11 s.
+    current.put_depth(_image(10 * 1_000_000_000))
+    current.put_colour(_image(11 * 1_000_000_000))
+    assert current.read_pair() is None
+    # /clock goes back, and a new colour image has the old depth's stamp. No new depth came.
+    now[0] += 0.5
+    new_colour = _image(10 * 1_000_000_000)
+    current.put_colour(new_colour)
+    assert current.read_pair() is None
+    _assert_same(current.read_current(), (new_colour, None))
+
+
+@pytest.mark.parametrize("depth_first", [True, False])
+@pytest.mark.parametrize(("apart_s", "pairs"), [(0.0, True), (PAIR_WAIT_S, True), (PAIR_WAIT_S + 0.001, False)])
+def test_the_current_image_pairs_only_images_that_arrived_within_the_wait(depth_first, apart_s, pairs):
+    now = [100.0]
+    current = _pairing(now)
+    colour, depth = _image(), _image()
+    puts = [(current.put_colour, colour), (current.put_depth, depth)]
+    if depth_first:
+        puts.reverse()
+    (put_first, first), (put_second, second) = puts
+    put_first(first)
+    now[0] += apart_s
+    put_second(second)
+    _assert_same(current.read_pair(), (colour, depth) if pairs else None)
+    _assert_same(current.read_current(), (colour, depth if pairs else None))
+
+
+@pytest.mark.parametrize(("colour_ns", "depth_ns"), [(0, 0), (0, 1_000_000), (1_000_000, 0)])
+def test_the_current_image_never_pairs_a_zero_stamp(colour_ns, depth_ns):
+    current = _pairing([100.0])
+    current.put_colour(_image(colour_ns))
+    current.put_depth(_image(depth_ns))
+    assert current.read_pair() is None
+
+
+def test_the_current_image_gives_a_depth_only_with_a_pair_of_the_newest_of_each():
+    now = [100.0]
+    current = _pairing(now)
+    colour_1, depth_1 = _image(STAMP_NS), _image(STAMP_NS)
+    current.put_colour(colour_1)
+    current.put_depth(depth_1)
+    _assert_same(current.read_current(), (colour_1, depth_1))
+    # The next depth came before its colour image. The pair stays for
+    # DetectObjects, but it no longer holds the newest depth.
+    depth_2 = _image(STAMP_NS + 100_000_000)
+    current.put_depth(depth_2)
+    _assert_same(current.read_current(), (colour_1, None))
+    _assert_same(current.read_pair(), (colour_1, depth_1))
+    # Its colour image came too late to pair with it, so it gets no depth either.
+    now[0] += 1.0
+    colour_2 = _image(STAMP_NS + 100_000_000)
+    current.put_colour(colour_2)
+    _assert_same(current.read_current(), (colour_2, None))
+    _assert_same(current.read_pair(), (colour_1, depth_1))
+    # A depth for colour_2 within the wait pairs, and the newest of each are the pair again.
+    depth_3 = _image(STAMP_NS + 100_000_000)
+    current.put_depth(depth_3)
+    _assert_same(current.read_current(), (colour_2, depth_3))
+
+
+@pytest.mark.parametrize(("gap_ns", "wait_s"), [(5_000_000, None), (None, 0.02)])
+def test_the_current_image_needs_both_pairing_bounds_or_neither(gap_ns, wait_s):
+    with pytest.raises(ValueError, match="both"):
+        requests.CurrentImage(max_pair_gap_ns=gap_ns, pair_wait_s=wait_s)
 
 
 def test_the_class_gate_runs_from_the_end_of_a_preparation():

@@ -135,6 +135,11 @@ gets the answer: nothing is published on the objects topic.
 - The answer holds at most 20 detections, those with the highest scores, each
   with `track_id` 0. It has points with `geometry_enabled`, and every box of at
   least 32 px on its short side gets the crop or the vector that its flags allow.
+- Its depth must pair with the image the way the stream's does: stamps within
+  `max_pair_gap_s`, and the two received within `pair_wait_s` of wall time of
+  each other. A depth received later than that counts as none: no points, or
+  `NO_IMAGE` under `require_depth`. After a sim restart, a depth from the old
+  run never pairs with a new image.
 - A new list of classes is prepared at most once every 2 s, and the stream stops
   while it is prepared: about 1.5 s for 5 classes on the RTX 2060. The same list
   again prepares nothing, so keep the list stable where you can.
@@ -267,6 +272,7 @@ the on-demand model failed to load: RuntimeError: CUDA out of memory
 | `EmbedText` or `EmbedCrop` answers `BUSY`  | Another service job holds the worker, or its image is still running. Try again later; nothing queues ([Bounded services](../architecture/vision.md#bounded-services)) |
 | `EmbedCrop` answers `STALE_IMAGE`          | The image the box belongs to is no longer the newest, or it is over 300 ms old. Often normal under load; `busy` and the image rate in the latency line show the load |
 | `late` above 0 in the latency line         | A service job finished after its caller's deadline, and its answer was discarded |
+| `DetectObjects` answers `NO_IMAGE` for depth, or has no points, while depth arrives | No pair within `max_image_age_s`: no depth within the stamp gap of an image, or none received within `pair_wait_s` of it, as on the stream. `EmbedCrop` then leaves out the depth term of `view_quality` ([Depth pairing](../architecture/vision.md#depth-pairing)) |
 | `DetectObjects` answers `BUSY` for a new list | Another job holds the worker, or the last new list was prepared under 2 s ago. The same list does not wait for that ([Bounded services](../architecture/vision.md#bounded-services)) |
 | The rate falls during `DetectObjects`      | Expected. A job runs between images, and a new list stops the stream for its whole preparation: see `service` and `prepare` in the latency line |
 

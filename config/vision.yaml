@@ -99,7 +99,8 @@ walkie_vision:
     depth_camera_info_topic: /zed_head/zed_node/depth/camera_info
     # The largest stamp difference of a pair, in seconds. An exact stamp wins.
     max_pair_gap_s: 0.005
-    # How long an image waits for its depth, in seconds of wall time.
+    # How long an image waits for its depth, in seconds of wall time. A
+    # service's depth must also arrive within this of its image.
     pair_wait_s: 0.020
     # Skip an image that has no usable depth, instead of publishing it without
     # points. Needs geometry_enabled.
