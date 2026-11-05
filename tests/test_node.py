@@ -1449,6 +1449,20 @@ def test_embed_crop_refuses_a_finite_box_that_overflows_and_keeps_serving(harnes
     assert h.answer(h.call(EmbedCrop, _crop_request())).success
 
 
+def test_embed_crop_refuses_a_stamp_that_is_not_a_valid_time_before_the_image_match(harness):
+    embedder = BlockingEmbedder()
+    embedder.release.set()
+    h = _service_harness(harness, embedder)
+    h.set_clock(SECOND_NS + 100_000_000)
+    h.wait_matched()
+    h.publish_image(1)
+    # 0 s and 1e9 ns would add up to the current image's 1 s.
+    response = h.answer(h.call(EmbedCrop, _crop_request(0, nanosec=1_000_000_000)))
+    assert not response.success and response.error_code == requests.INVALID and "header.stamp" in response.message
+    assert h.node.service_jobs == 0 and embedder.calls == 0
+    assert len(response.embedding) == 0 and response.header.frame_id == ""
+
+
 def test_a_second_request_gets_busy_and_nothing_queues(harness, monkeypatch):
     monkeypatch.setattr(requests, "EMBED_TEXT_DEADLINE_S", 30.0)
     embedder = BlockingEmbedder()

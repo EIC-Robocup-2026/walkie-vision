@@ -1079,7 +1079,7 @@ projected into that image:
 
 | Part     | Field             | Type                          | What it is                                     |
 | -------- | ----------------- | ----------------------------- | ---------------------------------------------- |
-| Request  | `header`          | `std_msgs/Header`             | The image the box was projected into           |
+| Request  | `header`          | `std_msgs/Header`             | The image the box was projected into. Its stamp must be a valid time after zero: `sec` not negative, `nanosec` under 1e9, and not both 0. |
 | Request  | `image_width`, `image_height` | `uint32`          | Must equal the current image's size            |
 | Request  | `bbox`            | `vision_msgs/BoundingBox2D`   | The box without padding. `theta` 0, positive area. Its corners, and those of its padded crop, must be finite. |
 | Request  | `timeout_s`       | `float32`                     | The wall deadline. Default 1.0.                |

@@ -413,6 +413,28 @@ def test_a_crop_request_with_a_huge_finite_box_is_valid_and_crops_the_whole_imag
     assert 0.0 <= response.view_quality <= 1.0
 
 
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        Time(sec=0, nanosec=1_000_000_000),
+        Time(sec=1, nanosec=1_000_000_000),
+        Time(sec=10, nanosec=4_294_967_295),
+        Time(sec=-1, nanosec=0),
+    ],
+    ids=["one second as nanosec", "nanosec at one second", "largest nanosec", "before zero"],
+)
+def test_a_crop_request_with_a_stamp_that_is_not_a_valid_time_is_refused(stamp):
+    problem = requests.embed_crop_problem(_crop_request(header=Header(stamp=stamp, frame_id=FRAME)))
+    assert problem is not None
+    assert problem.startswith("header.stamp must be a valid time after zero")
+    assert f"{stamp.sec} s and {stamp.nanosec} ns" in problem
+
+
+@pytest.mark.parametrize("stamp", [Time(sec=0, nanosec=1), Time(sec=0, nanosec=999_999_999)])
+def test_a_crop_request_stamp_may_have_nanosec_up_to_just_under_a_second(stamp):
+    assert requests.embed_crop_problem(_crop_request(header=Header(stamp=stamp, frame_id=FRAME))) is None
+
+
 def test_the_current_image_answers_a_request_within_every_bound():
     # 5 ms from the image in both directions, an image 0.3 s old, and 5 ms ahead of the clock.
     gap = requests.MAX_STAMP_GAP_NS

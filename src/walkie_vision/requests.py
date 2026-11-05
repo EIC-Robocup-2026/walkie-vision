@@ -19,6 +19,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 import numpy as np
+from builtin_interfaces.msg import Time
 from sensor_msgs.msg import Image
 from walkie_vision_msgs.srv import DetectObjects, EmbedCrop
 
@@ -289,12 +290,33 @@ def image_age_problem(image: Image, now_ns: int, max_age_s: float) -> str | None
     return None
 
 
+def stamp_problem(stamp: Time, name: str = "header.stamp") -> str | None:
+    """Return why a time in a request is refused, or None. Call it before stamp_ns() reads the time.
+
+    The generated type takes any uint32 nanosec, so stamp_ns() would read 0 s
+    and 1e9 ns as 1 s. walkie-database's ingress refuses the same times. A
+    zero stamp is refused too.
+
+    Of the requests the node serves, only EmbedCrop's has a time, in
+    header.stamp. DescribeCrop's crop has a stamp too, but that service checks
+    nothing while it always answers DISABLED. A caption build must check the
+    stamp here.
+    """
+    sec, nanosec = int(stamp.sec), int(stamp.nanosec)
+    if sec < 0 or nanosec >= 1_000_000_000:
+        return f"{name} must be a valid time after zero, not {sec} s and {nanosec} ns"
+    if sec == 0 and nanosec == 0:
+        return f"{name} is zero"
+    return None
+
+
 def embed_crop_problem(request: EmbedCrop.Request) -> str | None:
     """Return why an EmbedCrop request is refused before it sees an image, or None."""
     if not request.header.frame_id:
         return "header.frame_id is empty"
-    if stamp_ns(request.header) == 0:
-        return "header.stamp is zero"
+    problem = stamp_problem(request.header.stamp)
+    if problem is not None:
+        return problem
     width, height = int(request.image_width), int(request.image_height)
     if width == 0 or height == 0:
         return f"the image size must be positive, not {width}x{height}"
