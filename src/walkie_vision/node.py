@@ -976,8 +976,10 @@ class VisionNode(Node):
         came before the first /clock, or met a /clock that lags or has stopped.
         Kept, it would answer once the clock reached its stamp. A refused image
         does not replace what the services hold, so an earlier accepted image
-        still answers while its age allows, and a depth image refused here
-        gives the colour image beside it no points. Images behind the clock are
+        still answers while its age allows. A depth image refused here gives no
+        points: the colour image beside it has points only if another accepted
+        depth pairs with it, and DetectObjects may answer from an earlier pair
+        within the request's age (_newest_bundle). Images behind the clock are
         kept, and the services' own age checks judge them. On system time a
         camera on another computer can run ahead, so this keeps everything.
         The stream does not check this, and publishes such an image as any other.
