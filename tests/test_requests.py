@@ -270,6 +270,21 @@ def test_the_current_image_pairs_no_depth_from_before_a_clock_reset():
     _assert_same(current.read_current(), (new_colour, None))
 
 
+@pytest.mark.parametrize(("read_after_s", "kept"), [(0.25, True), (0.3125, False)])
+def test_the_current_image_bounds_a_pair_by_its_earlier_arrival(read_after_s, kept):
+    now = [100.0]
+    current = _pairing(now)
+    colour, depth = _image(STAMP_NS), _image(STAMP_NS)
+    # The depth arrived first, so the pair's age counts from it, not from the colour image.
+    current.put_depth(depth)
+    now[0] += PAIR_WAIT_S
+    current.put_colour(colour)
+    now[0] = 100.0 + read_after_s
+    _assert_same(current.read_pair(within_s=0.25), (colour, depth) if kept else None)
+    # Without a bound the pair stays, however old.
+    _assert_same(current.read_pair(), (colour, depth))
+
+
 @pytest.mark.parametrize("depth_first", [True, False])
 @pytest.mark.parametrize(("apart_s", "pairs"), [(0.0, True), (PAIR_WAIT_S, True), (PAIR_WAIT_S + 0.001, False)])
 def test_the_current_image_pairs_only_images_that_arrived_within_the_wait(depth_first, apart_s, pairs):

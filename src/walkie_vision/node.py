@@ -1216,13 +1216,16 @@ class VisionNode(Node):
         """Return the newest image, with its depth when geometry is on and a matching pair is still current.
 
         A pair can be one image older than the newest colour. That is better
-        than an image with no points, as long as the pair is within the age.
-        A pair matches by the stream's rules, wall time included, so a depth
-        from before a sim restart never pairs with a new image.
+        than an image with no points, as long as the pair is within the age,
+        both in ROS time and since it arrived by wall time. A pair matches by
+        the stream's rules, wall time included, so a depth from before a sim
+        restart never pairs with a new image. The wall age keeps a whole pair
+        from before a restart from answering once /clock comes back up to its
+        stamps while no new depth arrives.
         """
         colour, _ = self._current.read()
         if self.config.geometry_enabled:
-            pair = self._current.read_pair()
+            pair = self._current.read_pair(within_s=max_age_s)
             now_ns = self.get_clock().now().nanoseconds
             if pair is not None and requests.image_age_problem(pair[0], now_ns, max_age_s) is None:
                 return pair

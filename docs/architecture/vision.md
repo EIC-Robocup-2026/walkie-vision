@@ -308,7 +308,11 @@ pair by the same bounds: stamps within 5 ms, no zero stamp, and the two images
 received within 20 ms of wall time of each other, in either order. A depth
 received later than that gives a service no depth either. After a sim restart,
 a depth from before it never pairs with a new image of an equal stamp
-([Bounded services](#bounded-services)).
+([Bounded services](#bounded-services)). `DetectObjects` also takes its pair
+only while the earlier of the two arrived within the request's
+`max_image_age_s` of wall time. Otherwise a whole pair from before a restart
+could answer once `/clock` came back up to its stamps while no new depth
+arrived.
 
 The worker then checks the pair, in `read_registered_depth()`. The node reads
 no TF, so all of these must already hold:

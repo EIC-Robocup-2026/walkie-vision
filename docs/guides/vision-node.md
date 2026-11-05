@@ -139,7 +139,9 @@ gets the answer: nothing is published on the objects topic.
   `max_pair_gap_s`, and the two received within `pair_wait_s` of wall time of
   each other. A depth received later than that counts as none: no points, or
   `NO_IMAGE` under `require_depth`. After a sim restart, a depth from the old
-  run never pairs with a new image.
+  run never pairs with a new image. A pair also counts only while it arrived
+  within `max_image_age_s` of wall time, so in a sim slower than real time a
+  small `max_image_age_s` can leave an answer without points.
 - A new list of classes is prepared at most once every 2 s, and the stream stops
   while it is prepared: about 1.5 s for 5 classes on the RTX 2060. The same list
   again prepares nothing, so keep the list stable where you can.

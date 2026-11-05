@@ -2123,6 +2123,27 @@ def test_detect_objects_requiring_depth_refuses_a_depth_from_before_a_clock_rese
     assert detector.images == []
 
 
+@pytest.mark.parametrize(("arrived_s_ago", "points"), [(0.25, True), (5.0, False)])
+def test_detect_objects_takes_a_pair_only_within_the_age_since_it_arrived(harness, arrived_s_ago, points):
+    # The previous run's last pair, at 10 s. The sim restarts, /clock comes back
+    # up to 10 s, and a colour image comes with no depth. By its stamps the old
+    # pair is current, but it arrived long ago.
+    h = _on_demand_harness(harness, OnDemandDetector([_masked_cup()]), geometry_enabled=True, sec=10)
+    h.hold_infos(10)
+    now = [100.0]
+    h.node._current._clock = lambda: now[0]
+    h.publish_depth(_depth_msg(10, 1.5))
+    h.publish_image(10)
+    assert h.node._current.read_pair() is not None
+    now[0] += arrived_s_ago
+    h.publish_image(10)
+    # 0.25 is exact in the request's float32, so the bound falls on this arrival.
+    response = h.answer(h.call(DetectObjects, _detect_request(max_image_age_s=0.25)))
+    assert response.success
+    [det] = response.objects.detections
+    assert (det.points.width > 0) is points
+
+
 @pytest.mark.parametrize(("depth_after_s", "paired"), [(0.0625, True), (0.07, False)])
 def test_detect_objects_pairs_a_later_depth_only_within_pair_wait_s(harness, depth_after_s, paired):
     h = _on_demand_harness(

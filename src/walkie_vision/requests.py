@@ -188,7 +188,8 @@ class CurrentImage:
     wall bound keeps a depth from before a sim restart from pairing with a new
     image of an equal stamp. One image arrives before the other, so at any
     moment the newest of each can belong to different captures. That pair is
-    the only older input kept.
+    the only older input kept, and read_pair() can bound its age by the same
+    clock, so that a pair from before a restart is not taken for a current one.
     """
 
     def __init__(
@@ -209,6 +210,7 @@ class CurrentImage:
         self._max_pair_gap_ns = max_pair_gap_ns
         self._pair_wait_s = pair_wait_s
         self._pair: tuple[Image, Image] | None = None
+        self._pair_at = 0.0
 
     def put_colour(self, msg: Image) -> None:
         with self._lock:
@@ -228,6 +230,8 @@ class CurrentImage:
             return
         if abs(self._colour_at - self._depth_at) <= self._pair_wait_s:
             self._pair = (self._colour, self._depth)
+            # A pair is as old as the earlier of its two arrivals.
+            self._pair_at = min(self._colour_at, self._depth_at)
 
     def read(self) -> tuple[Image | None, Image | None]:
         """Return the newest of each. They can belong to different captures, so take depth from a pair."""
@@ -246,9 +250,18 @@ class CurrentImage:
                 return self._pair
             return self._colour, None
 
-    def read_pair(self) -> tuple[Image, Image] | None:
-        """Return the newest colour and depth that paired, or None when none has."""
+    def read_pair(self, within_s: float | None = None) -> tuple[Image, Image] | None:
+        """Return the newest colour and depth that paired, or None when none has.
+
+        With within_s, it is also None when the earlier of the two arrived more
+        than within_s ago by the clock. After a sim restart, /clock can come
+        back up to the stamps of a pair from the previous run while no new
+        depth arrives. That pair is then current by its stamps, but not by its
+        arrival.
+        """
         with self._lock:
+            if self._pair is not None and within_s is not None and self._clock() - self._pair_at > within_s:
+                return None
             return self._pair
 
 
