@@ -80,10 +80,9 @@ gap:
   matching pair that is within `max_image_age_s` to a newer image with no depth.
   A pair matches by the stream's bounds in
   [ADR-0014](/architecture/decisions/0014-bounded-rgbd-and-service-work.md),
-  wall time included, so a depth from before a sim restart never pairs with a
-  new image. The pair must also have arrived within `max_image_age_s` of wall
-  time, so a whole pair from before a restart does not answer when `/clock`
-  comes back up to its stamps.
+  wall time included. A jump back of the ROS clock, as at a sim restart, drops
+  the images and the pair the node holds, so no depth from before the restart
+  pairs with a new image.
   It keeps no image and no detection after it answers, and returns no id for
   the image. Only the on-demand model's last class list stays loaded. The
   array's `header` gives the image's stamp and frame, as on the topic.

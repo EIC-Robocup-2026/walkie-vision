@@ -270,19 +270,24 @@ def test_the_current_image_pairs_no_depth_from_before_a_clock_reset():
     _assert_same(current.read_current(), (new_colour, None))
 
 
-@pytest.mark.parametrize(("read_after_s", "kept"), [(0.25, True), (0.3125, False)])
-def test_the_current_image_bounds_a_pair_by_its_earlier_arrival(read_after_s, kept):
+def test_the_current_image_forgets_every_image_and_the_pair_on_clear():
     now = [100.0]
     current = _pairing(now)
-    colour, depth = _image(STAMP_NS), _image(STAMP_NS)
-    # The depth arrived first, so the pair's age counts from it, not from the colour image.
-    current.put_depth(depth)
-    now[0] += PAIR_WAIT_S
-    current.put_colour(colour)
-    now[0] = 100.0 + read_after_s
-    _assert_same(current.read_pair(within_s=0.25), (colour, depth) if kept else None)
-    # Without a bound the pair stays, however old.
-    _assert_same(current.read_pair(), (colour, depth))
+    current.put_depth(_image(10 * 1_000_000_000))
+    current.put_colour(_image(10 * 1_000_000_000))
+    assert current.read_pair() is not None
+    current.clear()
+    assert current.read() == (None, None)
+    assert current.read_current() == (None, None)
+    assert current.read_pair() is None
+    # Within the wait, by the arrival clock, a new image with the old stamps pairs with nothing from before.
+    new_colour = _image(10 * 1_000_000_000)
+    current.put_colour(new_colour)
+    assert current.read_pair() is None
+    _assert_same(current.read_current(), (new_colour, None))
+    new_depth = _image(10 * 1_000_000_000)
+    current.put_depth(new_depth)
+    _assert_same(current.read_pair(), (new_colour, new_depth))
 
 
 @pytest.mark.parametrize("depth_first", [True, False])

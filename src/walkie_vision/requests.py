@@ -184,12 +184,13 @@ class CurrentImage:
     depth that paired, and the services take depth only from that pair. They
     pair by the bounds of walkie_vision.depth.RgbdBuffer: their stamps differ by
     at most max_pair_gap_ns, neither stamp is zero, and the clock, monotonic
-    wall time by default, saw them arrive within pair_wait_s of each other. The
-    wall bound keeps a depth from before a sim restart from pairing with a new
-    image of an equal stamp. One image arrives before the other, so at any
-    moment the newest of each can belong to different captures. That pair is
-    the only older input kept, and read_pair() can bound its age by the same
-    clock, so that a pair from before a restart is not taken for a current one.
+    wall time by default, saw them arrive within pair_wait_s of each other. One
+    image arrives before the other, so at any moment the newest of each can
+    belong to different captures. That pair is the only older input kept.
+
+    clear() forgets all of it. The node calls it when the sim clock goes back,
+    as after a restart, because the stamps and the arrival times of the next
+    run can match those of the previous one.
     """
 
     def __init__(
@@ -210,7 +211,6 @@ class CurrentImage:
         self._max_pair_gap_ns = max_pair_gap_ns
         self._pair_wait_s = pair_wait_s
         self._pair: tuple[Image, Image] | None = None
-        self._pair_at = 0.0
 
     def put_colour(self, msg: Image) -> None:
         with self._lock:
@@ -230,8 +230,13 @@ class CurrentImage:
             return
         if abs(self._colour_at - self._depth_at) <= self._pair_wait_s:
             self._pair = (self._colour, self._depth)
-            # A pair is as old as the earlier of its two arrivals.
-            self._pair_at = min(self._colour_at, self._depth_at)
+
+    def clear(self) -> None:
+        """Forget every image and the pair, so nothing received before this call answers or pairs after it."""
+        with self._lock:
+            self._colour = self._depth = None
+            self._colour_at = self._depth_at = 0.0
+            self._pair = None
 
     def read(self) -> tuple[Image | None, Image | None]:
         """Return the newest of each. They can belong to different captures, so take depth from a pair."""
@@ -250,18 +255,9 @@ class CurrentImage:
                 return self._pair
             return self._colour, None
 
-    def read_pair(self, within_s: float | None = None) -> tuple[Image, Image] | None:
-        """Return the newest colour and depth that paired, or None when none has.
-
-        With within_s, it is also None when the earlier of the two arrived more
-        than within_s ago by the clock. After a sim restart, /clock can come
-        back up to the stamps of a pair from the previous run while no new
-        depth arrives. That pair is then current by its stamps, but not by its
-        arrival.
-        """
+    def read_pair(self) -> tuple[Image, Image] | None:
+        """Return the newest colour and depth that paired, or None when none has."""
         with self._lock:
-            if self._pair is not None and within_s is not None and self._clock() - self._pair_at > within_s:
-                return None
             return self._pair
 
 

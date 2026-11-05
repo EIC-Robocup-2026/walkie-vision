@@ -299,6 +299,11 @@ depth it holds, or without one. Several rules keep a pair from going stale:
 - A depth image is used once.
 - A depth image that waited over 20 ms is dropped when an image arrives, so a
   sim that restarts cannot match it to a new image with an equal stamp.
+- A jump back of the ROS clock, as at a sim restart, drops the depth that
+  waits at once, and sends the waiting image on with the depth it holds. The
+  next run repeats the stamps of the previous one, so nothing from before the
+  jump pairs with anything after it, even within 20 ms. walkie-database clears
+  its TF on the same jump.
 - A zero stamp never pairs.
 - An image that a newer one replaces counts as `replaced`, as it does without
   depth. If it held a depth, it is finished with that one instead.
@@ -306,13 +311,10 @@ depth it holds, or without one. Several rules keep a pair from going stale:
 The services that read depth, `EmbedCrop` and `DetectObjects`, keep their own
 pair by the same bounds: stamps within 5 ms, no zero stamp, and the two images
 received within 20 ms of wall time of each other, in either order. A depth
-received later than that gives a service no depth either. After a sim restart,
-a depth from before it never pairs with a new image of an equal stamp
-([Bounded services](#bounded-services)). `DetectObjects` also takes its pair
-only while the earlier of the two arrived within the request's
-`max_image_age_s` of wall time. Otherwise a whole pair from before a restart
-could answer once `/clock` came back up to its stamps while no new depth
-arrived.
+received later than that gives a service no depth either. A jump back of the
+ROS clock drops the services' images and their pair, so after a sim restart no
+image or depth from before it answers, alone or paired
+([Bounded services](#bounded-services)).
 
 The worker then checks the pair, in `read_registered_depth()`. The node reads
 no TF, so all of these must already hold:
@@ -1131,9 +1133,14 @@ requests cannot stop the arrays.
 newest depth image when the two paired by the bounds of
 [Depth pairing](#depth-pairing). Their stamps are within `max_pair_gap_s`,
 neither is zero, and they were received within `pair_wait_s` of wall time of
-each other. A depth received later than that, or one from before a sim restart
-with the image's stamp, leaves the depth term of `view_quality` at 0. The node
-keeps nothing older, so a request cannot reach a past image. The worker checks
+each other. A depth received later than that leaves the depth term of
+`view_quality` at 0. The node keeps nothing older, so a request cannot reach a
+past image. A jump back of the ROS clock, as at a sim restart, drops the
+current image, the current depth and their pair, so `EmbedCrop` and
+`DetectObjects` answer `NO_IMAGE` until the next image arrives. A job that
+already read its images goes on with them. `DetectObjects` checks the image's
+age again after detection, and a stamp ahead of the clock counts as old, so
+after a jump back of more than `max_image_age_s` it answers `STALE_IMAGE`. The worker checks
 the request against the current image when it starts the job:
 
 | Check                  | Limit                                       |

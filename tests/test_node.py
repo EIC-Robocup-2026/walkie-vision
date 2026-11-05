@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 import weakref
+from collections.abc import Callable
 from pathlib import Path
 
 import cv2
@@ -30,6 +31,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time as RosTime
+from rosgraph_msgs.msg import Clock as ClockMsg
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
@@ -2123,25 +2125,99 @@ def test_detect_objects_requiring_depth_refuses_a_depth_from_before_a_clock_rese
     assert detector.images == []
 
 
-@pytest.mark.parametrize(("arrived_s_ago", "points"), [(0.25, True), (5.0, False)])
-def test_detect_objects_takes_a_pair_only_within_the_age_since_it_arrived(harness, arrived_s_ago, points):
-    # The previous run's last pair, at 10 s. The sim restarts, /clock comes back
-    # up to 10 s, and a colour image comes with no depth. By its stamps the old
-    # pair is current, but it arrived long ago.
-    h = _on_demand_harness(harness, OnDemandDetector([_masked_cup()]), geometry_enabled=True, sec=10)
+def _clock_ticker(h: Harness):
+    """Return tick(ns), which publishes ns on /clock and spins until the node's ROS clock reads it.
+
+    The node must run on sim time. A jump back is handled after the clock is
+    set, so a test waits on clock_jumps before it relies on the clear.
+    """
+    pub = h.helper.create_publisher(ClockMsg, "/clock", 10)
+    assert h.spin_until(lambda: pub.get_subscription_count() >= 1), "the node does not subscribe to /clock"
+
+    def tick(ns: int) -> None:
+        pub.publish(ClockMsg(clock=Time(sec=ns // SECOND_NS, nanosec=ns % SECOND_NS)))
+        assert h.spin_until(lambda: h.node.get_clock().now().nanoseconds == ns), f"/clock did not reach {ns}"
+
+    return tick
+
+
+def _sim_services_harness(harness) -> tuple[Harness, Callable[[int], None]]:
+    """EmbedCrop and DetectObjects with depth, on sim time, with a /clock that the test moves."""
+    providers = dataclasses.replace(
+        fake_providers_with_embedder(objects=NO_OBJECTS), on_demand=OnDemandDetector([_masked_cup()])
+    )
+    h = harness(
+        providers, object_embeddings_enabled=True, on_demand_enabled=True, geometry_enabled=True, use_sim_time=True
+    )
+    h.wait_matched()
     h.hold_infos(10)
-    now = [100.0]
-    h.node._current._clock = lambda: now[0]
-    h.publish_depth(_depth_msg(10, 1.5))
+    return h, _clock_ticker(h)
+
+
+def test_a_clock_jump_back_leaves_the_services_no_image_from_before_it(harness):
+    h, tick = _sim_services_harness(harness)
+    h.node._current._clock = lambda: 0.0
+    # The previous run's last pair, at 10 s, current by its stamps and by its arrivals.
+    tick(10 * SECOND_NS + 100_000_000)
+    h.publish_depth(_depth_msg(10, 2.0))
     h.publish_image(10)
     assert h.node._current.read_pair() is not None
-    now[0] += arrived_s_ago
+    # The sim restarts and /clock comes back up to the old stamps. The camera sends nothing.
+    tick(0)
+    assert h.spin_until(lambda: h.node.clock_jumps == 1)
+    tick(10 * SECOND_NS + 100_000_000)
+    _assert_failed(h.answer(h.call(DetectObjects, _detect_request())), requests.NO_IMAGE)
+    assert h.spin_until(lambda: _slot_free(h))
+    crop = h.answer(h.call(EmbedCrop, _crop_request(10)))
+    assert not crop.success and crop.error_code == requests.NO_IMAGE
+    assert h.node.clock_jumps == 1
+
+
+@pytest.mark.parametrize("clock_back", [True, False], ids=["clock-back", "clock-on"])
+def test_a_clock_jump_back_keeps_an_old_depth_from_the_services_new_image(harness, clock_back):
+    h, tick = _sim_services_harness(harness)
+    # Every arrival at once, so only the jump can keep the old depth from pairing.
+    h.node._current._clock = lambda: 0.0
+    tick((11 if clock_back else 10) * SECOND_NS + 100_000_000)
+    # The last depth of the run, at 10 s, then a colour image at 11 s.
+    h.publish_depth(_depth_msg(10, 2.0))
+    h.publish_image(11)
+    # The sim restarts: /clock comes back to 10.1 s, and a new colour image has
+    # the old depth's stamp. In the control the clock runs on instead.
+    tick(10 * SECOND_NS + (100_000_000 if clock_back else 150_000_000))
+    assert h.spin_until(lambda: h.node.clock_jumps == (1 if clock_back else 0))
     h.publish_image(10)
-    # 0.25 is exact in the request's float32, so the bound falls on this arrival.
-    response = h.answer(h.call(DetectObjects, _detect_request(max_image_age_s=0.25)))
-    assert response.success
-    [det] = response.objects.detections
-    assert (det.points.width > 0) is points
+    detect = h.answer(h.call(DetectObjects, _detect_request()))
+    assert detect.success and detect.objects.header.stamp == Time(sec=10)
+    assert (detect.objects.detections[0].points.width > 0) is not clock_back
+    assert h.spin_until(lambda: _slot_free(h))
+    crop = h.answer(h.call(EmbedCrop, _crop_request(10)))
+    plain = np.full((HEIGHT, WIDTH, 3), 10, dtype=np.uint8)
+    no_depth = view_quality(_box_mask(), np.array(BOX), frame_laplacian(plain), 0.0)
+    assert crop.success
+    assert (crop.view_quality == pytest.approx(no_depth)) is clock_back
+    assert h.node.clock_jumps == (1 if clock_back else 0)
+
+
+@pytest.mark.parametrize("clock_back", [True, False], ids=["clock-back", "clock-on"])
+def test_a_clock_jump_back_drops_the_depth_the_stream_holds(harness, clock_back):
+    h = harness(geometry_enabled=True, use_sim_time=True)
+    h.wait_matched()
+    h.hold_infos(10)
+    tick = _clock_ticker(h)
+    now = [100.0]
+    h.node._mailbox._clock = lambda: now[0]
+    tick((11 if clock_back else 10) * SECOND_NS + 100_000_000)
+    # The last depth of the run, at 10 s, held for an image that has not come.
+    h.publish_depth(_depth_msg(10))
+    tick(10 * SECOND_NS + (100_000_000 if clock_back else 150_000_000))
+    assert h.spin_until(lambda: h.node.clock_jumps == (1 if clock_back else 0))
+    # Within the wait by the wall clock, a new image has the old depth's stamp.
+    h.publish_image(10)
+    now[0] += 0.1
+    assert h.spin_until(lambda: len(h.got["objects reliable"]) == 1)
+    assert h.node.depth_paired == (0 if clock_back else 1)
+    assert h.node.no_depth["unpaired"] == (1 if clock_back else 0)
 
 
 @pytest.mark.parametrize(("depth_after_s", "paired"), [(0.0625, True), (0.07, False)])

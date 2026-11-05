@@ -70,7 +70,8 @@ import numpy as np
 import rclpy
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
-from rclpy.clock import Clock, ClockType
+from rclpy.clock import Clock, ClockType, JumpThreshold, TimeJump
+from rclpy.duration import Duration
 from rclpy.exceptions import NameValidationException, ParameterException
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.logging import get_logger
@@ -123,6 +124,12 @@ MAX_CROP_TIMEOUT_S = 5.0
 """The longest timeout_s a GetPersonCrop request may ask for: the service answers one request at a time."""
 MAX_PAIR_WINDOW_S = 0.1
 """The largest max_pair_gap_s and pair_wait_s: the output must stay near 5 Hz, and a wider gap pairs other captures."""
+# Any jump back of the clock, however small, means that the sim restarted: the
+# next run repeats the stamps of the previous one, and walkie-database clears
+# its TF on the same jump. rcl reports a jump only when ROS time is set, which
+# under use_sim_time is each /clock sample, so a sample equal to the one before
+# is no jump. The wall clock reports none.
+_BACKWARD_JUMP = JumpThreshold(min_forward=None, min_backward=Duration(nanoseconds=-1), on_clock_change=True)
 
 # Ultralytics' own tracker files, by name. The same names as
 # walkie_vision.yolo.TRACKER_NAMES, which this module does not import.
@@ -795,6 +802,8 @@ class VisionNode(Node):
         """Images processed with a depth raster that passed every check."""
         self.no_depth: collections.Counter[str] = collections.Counter()
         """Images published without geometry, by reason. With require_depth they count in skipped instead."""
+        self.clock_jumps = 0
+        """Jumps back of the ROS clock, as at a sim restart. Each one dropped the images held for pairing and the services."""
 
         self._counts_lock = threading.Lock()
         self._warned_at: dict[str, float] = {}
@@ -806,13 +815,14 @@ class VisionNode(Node):
         self._embedder = providers.embedder
         self._jobs = requests.JobSlot(self._mailbox.wake)
         # Only what EmbedCrop and DetectObjects can answer from. Off, no image
-        # outlives its processing. It pairs by the mailbox's gap and wait, so a
-        # depth from before a sim restart cannot pair with a new image.
+        # outlives its processing. It pairs by the mailbox's gap and wait.
         self._current = (
             requests.CurrentImage(round(cfg.max_pair_gap_s * 1e9), cfg.pair_wait_s)
             if cfg.object_embeddings_enabled or cfg.on_demand_enabled
             else None
         )
+        # Registered before the subscriptions, so no image arrives unwatched.
+        self._clock_jump = self.get_clock().create_jump_callback(_BACKWARD_JUMP, post_callback=self._on_clock_jump)
         self._class_gate = requests.ClassPrepareGate()
         self._rate_replaced = 0
         self._camera_info: CameraInfo | None = None
@@ -922,6 +932,7 @@ class VisionNode(Node):
         if self._worker.is_alive():
             return False
         self._closed = True
+        self._clock_jump.unregister()
         self.destroy_node()
         return True
 
@@ -946,6 +957,24 @@ class VisionNode(Node):
     def _on_depth_camera_info(self, msg: CameraInfo) -> None:
         with self._camera_info_lock:
             self._depth_camera_info = msg
+
+    def _on_clock_jump(self, jump: TimeJump) -> None:
+        """Drop every image held for depth pairing or for the services, so none from before the jump is used after it.
+
+        A bundle the worker already holds, or a job that already read its
+        images, goes on with them.
+        """
+        if self._current is not None:
+            self._current.clear()
+        if isinstance(self._mailbox, RgbdBuffer):
+            self._mailbox.clear()
+        with self._counts_lock:
+            self.clock_jumps += 1
+        self._warn_throttled(
+            "clock_jump",
+            f"the ROS clock jumped by {jump.delta.nanoseconds / 1e9:+.3f} s, as at a sim restart; "
+            "dropped the images held for depth pairing and the services",
+        )
 
     def _on_get_person_crop(
         self, request: GetPersonCrop.Request, response: GetPersonCrop.Response
@@ -1216,16 +1245,14 @@ class VisionNode(Node):
         """Return the newest image, with its depth when geometry is on and a matching pair is still current.
 
         A pair can be one image older than the newest colour. That is better
-        than an image with no points, as long as the pair is within the age,
-        both in ROS time and since it arrived by wall time. A pair matches by
-        the stream's rules, wall time included, so a depth from before a sim
-        restart never pairs with a new image. The wall age keeps a whole pair
-        from before a restart from answering once /clock comes back up to its
-        stamps while no new depth arrives.
+        than an image with no points, as long as the pair is within the age.
+        A pair matches by the stream's rules, wall time included. A jump back
+        of the clock clears it (_on_clock_jump), so after a sim restart no
+        image or depth from before answers.
         """
         colour, _ = self._current.read()
         if self.config.geometry_enabled:
-            pair = self._current.read_pair(within_s=max_age_s)
+            pair = self._current.read_pair()
             now_ns = self.get_clock().now().nanoseconds
             if pair is not None and requests.image_age_problem(pair[0], now_ns, max_age_s) is None:
                 return pair
