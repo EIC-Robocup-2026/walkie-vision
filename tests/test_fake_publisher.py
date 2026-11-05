@@ -1,7 +1,8 @@
 """The fake object publisher: its geometry, its sequence and the wire.
 
 The wire tests stream until they have what they need, instead of expecting a
-given frame: the topic is BEST_EFFORT, so a frame may be lost before discovery.
+given frame. The topic is RELIABLE but VOLATILE, so a frame published before
+discovery is lost, and a BEST_EFFORT or slow subscriber can still miss later ones.
 """
 
 import copy
@@ -20,7 +21,14 @@ import rclpy
 from builtin_interfaces.msg import Time
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSCompatibility,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_check_compatible,
+)
 from rclpy.serialization import deserialize_message, serialize_message
 from rclpy.time import Time as RosTime
 from tf2_msgs.msg import TFMessage
@@ -37,11 +45,27 @@ from walkie_vision.fake_publisher import (
     load_scene,
     parse_scene,
 )
+from walkie_vision.node import OUTPUT_QOS
 
 REPO = Path(__file__).resolve().parents[1]
 STREAM_ID = "6f1c1b52-8c1e-4a53-9f0e-2d3b7a6c9e10"
 STAMP = Time(sec=1_792_400_000, nanosec=250_000_000)
 TIMEOUT_S = 30.0
+
+# walkie-database's subscription to the object arrays (_OBSERVATION_QOS in its node.py).
+DATABASE_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+)
+# A subscriber that asks for every array, such as a bag recorder.
+RELIABLE_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=5,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.VOLATILE,
+)
 
 # Identity orientation: map axes are the optical axes, so depths and pixels can be worked out by hand.
 CAMERA = {
@@ -484,13 +508,13 @@ def ctx():
 
 
 class _Wire:
-    """A helper node with a collector on a unique topic."""
+    """A helper node with a collector on a unique topic, subscribed with the given profile."""
 
-    def __init__(self, context) -> None:
+    def __init__(self, context, qos: QoSProfile) -> None:
         self.topic = f"/t_{uuid.uuid4().hex[:10]}/objects"
         self.node = rclpy.create_node(f"test_{uuid.uuid4().hex[:10]}", context=context)
         self.got: list[ObjectDetectionArray] = []
-        self.node.create_subscription(ObjectDetectionArray, self.topic, self.got.append, OBSERVATION_QOS)
+        self.node.create_subscription(ObjectDetectionArray, self.topic, self.got.append, qos)
         self.executor = SingleThreadedExecutor(context=context)
         self.executor.add_node(self.node)
 
@@ -506,8 +530,9 @@ class _Wire:
 
 
 @pytest.fixture
-def wire(ctx):
-    w = _Wire(ctx)
+def wire(ctx, request):
+    """A collector with walkie-database's profile, or with the profile an indirect parametrize gives."""
+    w = _Wire(ctx, getattr(request, "param", DATABASE_QOS))
     yield w
     w.close()
 
@@ -520,6 +545,7 @@ def _publisher(ctx, wire: _Wire, **overrides) -> FakePublisher:
     return node
 
 
+@pytest.mark.parametrize("wire", [DATABASE_QOS, RELIABLE_QOS], ids=["database", "reliable"], indirect=True)
 def test_a_subscriber_sees_empty_and_nonempty_arrays(ctx, wire):
     node = _publisher(ctx, wire)
     try:
@@ -547,11 +573,23 @@ def test_a_subscriber_sees_fake_vectors_when_asked(ctx, wire):
     assert all(list(m.classes) == ["cup"] for m in wire.got)
 
 
-def test_the_publisher_offers_best_effort_and_no_people(ctx, wire):
+def test_the_fake_publishes_with_the_vision_node_output_qos():
+    # One profile for both publishers, so a consumer that matches the fake matches the real node.
+    assert OBSERVATION_QOS == OUTPUT_QOS
+    for subscriber in (DATABASE_QOS, RELIABLE_QOS):
+        compatibility, reason = qos_check_compatible(OBSERVATION_QOS, subscriber)
+        assert compatibility != QoSCompatibility.ERROR, reason
+
+
+def test_the_publisher_offers_reliable_keep_last_5_volatile_and_no_people(ctx, wire):
     node = _publisher(ctx, wire)
     try:
+        # The graph does not carry history or depth, so those come from the publisher itself.
+        (publisher,) = [p for p in node.publishers if p.topic_name == wire.topic]
+        assert publisher.qos_profile.history == HistoryPolicy.KEEP_LAST
+        assert publisher.qos_profile.depth == 5
         (info,) = node.get_publishers_info_by_topic(wire.topic)
-        assert info.qos_profile.reliability == ReliabilityPolicy.BEST_EFFORT
+        assert info.qos_profile.reliability == ReliabilityPolicy.RELIABLE
         assert info.qos_profile.durability == DurabilityPolicy.VOLATILE
         published = dict(node.get_publisher_names_and_types_by_node(node.get_name(), node.get_namespace()))
         assert published[wire.topic] == ["walkie_vision_msgs/msg/ObjectDetectionArray"]

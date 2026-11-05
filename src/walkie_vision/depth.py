@@ -34,7 +34,7 @@ from .image import calibration_problem, camera_info_problem
 
 _DEPTH_FORMATS = {"32FC1": "f4", "16UC1": "u2"}
 SUPPORTED_DEPTH_ENCODINGS = tuple(_DEPTH_FORMATS)
-_METRES_PER_MILLIMETRE = 0.001
+_MILLIMETRES_PER_METRE = 1000.0
 
 MAX_RAY_ERROR_PX = 1.0
 """How far the depth raster's calibration may move a ray from the colour image's, in depth pixels."""
@@ -75,7 +75,8 @@ def depth_to_metres(msg: Image) -> np.ndarray:
     """Return a contiguous H x W float32 copy of a depth image, in metres.
 
     32FC1 is metres and 16UC1 is millimetres, where 0 means no measurement
-    and becomes NaN. step and is_bigendian are honoured, including padding
+    and becomes NaN. n mm gives float32(n / 1000), the same value as a 32FC1
+    image of that depth, so the two agree at a range limit. step and is_bigendian are honoured, including padding
     that is not a whole number of pixels. Bad values are kept as they are:
     the range check in the geometry step rejects them. Raises DepthRefused
     for another encoding, an empty image, a step shorter than one row, or
@@ -101,10 +102,13 @@ def depth_to_metres(msg: Image) -> np.ndarray:
     order = ">" if msg.is_bigendian else "<"
     # strides reads rows of any padding; astype makes a native, contiguous copy.
     rows = np.ndarray((height, width), dtype=order + kind, buffer=data, strides=(step, pixel_bytes))
-    metres = rows.astype(np.float32)
-    if encoding == "16UC1":
-        metres *= _METRES_PER_MILLIMETRE
-        metres[rows == 0] = np.nan
+    if encoding == "32FC1":
+        return rows.astype(np.float32)
+    # Divide in float64, then cast: n mm becomes float32(n / 1000), the value a
+    # 32FC1 image of the same depth carries, so 3000 mm is exactly 3.0. Multiplying
+    # by 0.001 in float32 gives 3.0000002, outside an inclusive 3 m limit.
+    metres = np.divide(rows, _MILLIMETRES_PER_METRE, dtype=np.float64).astype(np.float32)
+    metres[rows == 0] = np.nan
     return metres
 
 

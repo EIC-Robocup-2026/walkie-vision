@@ -362,8 +362,10 @@ class Harness:
         assert held(), "the camera_infos did not arrive"
 
     def freeze_pair_clock(self) -> None:
-        """Stop the pairing's wall clock, so a slow test machine cannot run out the wait."""
+        """Stop the pairing's wall clocks, the stream's and the services', so a slow test machine cannot run out the wait."""
         self.node._mailbox._clock = lambda: 0.0
+        if self.node._current is not None:
+            self.node._current._clock = lambda: 0.0
 
     def publish_depth(self, msg: Image) -> None:
         """Publish one depth image and spin until the node has received it."""
@@ -1715,6 +1717,26 @@ def test_a_refused_depth_leaves_only_the_depth_term_out_of_a_crop(harness):
     assert response.success and response.view_quality == pytest.approx(expected)
 
 
+def test_embed_crop_scores_no_depth_from_before_a_clock_reset(harness):
+    h = _service_harness(harness, geometry_enabled=True)
+    h.wait_matched()
+    h.hold_infos(11)
+    h.set_clock(11 * SECOND_NS + 100_000_000)
+    # The last depth of the previous episode, at 10 s, then a colour image at 11 s.
+    h.publish_depth(_depth_msg(10, 1.5))
+    h.publish_image(11)
+    assert h.spin_until(lambda: h.node.no_depth["unpaired"] >= 1)
+    # /clock goes back, and a new colour image comes at 10 s. No new depth came.
+    h.set_clock(10 * SECOND_NS + 100_000_000)
+    h.publish_image(10)
+    assert h.spin_until(lambda: h.node.no_depth["unpaired"] >= 2)
+    response = h.answer(h.call(EmbedCrop, _crop_request(10)))
+    plain = np.full((HEIGHT, WIDTH, 3), 10, dtype=np.uint8)
+    expected = view_quality(_box_mask(), np.array(BOX), frame_laplacian(plain), 0.0)
+    assert response.success and response.header.stamp == Time(sec=10)
+    assert response.view_quality == pytest.approx(expected)
+
+
 def test_a_service_failure_leaves_the_stream_alone(harness):
     h = _service_harness(harness, RaisingEmbedder())
     h.set_clock(SECOND_NS + 100_000_000)
@@ -2081,6 +2103,45 @@ def test_detect_objects_prefers_a_current_pair_and_falls_back_to_the_newest_imag
     h.publish_image(2)
     plain = h.answer(h.call(DetectObjects, _detect_request()))
     assert plain.objects.header.stamp == Time(sec=2) and plain.objects.detections[0].points.width == 0
+
+
+def test_detect_objects_requiring_depth_refuses_a_depth_from_before_a_clock_reset(harness):
+    detector = OnDemandDetector([_masked_cup()])
+    h = _on_demand_harness(harness, detector, geometry_enabled=True, require_depth=True, sec=11)
+    h.hold_infos(11)
+    # The last depth of the previous episode, at 10 s, then a colour image at 11 s.
+    h.publish_depth(_depth_msg(10, 2.0))
+    h.publish_image(11)
+    assert h.spin_until(lambda: h.node.skipped["unpaired"] >= 1)
+    # /clock goes back, and a new colour image comes at 10 s. No new depth came.
+    h.set_clock(10 * SECOND_NS + 100_000_000)
+    h.publish_image(10)
+    assert h.spin_until(lambda: h.node.skipped["unpaired"] >= 2)
+    response = h.answer(h.call(DetectObjects, _detect_request()))
+    _assert_failed(response, requests.NO_IMAGE)
+    assert "depth" in response.message
+    assert detector.images == []
+
+
+@pytest.mark.parametrize(("depth_after_s", "paired"), [(0.0625, True), (0.07, False)])
+def test_detect_objects_pairs_a_later_depth_only_within_pair_wait_s(harness, depth_after_s, paired):
+    h = _on_demand_harness(
+        harness, OnDemandDetector([_masked_cup()]), geometry_enabled=True, require_depth=True, pair_wait_s=0.0625
+    )
+    h.hold_infos()
+    now = [100.0]
+    h.node._current._clock = lambda: now[0]
+    h.publish_image(1)
+    assert h.spin_until(lambda: h.node._current.read()[0] is not None)
+    now[0] += depth_after_s
+    h.publish_depth(_depth_msg(1, 1.5))
+    assert h.spin_until(lambda: h.node._current.read()[1] is not None)
+    response = h.answer(h.call(DetectObjects, _detect_request()))
+    if paired:
+        assert response.success and response.objects.detections[0].points.width > 0
+    else:
+        _assert_failed(response, requests.NO_IMAGE)
+        assert "depth" in response.message
 
 
 def test_the_newest_image_is_chosen_after_new_classes_are_ready(harness):

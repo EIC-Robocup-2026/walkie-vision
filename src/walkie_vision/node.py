@@ -85,7 +85,7 @@ from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, Embed
 
 from . import convert, crop, requests
 from .crop import CropStatus
-from .depth import DepthRefused, RegisteredDepth, RgbdBuffer, read_registered_depth, stamp_ns
+from .depth import DepthRefused, RegisteredDepth, RgbdBuffer, read_registered_depth
 from .image import camera_info_problem, image_to_bgr
 from .pipeline import ON_DEMAND_MAX_OBJECTS, Providers, StageTimes, TrackIdBase, VisionPipeline
 
@@ -806,9 +806,10 @@ class VisionNode(Node):
         self._embedder = providers.embedder
         self._jobs = requests.JobSlot(self._mailbox.wake)
         # Only what EmbedCrop and DetectObjects can answer from. Off, no image
-        # outlives its processing.
+        # outlives its processing. It pairs by the mailbox's gap and wait, so a
+        # depth from before a sim restart cannot pair with a new image.
         self._current = (
-            requests.CurrentImage(round(cfg.max_pair_gap_s * 1e9))
+            requests.CurrentImage(round(cfg.max_pair_gap_s * 1e9), cfg.pair_wait_s)
             if cfg.object_embeddings_enabled or cfg.on_demand_enabled
             else None
         )
@@ -1216,6 +1217,8 @@ class VisionNode(Node):
 
         A pair can be one image older than the newest colour. That is better
         than an image with no points, as long as the pair is within the age.
+        A pair matches by the stream's rules, wall time included, so a depth
+        from before a sim restart never pairs with a new image.
         """
         colour, _ = self._current.read()
         if self.config.geometry_enabled:
@@ -1226,9 +1229,12 @@ class VisionNode(Node):
         return colour, None
 
     def _embed_crop(self, request: EmbedCrop.Request) -> EmbedCrop.Response:
-        """Answer an EmbedCrop request from the current image, if the request names it."""
+        """Answer an EmbedCrop request from the current image, if the request names it.
+
+        Its depth is the newest depth when the two paired, or none.
+        """
         cfg = self.config
-        msg, depth_msg = self._current.read()
+        msg, depth_msg = self._current.read_current()
         if msg is None:
             return convert.embed_crop_failure(requests.NO_IMAGE, f"no image has arrived on {cfg.image_topic}")
         problem = requests.crop_image_problem(request, msg, self.get_clock().now().nanoseconds)
@@ -1245,9 +1251,13 @@ class VisionNode(Node):
         )
 
     def _current_depth(self, msg: Image, depth_msg: Image | None) -> RegisteredDepth | None:
-        """Return the checked depth of the current image, or None. A service job counts nothing here."""
+        """Return the checked depth of an image, or None. A service job counts nothing here.
+
+        depth_msg must come from a pair of requests.CurrentImage, which already
+        bounds the stamps and the arrivals. This checks only the calibration.
+        """
         cfg = self.config
-        if depth_msg is None or abs(stamp_ns(msg.header) - stamp_ns(depth_msg.header)) > round(cfg.max_pair_gap_s * 1e9):
+        if depth_msg is None:
             return None
         with self._camera_info_lock:
             info = self._camera_info
