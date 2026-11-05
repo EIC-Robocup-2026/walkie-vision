@@ -973,9 +973,12 @@ class VisionNode(Node):
 
         The camera and /clock share the simulator's time, so an image that far
         ahead was taken before a jump back of the clock and delivered after it,
-        or came before the first /clock. No service accepts an image more than
-        MAX_REQUEST_IMAGE_AGE_S ahead, so this changes no answer now. Kept, the
-        image would answer once the clock reached its stamp. On system time a
+        came before the first /clock, or met a /clock that lags or has stopped.
+        Kept, it would answer once the clock reached its stamp. A refused image
+        does not replace what the services hold, so an earlier accepted image
+        still answers while its age allows, and a depth image refused here
+        gives the colour image beside it no points. Images behind the clock are
+        kept, and the services' own age checks judge them. On system time a
         camera on another computer can run ahead, so this keeps everything.
         The stream does not check this, and publishes such an image as any other.
         """
@@ -1000,8 +1003,8 @@ class VisionNode(Node):
         Nothing received before the jump is used after it, except a bundle
         that the worker already took and a job that already read its images:
         those go on with them. An image from before the jump that arrives after
-        it is new input; the services keep it only within 1 s of the clock
-        (_fits_the_clock).
+        it is new input; on sim time the services keep it unless it is stamped
+        more than 1 s ahead of the clock (_fits_the_clock).
         """
         if self._current is not None:
             self._current.clear()
@@ -1286,8 +1289,9 @@ class VisionNode(Node):
         than an image with no points, as long as the pair is within the age.
         A pair matches by the stream's rules, wall time included. A jump back
         of the clock clears it (_on_clock_jump), so no image or depth held at a
-        sim restart answers after it. One taken before the restart and received
-        after it is kept only within 1 s of the clock (_fits_the_clock).
+        sim restart answers a read after it. One taken before the restart and
+        received after it is kept unless it is stamped more than 1 s ahead of
+        the clock (_fits_the_clock).
         """
         colour, _ = self._current.read()
         if self.config.geometry_enabled:

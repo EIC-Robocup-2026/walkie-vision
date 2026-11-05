@@ -318,11 +318,17 @@ pair by the same bounds: stamps within 5 ms, no zero stamp, and the two images
 received within 20 ms of wall time of each other, in either order. A depth
 received later than that gives a service no depth either. A jump back of the
 ROS clock drops the services' images and their pair, so no image or depth held
-at a sim restart answers after it, alone or paired. On sim time the services
-also keep no image or depth stamped more than 1 s ahead of `/clock`, which no
-service accepts. Such an image was taken before a restart and delivered after
-it; kept, it would answer once the clock reached its stamp. One delivered
-later, within 1 s of the clock, looks like the new run's and is kept
+at a sim restart answers a read after it, alone or paired. On sim time the
+services also keep no image or depth stamped more than 1 s ahead of `/clock`.
+Such an image was taken before a restart and delivered after it, or met a
+`/clock` that lags or has stopped; kept, it would answer once the clock reached
+its stamp. One delivered later, no more than 1 s ahead of the clock, looks like
+the new run's and is kept. Images behind the clock are kept, and each request's
+age check judges them. The guard has two costs. A refused image does not
+replace what the services hold, so while `/clock` lags or has stopped, an
+earlier accepted image still answers while its age allows. And a depth stamped
+just over 1 s ahead is refused even when the colour image beside it, stamped
+just under, is kept, so that image has no points
 ([Bounded services](#bounded-services)).
 
 The worker then checks the pair, in `read_registered_depth()`. The node reads
@@ -1146,10 +1152,11 @@ each other. A depth received later than that leaves the depth term of
 `view_quality` at 0. The node keeps nothing older, so a request cannot reach a
 past image. A jump back of the ROS clock, as at a sim restart, drops the
 current image, the current depth and their pair, so `EmbedCrop` and
-`DetectObjects` answer `NO_IMAGE` until the next image arrives. On sim time the
-node keeps no image for them that is stamped more than 1 s ahead of `/clock`,
-as one taken before the restart and delivered after it
-([Depth pairing](#depth-pairing)).
+`DetectObjects` answer `NO_IMAGE` until the next accepted image arrives. On sim
+time the node keeps no image for them that is stamped more than 1 s ahead of
+`/clock`, as one taken before the restart and delivered after it. Such an image
+does not replace the ones held, so with a stopped `/clock` an earlier image can
+still answer ([Depth pairing](#depth-pairing)).
 
 A job that already read its images goes on with them. `DetectObjects` checks
 the image's age again after detection: it answers only while the image's stamp

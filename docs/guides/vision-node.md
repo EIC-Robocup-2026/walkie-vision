@@ -139,11 +139,13 @@ gets the answer: nothing is published on the objects topic.
   `max_pair_gap_s`, and the two received within `pair_wait_s` of wall time of
   each other. A depth received later than that counts as none: no points, or
   `NO_IMAGE` under `require_depth`. A jump back of `/clock`, as at a sim
-  restart, drops every image the services hold, so none of them answers after
-  it. Until the next image arrives, `DetectObjects` and `EmbedCrop` answer
-  `NO_IMAGE`. On sim time the services keep no image stamped more than 1 s
-  ahead of `/clock`, so one from the old run that arrives late is kept out too,
-  unless the clock has come within 1 s of its stamp.
+  restart, drops every image the services hold, so none of them answers a
+  request made after it. Until the next accepted image arrives, `DetectObjects`
+  and `EmbedCrop` answer `NO_IMAGE`. On sim time the services keep no image
+  stamped more than 1 s ahead of `/clock`, so one from the old run that arrives
+  late is kept out too, unless the clock has come within 1 s of its stamp. A
+  refused image leaves the services' earlier images in place, so with `/clock`
+  stopped they can still answer from those while the request's age allows.
 - A new list of classes is prepared at most once every 2 s, and the stream stops
   while it is prepared: about 1.5 s for 5 classes on the RTX 2060. The same list
   again prepares nothing, so keep the list stable where you can.
