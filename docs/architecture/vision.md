@@ -330,9 +330,10 @@ earlier accepted image still answers while its age allows. And a depth stamped
 just over 1 s ahead is refused even when the colour image beside it, stamped
 just under, is kept. That depth gives no points: the colour image has points
 only if another accepted depth pairs with it, and `DetectObjects` may answer
-from an earlier pair within the request's age. With neither, `DetectObjects`
-answers with no points, or `NO_IMAGE` under `require_depth`
-([Bounded services](#bounded-services)).
+from an earlier pair within the request's age. With neither, a colour image
+that passes the request's age and camera checks gets no points, or `NO_IMAGE`
+under `require_depth`; one that fails them gets that check's error, such as
+`STALE_IMAGE` ([Bounded services](#bounded-services)).
 
 The worker then checks the pair, in `read_registered_depth()`. The node reads
 no TF, so all of these must already hold:
