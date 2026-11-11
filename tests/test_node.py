@@ -855,6 +855,61 @@ def test_missing_model_files_exit_2_before_any_model_loads(tmp_path):
     assert "Traceback" not in output
 
 
+_CTRL_C_AND_A_LOST_SHUTDOWN_RACE = """
+import sys
+import rclpy
+from rclpy.node import Node
+from walkie_vision import node as node_module
+
+
+class StoppedByCtrlC(Node):
+    fatal = None
+
+    def __init__(self):
+        super().__init__("stopped_by_ctrl_c")
+
+    def check_health(self):
+        raise KeyboardInterrupt
+
+    def close(self):
+        return True
+
+
+def lose_the_race():
+    context = rclpy.get_default_context()
+    context.shutdown()
+    context.shutdown()
+
+
+node_module.VisionNode = StoppedByCtrlC
+rclpy.try_shutdown = lose_the_race
+sys.exit(node_module.main())
+"""
+
+
+def test_ctrl_c_exits_0_when_the_signal_handler_shuts_rclpy_down_first(tmp_path):
+    # After Ctrl-C, rclpy's signal handler shuts the context down from its own
+    # thread a moment later, and can do it between try_shutdown's check and its
+    # shutdown. The stand-in forces that order. Exit 1 reads as a crash.
+    env = dict(
+        os.environ,
+        ROS_DOMAIN_ID="79",
+        RMW_IMPLEMENTATION="rmw_fastrtps_cpp",
+        ROS_AUTOMATIC_DISCOVERY_RANGE="LOCALHOST",
+        WALKIE_VISION_MODELS=str(tmp_path),
+    )
+    result = subprocess.run(
+        [sys.executable, "-P", "-c", _CTRL_C_AND_A_LOST_SHUTDOWN_RACE, "--ros-args"],
+        env=env,
+        timeout=60,
+        capture_output=True,
+        text=True,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "Traceback" not in output
+
+
 # --- 12. person crops ------------------------------------------------------------
 
 OK = GetPersonCrop.Response.OK

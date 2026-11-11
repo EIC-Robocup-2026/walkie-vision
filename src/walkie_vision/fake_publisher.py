@@ -595,7 +595,14 @@ def main(args: list[str] | None = None) -> int:
     finally:
         if node is not None:
             node.destroy_node()
-        rclpy.try_shutdown()
+        try:
+            rclpy.try_shutdown()
+        except Exception:
+            # After Ctrl-C, rclpy's signal handler shuts the context down from
+            # its own thread a moment later, and can do it between
+            # try_shutdown's check and its shutdown. The context is down either way.
+            if rclpy.ok():
+                raise
     return code
 
 

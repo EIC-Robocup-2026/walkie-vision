@@ -1588,7 +1588,14 @@ def main(args: list[str] | None = None) -> int:
         # Joins the executor's threads. close() has answered a waiting
         # request, so none of them waits for long.
         executor.shutdown()
-    rclpy.try_shutdown()
+    try:
+        rclpy.try_shutdown()
+    except Exception:
+        # After Ctrl-C, rclpy's signal handler shuts the context down from its
+        # own thread a moment later, and can do it between try_shutdown's
+        # check and its shutdown. The context is down either way.
+        if rclpy.ok():
+            raise
     return code
 
 

@@ -724,6 +724,44 @@ def test_a_stop_that_lands_during_a_publish_still_exits_zero():
     assert out.returncode == 0, out.stdout + out.stderr
 
 
+_CTRL_C_AND_A_LOST_SHUTDOWN_RACE = """
+import sys
+import rclpy
+from walkie_vision import fake_publisher
+
+
+def ctrl_c(node, timeout_sec=None):
+    raise KeyboardInterrupt
+
+
+def lose_the_race():
+    context = rclpy.get_default_context()
+    context.shutdown()
+    context.shutdown()
+
+
+rclpy.spin_once = ctrl_c
+rclpy.try_shutdown = lose_the_race
+sys.exit(fake_publisher.main())
+"""
+
+
+def test_ctrl_c_exits_0_when_the_signal_handler_shuts_rclpy_down_first():
+    # After Ctrl-C, rclpy's signal handler shuts the context down from its own
+    # thread a moment later, and can do it between try_shutdown's check and its
+    # shutdown. The stand-in forces that order.
+    topic = f"/t_{uuid.uuid4().hex[:10]}/objects"
+    out = subprocess.run(
+        [sys.executable, "-P", "-c", _CTRL_C_AND_A_LOST_SHUTDOWN_RACE, "--ros-args", "-p", f"objects_topic:={topic}"],
+        env=_env(),
+        capture_output=True,
+        text=True,
+        timeout=TIMEOUT_S,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "Traceback" not in out.stdout + out.stderr
+
+
 def test_a_finite_run_ends_by_itself(tmp_path):
     topic = f"/t_{uuid.uuid4().hex[:10]}/objects"
     out = subprocess.run(
