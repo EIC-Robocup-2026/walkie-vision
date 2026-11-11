@@ -23,6 +23,7 @@ from __future__ import annotations
 import array
 import json
 import math
+import signal
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -593,6 +594,10 @@ def main(args: list[str] | None = None) -> int:
     except (KeyboardInterrupt, ExternalShutdownException):
         code = 0
     finally:
+        # A second SIGINT must not cut the cleanup short. pixi run forwards
+        # Ctrl-C to its child, and ros2 launch sends one of its own when its
+        # stdin is not a terminal, so a node often gets two.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         if node is not None:
             node.destroy_node()
         try:

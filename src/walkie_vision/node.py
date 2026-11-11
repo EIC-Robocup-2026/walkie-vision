@@ -57,6 +57,7 @@ import logging
 import math
 import os
 import re
+import signal
 import sys
 import threading
 import time
@@ -1571,6 +1572,11 @@ def main(args: list[str] | None = None) -> int:
     except (KeyboardInterrupt, ExternalShutdownException):
         code = 0
     finally:
+        # A second SIGINT must not cut the cleanup short. pixi run forwards
+        # Ctrl-C to its child, and ros2 launch sends one of its own when its
+        # stdin is not a terminal, so a node often gets two. close() bounds
+        # the cleanup.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         if node is not None:
             stopped = node.close()
     if node is not None and node.fatal is not None:

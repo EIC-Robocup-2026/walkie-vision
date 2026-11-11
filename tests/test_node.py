@@ -887,24 +887,69 @@ sys.exit(node_module.main())
 """
 
 
-def test_ctrl_c_exits_0_when_the_signal_handler_shuts_rclpy_down_first(tmp_path):
-    # After Ctrl-C, rclpy's signal handler shuts the context down from its own
-    # thread a moment later, and can do it between try_shutdown's check and its
-    # shutdown. The stand-in forces that order. Exit 1 reads as a crash.
+_A_SECOND_CTRL_C_DURING_THE_CLEANUP = """
+import os
+import signal
+import sys
+import time
+from rclpy.node import Node
+from walkie_vision import node as node_module
+
+
+class StoppedByCtrlCTwice(Node):
+    fatal = None
+
+    def __init__(self):
+        super().__init__("stopped_by_ctrl_c_twice")
+
+    def check_health(self):
+        raise KeyboardInterrupt
+
+    def close(self):
+        os.kill(os.getpid(), signal.SIGINT)
+        time.sleep(0.2)
+        self.destroy_node()
+        return True
+
+
+node_module.VisionNode = StoppedByCtrlCTwice
+sys.exit(node_module.main())
+"""
+
+
+def _run_stand_in(script: str, models: Path) -> subprocess.CompletedProcess[str]:
     env = dict(
         os.environ,
         ROS_DOMAIN_ID="79",
         RMW_IMPLEMENTATION="rmw_fastrtps_cpp",
         ROS_AUTOMATIC_DISCOVERY_RANGE="LOCALHOST",
-        WALKIE_VISION_MODELS=str(tmp_path),
+        WALKIE_VISION_MODELS=str(models),
     )
-    result = subprocess.run(
-        [sys.executable, "-P", "-c", _CTRL_C_AND_A_LOST_SHUTDOWN_RACE, "--ros-args"],
+    return subprocess.run(
+        [sys.executable, "-P", "-c", script, "--ros-args"],
         env=env,
         timeout=60,
         capture_output=True,
         text=True,
     )
+
+
+def test_ctrl_c_exits_0_when_the_signal_handler_shuts_rclpy_down_first(tmp_path):
+    # After Ctrl-C, rclpy's signal handler shuts the context down from its own
+    # thread a moment later, and can do it between try_shutdown's check and its
+    # shutdown. The stand-in forces that order. Exit 1 reads as a crash.
+    result = _run_stand_in(_CTRL_C_AND_A_LOST_SHUTDOWN_RACE, tmp_path)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "Traceback" not in output
+
+
+def test_a_second_ctrl_c_does_not_cut_the_cleanup_short(tmp_path):
+    # pixi run forwards Ctrl-C to its child, and ros2 launch sends one of its
+    # own when its stdin is not a terminal, so a node often gets two SIGINTs.
+    # In the simulation the second arrived while close() joined the worker.
+    # The stand-in sends it there.
+    result = _run_stand_in(_A_SECOND_CTRL_C_DURING_THE_CLEANUP, tmp_path)
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     assert "Traceback" not in output

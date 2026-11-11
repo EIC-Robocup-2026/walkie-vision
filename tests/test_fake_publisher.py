@@ -746,18 +746,58 @@ sys.exit(fake_publisher.main())
 """
 
 
-def test_ctrl_c_exits_0_when_the_signal_handler_shuts_rclpy_down_first():
-    # After Ctrl-C, rclpy's signal handler shuts the context down from its own
-    # thread a moment later, and can do it between try_shutdown's check and its
-    # shutdown. The stand-in forces that order.
+_A_SECOND_CTRL_C_DURING_THE_CLEANUP = """
+import os
+import signal
+import sys
+import time
+import rclpy
+from walkie_vision import fake_publisher
+
+shut_down = rclpy.try_shutdown
+
+
+def ctrl_c(node, timeout_sec=None):
+    raise KeyboardInterrupt
+
+
+def ctrl_c_again():
+    os.kill(os.getpid(), signal.SIGINT)
+    time.sleep(0.2)
+    shut_down()
+
+
+rclpy.spin_once = ctrl_c
+rclpy.try_shutdown = ctrl_c_again
+sys.exit(fake_publisher.main())
+"""
+
+
+def _run_stand_in(script: str) -> subprocess.CompletedProcess[str]:
     topic = f"/t_{uuid.uuid4().hex[:10]}/objects"
-    out = subprocess.run(
-        [sys.executable, "-P", "-c", _CTRL_C_AND_A_LOST_SHUTDOWN_RACE, "--ros-args", "-p", f"objects_topic:={topic}"],
+    return subprocess.run(
+        [sys.executable, "-P", "-c", script, "--ros-args", "-p", f"objects_topic:={topic}"],
         env=_env(),
         capture_output=True,
         text=True,
         timeout=TIMEOUT_S,
     )
+
+
+def test_ctrl_c_exits_0_when_the_signal_handler_shuts_rclpy_down_first():
+    # After Ctrl-C, rclpy's signal handler shuts the context down from its own
+    # thread a moment later, and can do it between try_shutdown's check and its
+    # shutdown. The stand-in forces that order.
+    out = _run_stand_in(_CTRL_C_AND_A_LOST_SHUTDOWN_RACE)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "Traceback" not in out.stdout + out.stderr
+
+
+def test_a_second_ctrl_c_does_not_cut_the_cleanup_short():
+    # pixi run forwards Ctrl-C to its child, and ros2 launch sends one of its
+    # own when its stdin is not a terminal, so a node often gets two SIGINTs.
+    # The stand-in sends the second during the cleanup.
+    out = _run_stand_in(_A_SECOND_CTRL_C_DURING_THE_CLEANUP)
     assert out.returncode == 0, out.stdout + out.stderr
     assert "Traceback" not in out.stdout + out.stderr
 
