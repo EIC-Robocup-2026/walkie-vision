@@ -95,6 +95,7 @@ flowchart LR
 | Process                            | Models                                                                                                                                  | Runtime                                |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
 | Vision node (`walkie_vision.node`) | YOLOE-26 segmentation with tracking, in text-prompt mode; YOLO26 pose with tracking; SCRFD and ArcFace (InsightFace's `buffalo_l`); OSNet | PyTorch and ONNX Runtime, both on CUDA |
+| Debug visualizer (`walkie_vision.debug_viz`), only with `viz:=true` | None: it draws the object arrays on the image and as 3D markers ([ADR-0016](decisions/0016-debug-visualizer-subscribes-to-the-image.md)) | CPU |
 
 The node also serves `GetPersonCrop`, `EmbedText`, `EmbedCrop` and
 `DescribeCrop`, all on one model worker
@@ -105,6 +106,8 @@ Why one process ([ADR-0010](decisions/0010-one-vision-process.md)):
 
 - **One copy of the image.** The node is the only subscriber to the raw
   camera image. An HD2K image in `bgra8` is about 11 MB, 15 times a second.
+  The one exception is the debug visualizer, which runs only with `viz:=true`
+  ([ADR-0016](decisions/0016-debug-visualizer-subscribes-to-the-image.md)).
 - **One CUDA context.** The models share one context instead of paying for
   two.
 - **Faces at native resolution.** SCRFD runs on a crop around each
@@ -1367,7 +1370,7 @@ node serves it with `on_demand_enabled`
 How it runs:
 
 - **On a current image.** The vision node is the only subscriber to the
-  camera. It holds the newest RGB image, depth image and `camera_info`, and
+  camera, apart from the optional debug visualizer. It holds the newest RGB image, depth image and `camera_info`, and
   the newest pair that matched by the bounds of
   [Depth pairing](#depth-pairing), wall time included. The service reads those
   and adds no subscriber. With `geometry_enabled` it uses the newest pair within
@@ -1740,7 +1743,7 @@ bodies, so the node finds no people there.
 
     --8<-- "architecture/decisions/0009-on-demand-detect-objects.md:body"
 
-??? success "ADR-0010: Run every vision model in one process · Accepted"
+??? success "ADR-0010: Run every vision model in one process · Accepted, partly superseded by ADR-0016"
 
     --8<-- "architecture/decisions/0010-one-vision-process.md:body"
 
@@ -1763,3 +1766,7 @@ bodies, so the node finds no people there.
 ??? success "ADR-0015: Schedule bounded service work on the one model worker · Accepted"
 
     --8<-- "architecture/decisions/0015-bounded-service-scheduling.md:body"
+
+??? success "ADR-0016: Let an optional debug visualizer subscribe to the raw image · Accepted"
+
+    --8<-- "architecture/decisions/0016-debug-visualizer-subscribes-to-the-image.md:body"

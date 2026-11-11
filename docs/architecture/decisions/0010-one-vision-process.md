@@ -1,7 +1,7 @@
 # ADR-0010: Run every vision model in one process
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-26
+**Status:** Accepted, partly superseded by [ADR-0016](/architecture/decisions/0016-debug-visualizer-subscribes-to-the-image.md) · **Date:** 2026-10-26
 
 **Context**
 
@@ -33,7 +33,9 @@ puts its faces into `PersonDetection`.
   `onnxruntime-gpu`, and OSNet run in one process, the vision node
   (`walkie_vision.node`). The `EmbedText` server and the `DetectObjects`
   service join it when they are built.
-- The vision node is the only subscriber to the raw camera image.
+- The vision node is the only subscriber to the raw camera image. (An
+  optional debug visualizer is the one exception:
+  [ADR-0016](/architecture/decisions/0016-debug-visualizer-subscribes-to-the-image.md).)
 - SCRFD runs on a crop around each person's head, from the pose keypoints,
   at native resolution. Each face goes into its person's `PersonDetection`
   before the array is published.

@@ -164,6 +164,48 @@ minutes" before it starts. The driver keeps the compiled kernels in
 `~/.nv/ComputeCache`, so later starts are fast. Keep that folder between
 runs. In a container, mount it as a volume. A driver update empties it.
 
+### See the detections {#debug-visualizer}
+
+`viz:=true` also starts `walkie_vision.debug_viz`, a small node that draws the
+object stream for Foxglove or RViz:
+
+```bash
+pixi run vision task:=memory sim:=true viz:=true
+```
+
+It publishes two topics under the objects topic's namespace. On the robot,
+leave out `/sim`.
+
+| Topic                                               | Type                            | What it shows |
+| --------------------------------------------------- | ------------------------------- | ------------- |
+| `/walkie_vision/sim/debug/objects_image/compressed` | `sensor_msgs/CompressedImage`   | The array's colour image, at most 960 px on its long side, with each detection's box and label: the class, the score and the last four digits of the track id |
+| `/walkie_vision/sim/debug/objects_markers`          | `visualization_msgs/MarkerArray` | For each detection that has points (`geometry_enabled`, as in the memory task): at most 500 of its points and its label, in the camera's optical frame at the array's stamp |
+
+- Each class keeps one colour while the task's class list holds. The colours
+  are the Okabe-Ito palette, which stays readable for most colour-blind viewers.
+- The HRI task publishes no points, so its markers topic stays empty and only
+  the image shows the detections.
+- An array is drawn on the image with exactly its stamp and frame. The node
+  keeps at most 10 images, up to 3 s old, and drops every image up to an
+  array's stamp once it has handled that array. An array whose image it no
+  longer has still gets its markers. Every 30 s the log says how many arrays
+  were drawn and how many had no image.
+- Each array first deletes the last array's markers, and markers expire after
+  1 s, so an object that is no longer seen leaves nothing behind.
+- Both topics use standard message types only, so a Foxglove bridge or an
+  RViz without `walkie_vision_msgs` can show them.
+- The node loads no model and uses no GPU. It decodes, scales and encodes one
+  image per array on the CPU. It is a second subscriber to the raw colour
+  image ([ADR-0016](../architecture/decisions/0016-debug-visualizer-subscribes-to-the-image.md)),
+  and holds up to 10 raw images while the vision node falls behind: about
+  110 MB with the robot's 2208 x 1242 `bgra8` images. On the robot, leave it
+  off unless someone is watching.
+
+To look at it in Foxglove, run a `foxglove_bridge` on the same ROS graph and
+connect Foxglove to it. Add an Image panel on the compressed topic, and a 3D
+panel with the markers topic and the TF tree. In the 3D panel, a display frame
+of `map` shows the markers where the robot saw them.
+
 ## Launch arguments
 
 | Argument              | Default | What it does                                                         |
@@ -172,6 +214,7 @@ runs. In a container, mount it as a volume. A driver update empties it.
 | `sim`                 | `false` | Use sim time, and publish and serve on the sim names (`config/sim.yaml`) |
 | `respawn_delay`       | `3.0`   | Seconds before the node starts again after it exits                  |
 | `respawn_max_retries` | `-1`    | How many times it starts again. -1 means no limit                    |
+| `viz`                 | `false` | Also run the debug visualizer ([See the detections](#debug-visualizer)) |
 
 Launch arguments use `:=`, for example
 `pixi run vision task:=hri respawn_max_retries:=5`.

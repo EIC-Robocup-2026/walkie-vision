@@ -4,6 +4,13 @@
     pixi run vision task:=hri
     pixi run vision sim:=true       # sim time, and the sim topics and services
     pixi run vision task:=memory sim:=true  # object memory, also DetectObjects
+    pixi run vision task:=memory sim:=true viz:=true  # also the debug visualizer
+
+viz:=true also runs walkie_vision.debug_viz, which draws the object stream as
+an annotated JPEG and 3D markers for Foxglove or RViz. It reads the topics of
+the node's own parameter files, and publishes under the objects topic's
+namespace: /walkie_vision/debug/... on the robot, /walkie_vision/sim/debug/...
+in simulation.
 
 walkie-vision is a Pixi project, not an ament package, so there is no
 executable for launch_ros to look up. The node runs as a plain process:
@@ -20,6 +27,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import yaml
 from launch import LaunchContext, LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
@@ -49,6 +57,39 @@ def node_command(task: str, sim: bool) -> list[str]:
     cmd += ["--params-file", str(CONFIG / "vision.yaml"), "--params-file", str(TASKS / f"{task}.yaml")]
     if sim:
         cmd += ["--params-file", str(CONFIG / "sim.yaml")]
+    return cmd
+
+
+def node_parameters(task: str, sim: bool) -> dict:
+    """Return the vision node's parameters as its parameter files set them, later files winning."""
+    cmd = node_command(task, sim)
+    merged: dict = {}
+    for i, arg in enumerate(cmd):
+        if arg == "--params-file":
+            text = Path(cmd[i + 1]).read_text()
+            section = (yaml.safe_load(text) or {}).get("walkie_vision", {}).get("ros__parameters", {})
+            merged.update(section)
+    return merged
+
+
+def viz_command(task: str, sim: bool) -> list[str]:
+    """Return the command that runs the debug visualizer on the vision node's topics.
+
+    It draws the node's objects topic on the node's image topic, and publishes
+    under the objects topic's namespace, so the sim's debug topics never mix
+    with the robot's.
+    """
+    params = node_parameters(task, sim)
+    objects, image = params.get("objects_topic"), params.get("image_topic")
+    if not objects or not image:
+        raise ValueError("the vision node's parameter files must set objects_topic and image_topic")
+    namespace = objects.rsplit("/", 1)[0]
+    cmd = [sys.executable, "-P", "-m", "walkie_vision.debug_viz", "--ros-args"]
+    cmd += ["-p", f"objects_topic:={objects}", "-p", f"image_topic:={image}"]
+    cmd += ["-p", f"image_out_topic:={namespace}/debug/objects_image/compressed"]
+    cmd += ["-p", f"markers_topic:={namespace}/debug/objects_markers"]
+    if params.get("use_sim_time"):
+        cmd += ["-p", "use_sim_time:=true"]
     return cmd
 
 
@@ -106,7 +147,21 @@ def _launch(context: LaunchContext) -> list[ExecuteProcess]:
     cwd = models / ULTRALYTICS_DIR
     if not cwd.is_dir():
         raise RuntimeError(f"{cwd} does not exist; run pixi run fetch-models")
-    return [vision_process(node_command(task, sim), cwd, delay, retries, models=models)]
+    processes = [vision_process(node_command(task, sim), cwd, delay, retries, models=models)]
+    if _bool("viz", LaunchConfiguration("viz").perform(context)):
+        processes.append(
+            ExecuteProcess(
+                cmd=viz_command(task, sim),
+                cwd=str(cwd),
+                name="walkie_vision_debug_viz",
+                output="screen",
+                emulate_tty=True,
+                respawn=True,
+                respawn_delay=delay,
+                respawn_max_retries=retries,
+            )
+        )
+    return processes
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -121,6 +176,9 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "respawn_max_retries", default_value="-1", description="How many restarts; -1 means no limit"
+            ),
+            DeclareLaunchArgument(
+                "viz", default_value="false", description="Also run the debug visualizer (walkie_vision.debug_viz)"
             ),
             OpaqueFunction(function=_launch),
         ]

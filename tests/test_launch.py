@@ -92,9 +92,50 @@ def test_every_parameter_file_in_the_command_exists(vision_launch):
 def test_the_launch_arguments(vision_launch):
     description = vision_launch.generate_launch_description()
     declared = {e.name: e.default_value for e in description.entities if isinstance(e, DeclareLaunchArgument)}
-    assert set(declared) == {"task", "sim", "respawn_delay", "respawn_max_retries"}
+    assert set(declared) == {"task", "sim", "respawn_delay", "respawn_max_retries", "viz"}
     defaults = {name: "".join(s.text for s in value) for name, value in declared.items()}
-    assert defaults == {"task": "hri", "sim": "false", "respawn_delay": "3.0", "respawn_max_retries": "-1"}
+    assert defaults == {
+        "task": "hri",
+        "sim": "false",
+        "respawn_delay": "3.0",
+        "respawn_max_retries": "-1",
+        "viz": "false",
+    }
+
+
+def test_the_visualizer_draws_the_sim_topics_under_the_sim_namespace(vision_launch):
+    cmd = vision_launch.viz_command("memory", True)
+    assert cmd[:5] == [sys.executable, "-P", "-m", "walkie_vision.debug_viz", "--ros-args"]
+    params = dict(cmd[i + 1].split(":=", 1) for i, arg in enumerate(cmd) if arg == "-p")
+    assert params == {
+        "objects_topic": "/walkie_vision/sim/objects",
+        "image_topic": "/zed_head/zed_node/rgb/color/rect/image",
+        "image_out_topic": "/walkie_vision/sim/debug/objects_image/compressed",
+        "markers_topic": "/walkie_vision/sim/debug/objects_markers",
+        "use_sim_time": "true",
+    }
+
+
+def test_the_visualizer_on_the_robot_uses_the_robot_topics_and_wall_time(vision_launch):
+    cmd = vision_launch.viz_command("hri", False)
+    params = dict(cmd[i + 1].split(":=", 1) for i, arg in enumerate(cmd) if arg == "-p")
+    assert params["objects_topic"] == "/walkie_vision/objects"
+    assert params["image_out_topic"] == "/walkie_vision/debug/objects_image/compressed"
+    assert params["markers_topic"] == "/walkie_vision/debug/objects_markers"
+    assert "use_sim_time" not in params
+
+
+def test_viz_adds_the_visualizer_process(vision_launch, tmp_path, monkeypatch):
+    (tmp_path / "models" / "ultralytics").mkdir(parents=True)
+    monkeypatch.setenv("WALKIE_VISION_MODELS", str(tmp_path / "models"))
+    context = LaunchContext()
+    context.launch_configurations.update(
+        task="memory", sim="true", respawn_delay="3.0", respawn_max_retries="-1", viz="true"
+    )
+    processes = vision_launch._launch(context)
+    assert len(processes) == 2
+    cmd = [perform_substitutions(context, part) for part in processes[1].cmd]
+    assert cmd == vision_launch.viz_command("memory", True)
 
 
 def test_a_relative_models_dir_reaches_the_node_as_an_absolute_path(vision_launch, tmp_path, monkeypatch):
@@ -103,7 +144,9 @@ def test_a_relative_models_dir_reaches_the_node_as_an_absolute_path(vision_launc
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("WALKIE_VISION_MODELS", "models")
     context = LaunchContext()
-    context.launch_configurations.update(task="hri", sim="false", respawn_delay="3.0", respawn_max_retries="-1")
+    context.launch_configurations.update(
+        task="hri", sim="false", respawn_delay="3.0", respawn_max_retries="-1", viz="false"
+    )
     [process] = vision_launch._launch(context)
     assert perform_substitutions(context, process.cwd) == str(tmp_path / "models" / "ultralytics")
     env = {perform_substitutions(context, k): perform_substitutions(context, v) for k, v in process.additional_env}
