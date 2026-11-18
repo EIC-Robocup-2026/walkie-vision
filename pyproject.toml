@@ -20,3 +20,144 @@ where = ["src"]
 testpaths = ["tests"]
 # ROS 2 ships pytest plugins (launch_testing, etc.) that are not needed here.
 addopts = "-p no:launch_testing -p no:launch_ros -p no:ament_copyright -p no:ament_flake8 -p no:ament_pep257 -p no:ament_xmllint -p no:ament_lint"
+
+# The package's import rules. tests/test_import_contracts.py checks them inside
+# pytest through import-linter's Python API, together with the direction of the
+# imports between top-level modules (LAYER_OF) and the __init__.py rule. A
+# module that moves or leaves the package is renamed or removed in every list
+# here in the same commit: import-linter fails on a module that does not exist.
+# Whether a module loads a model library when imported is not a contract,
+# because grimp also counts imports inside functions; tests/test_import_light.py
+# checks it at run time.
+[tool.importlinter]
+root_package = "walkie_vision"
+include_external_packages = true
+
+# The model code runs without ROS: checks, tools and tests load the models in
+# a plain Python process, and the node is the one place that turns their
+# output into messages. yolo is not listed yet: it imports image, which
+# imports sensor_msgs.
+[[tool.importlinter.contracts]]
+id = "model-code-knows-no-ros"
+name = "Model code imports no ROS package"
+type = "forbidden"
+source_modules = [
+    "walkie_vision.crop",
+    "walkie_vision.embeddings",
+    "walkie_vision.face",
+    "walkie_vision.fakes",
+    "walkie_vision.models",
+    "walkie_vision.providers",
+    "walkie_vision.reid",
+]
+forbidden_modules = [
+    "rclpy",
+    "sensor_msgs",
+    "std_msgs",
+    "builtin_interfaces",
+    "geometry_msgs",
+    "rcl_interfaces",
+    "tf2_msgs",
+    "visualization_msgs",
+    "vision_msgs",
+    "walkie_vision_msgs",
+]
+
+# The InsightFace files (SCRFD, ArcFace, the alignment) are vendored. Only the
+# face wrapper uses them, so a change to the vendored code touches one caller.
+# arcface imports face_align itself.
+[[tool.importlinter.contracts]]
+id = "insightface-wrapped-once"
+name = "The vendored InsightFace files are imported only by the face wrapper"
+type = "protected"
+as_packages = false
+protected_modules = [
+    "walkie_vision.face.arcface",
+    "walkie_vision.face.face_align",
+    "walkie_vision.face.scrfd",
+]
+allowed_importers = [
+    "walkie_vision.face.analysis",
+    "walkie_vision.face.arcface",
+    "walkie_vision.face.heads",
+]
+
+# The OSNet network from torchreid is vendored. Only the reid package's
+# loader uses it.
+[[tool.importlinter.contracts]]
+id = "torchreid-wrapped-once"
+name = "The vendored torchreid file is imported only by reid"
+type = "protected"
+as_packages = false
+protected_modules = ["walkie_vision.reid.osnet"]
+allowed_importers = ["walkie_vision.reid"]
+
+# Vendored code stays as its upstream wrote it, so it can be compared with
+# and updated from upstream: it imports nothing else from walkie_vision. The
+# face and reid packages cannot be named while the vendored files live inside
+# them, so their other modules are listed one by one.
+[[tool.importlinter.contracts]]
+id = "vendored-code-stands-alone"
+name = "Vendored code imports nothing else from walkie_vision"
+type = "forbidden"
+source_modules = [
+    "walkie_vision.face.arcface",
+    "walkie_vision.face.face_align",
+    "walkie_vision.face.scrfd",
+    "walkie_vision.reid.osnet",
+]
+forbidden_modules = [
+    "walkie_vision.convert",
+    "walkie_vision.crop",
+    "walkie_vision.debug_viz",
+    "walkie_vision.depth",
+    "walkie_vision.embeddings",
+    "walkie_vision.fake_publisher",
+    "walkie_vision.fakes",
+    "walkie_vision.image",
+    "walkie_vision.models",
+    "walkie_vision.node",
+    "walkie_vision.pipeline",
+    "walkie_vision.providers",
+    "walkie_vision.requests",
+    "walkie_vision.yolo",
+    "walkie_vision.face.analysis",
+    "walkie_vision.face.heads",
+    "walkie_vision.reid.identifier",
+]
+
+# The provider interfaces and the model file table sit at the bottom: every
+# other module may import them, and they import no other walkie_vision
+# module, so a provider can be read and tested on its own.
+[[tool.importlinter.contracts]]
+id = "bottom-imports-nothing-above"
+name = "providers and models import no other walkie_vision module"
+type = "forbidden"
+source_modules = [
+    "walkie_vision.models",
+    "walkie_vision.providers",
+]
+forbidden_modules = [
+    "walkie_vision.convert",
+    "walkie_vision.crop",
+    "walkie_vision.debug_viz",
+    "walkie_vision.depth",
+    "walkie_vision.embeddings",
+    "walkie_vision.face",
+    "walkie_vision.fake_publisher",
+    "walkie_vision.fakes",
+    "walkie_vision.image",
+    "walkie_vision.node",
+    "walkie_vision.pipeline",
+    "walkie_vision.reid",
+    "walkie_vision.requests",
+    "walkie_vision.yolo",
+]
+
+# Two modules of one package never import each other, directly or through
+# others: a cycle means neither can be understood or moved alone.
+[[tool.importlinter.contracts]]
+id = "no-sibling-cycles"
+name = "No import cycles between sibling modules"
+type = "acyclic_siblings"
+ancestors = ["walkie_vision"]

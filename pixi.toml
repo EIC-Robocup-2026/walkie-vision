@@ -106,6 +106,9 @@ huggingface-hub = ">=1.31.0,<2"
 # CLIP ViT-B/16 baseline. Load the OpenAI weights as "ViT-B-16-quickgelu"; the
 # plain "ViT-B-16" config uses GELU and does not match those weights.
 open-clip-torch = ">=3.3.0,<4"
+# The import rules in pyproject.toml's [tool.importlinter] section. They run
+# inside pytest, from tests/test_import_contracts.py, through its Python API.
+import-linter = "==2.16"
 
 # Every `pixi run` and `pixi shell` uses Zenoh, the agreed middleware for all
 # Walkie repositories, even when the calling shell exports another one. There
