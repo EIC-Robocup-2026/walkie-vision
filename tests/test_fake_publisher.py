@@ -35,7 +35,7 @@ from tf2_msgs.msg import TFMessage
 from walkie_vision_msgs.msg import ObjectDetectionArray
 
 from walkie_vision.convert import MAX_CLOUD_POINTS, bbox_to_box, check_object_detection_array
-from walkie_vision.crop import COLOR_NAMES
+from walkie_vision.crops.colour import COLOR_NAMES
 from walkie_vision.fake_publisher import (
     DEFAULT_SCENE,
     OBSERVATION_QOS,

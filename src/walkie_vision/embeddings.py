@@ -26,7 +26,8 @@ from typing import Any
 import cv2
 import numpy as np
 
-from . import boxes, crop
+from . import boxes
+from .crops import jpeg
 from .providers import CLIP_VIT_B16, Detection
 from .weights import CLIP_WEIGHTS, HUB_MODELS
 
@@ -48,7 +49,7 @@ CLIP_ARCHITECTURE = "ViT-B-16-quickgelu"
 CLIP_DIM = 512
 TEXT_TEMPLATE = "a photo of {}."
 
-# Colour recipe v1: RGB, in the order of crop.COLOR_NAMES. This is deterministic
+# Colour recipe v1: RGB, in the order of crops.colour.COLOR_NAMES. This is deterministic
 # plumbing, not colour constancy. Its accuracy has not been measured.
 PALETTE_RGB = (
     (0, 0, 0),
@@ -114,8 +115,8 @@ def padded_crop(image: np.ndarray, box: np.ndarray) -> np.ndarray:
 
 def encode_crop(pixels: np.ndarray) -> bytes:
     """Encode padded pixels as a JPEG, reduced to CROP_MAX_SIDE on the longest side, never enlarged."""
-    reduced, _, _ = crop.scale_down(pixels, CROP_MAX_SIDE)
-    return crop.encode_jpeg(reduced, crop.JPEG_QUALITY)
+    reduced, _, _ = jpeg.scale_down(pixels, CROP_MAX_SIDE)
+    return jpeg.encode_jpeg(reduced, jpeg.JPEG_QUALITY)
 
 
 def nearest_palette_indices(lab: np.ndarray, centres: np.ndarray = _PALETTE_LAB) -> np.ndarray:
@@ -139,7 +140,7 @@ def mask_color_shares(image: np.ndarray, mask: np.ndarray) -> np.ndarray | None:
     """The shares of the palette colours among a mask's pixels of a BGR image; None under MIN_COLOR_PIXELS.
 
     Uses the original mask and pixels: no padding, resizing or JPEG. OpenCV
-    converts float32 sRGB to CIELAB. The shares follow crop.COLOR_NAMES and sum
+    converts float32 sRGB to CIELAB. The shares follow crops.colour.COLOR_NAMES and sum
     to 1.
     """
     pixels = image[np.asarray(mask, dtype=bool)]

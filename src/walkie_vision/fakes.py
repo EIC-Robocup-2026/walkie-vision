@@ -11,7 +11,7 @@ such a name, so a fake's vectors cannot be stored next to a real model's.
 
 figure_pose() and paint_figure() make a synthetic person: the keypoints of
 a figure standing in a box, and its top and bottom painted in known
-colours, for the tests of walkie_vision.crop.
+colours, for the tests of walkie_vision.crops.person.
 """
 
 from __future__ import annotations

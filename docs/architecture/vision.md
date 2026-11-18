@@ -793,7 +793,7 @@ other people greyed and the colour shares of the person's top and bottom
 plans to use it to describe the first guest to the second guest. The crop
 is the "compressed snapshot on request" of walkie-agent-ros ADR-0028, so the
 agent never subscribes to the camera image. The pure code is in
-`walkie_vision.crop`, with no ROS and no model.
+`walkie_vision.crops`, with no ROS and no model.
 
 ### Serving
 
@@ -1247,7 +1247,7 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.embeddings`  | The object sampler, padded crops, colour recipe v1 and the interim CLIP provider (`ClipEmbedder`, an `Embedder`) |
 | `walkie_vision.requests`    | Bounded service work: the job, its one slot, the current image and the request checks ([Bounded services](#bounded-services)) |
 | `walkie_vision.pipeline`    | One image through every provider to the two arrays, with the score floors, the person dedupe (`dedupe_poses`) and the track id base. No ROS node |
-| `walkie_vision.crop`        | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. No ROS node and no model |
+| `walkie_vision.crops`       | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. No ROS node and no model |
 | `walkie_vision.node`        | The vision node: parameters, threads, publishing, health checks and `build_providers` |
 
 The node holds one provider for each model, and `pipeline` uses `convert`

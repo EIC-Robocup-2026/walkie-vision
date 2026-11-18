@@ -47,8 +47,9 @@ from std_msgs.msg import Header
 from tf2_msgs.msg import TFMessage
 from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray
 
-from . import convert, crop
+from . import convert
 from .boxes import pad_rect
+from .crops import colour, jpeg
 from .embeddings import CROP_MAX_SIDE, CROP_PADDING, MIN_COLOR_PIXELS, PALETTE_RGB
 from .fakes import hash_vector
 from .providers import FAKE_MODEL_PREFIX, Detection
@@ -267,8 +268,8 @@ def _parse_box(data: Any, index: int, classes: Sequence[str]) -> FakeBox:
     if label not in classes:
         raise ValueError(f"{where}.label {label!r} is not in classes")
     color = data.get("color")
-    if color is not None and color not in crop.COLOR_NAMES:
-        raise ValueError(f"{where}.color must be one of {list(crop.COLOR_NAMES)}, not {color!r}")
+    if color is not None and color not in colour.COLOR_NAMES:
+        raise ValueError(f"{where}.color must be one of {list(colour.COLOR_NAMES)}, not {color!r}")
     size = _vector(data["size"], 3, f"{where}.size")
     if np.any(size <= 0):
         raise ValueError(f"{where}.size must be above 0, not {size.tolist()}")
@@ -364,14 +365,14 @@ def _entry_depths(camera: FakeCamera, rays: np.ndarray, center: np.ndarray, size
 def _shares(color: str | None, pixels: int) -> np.ndarray | None:
     if color is None or pixels < MIN_COLOR_PIXELS:
         return None
-    return np.eye(len(crop.COLOR_NAMES))[crop.COLOR_NAMES.index(color)]
+    return np.eye(len(colour.COLOR_NAMES))[colour.COLOR_NAMES.index(color)]
 
 
 def _encode_crop(image: np.ndarray, bounds: np.ndarray) -> array.array:
     x1, y1, x2, y2 = pad_rect(bounds, CROP_PADDING, image.shape[1], image.shape[0])
-    pixels, _, _ = crop.scale_down(image[y1:y2, x1:x2], CROP_MAX_SIDE)
+    pixels, _, _ = jpeg.scale_down(image[y1:y2, x1:x2], CROP_MAX_SIDE)
     data = array.array("B")
-    data.frombytes(crop.encode_jpeg(pixels, crop.JPEG_QUALITY))
+    data.frombytes(jpeg.encode_jpeg(pixels, jpeg.JPEG_QUALITY))
     return data
 
 
@@ -398,7 +399,7 @@ def render(camera: FakeCamera, placed: Sequence[tuple[FakeBox, np.ndarray]]) -> 
         if box.color is None:
             image[mask] = _NO_COLOR_BGR
         else:
-            r, g, b = PALETTE_RGB[crop.COLOR_NAMES.index(box.color)]
+            r, g, b = PALETTE_RGB[colour.COLOR_NAMES.index(box.color)]
             image[mask] = (b, g, r)
     out = []
     for (box, _), mask in zip(placed, masks, strict=True):

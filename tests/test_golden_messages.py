@@ -40,7 +40,7 @@ from walkie_vision.convert import (
     pose_from_person_detection,
     vectors_from_response,
 )
-from walkie_vision.crop import CropStatus, crop_person
+from walkie_vision.crops.person import CropStatus, crop_person
 from walkie_vision.depth import RegisteredDepth
 from walkie_vision.fake_publisher import DEFAULT_SCENE, FakeStream, load_scene
 from walkie_vision.fakes import (

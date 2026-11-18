@@ -21,7 +21,7 @@ from std_msgs.msg import Header
 
 from walkie_vision import embeddings
 from walkie_vision.convert import bbox_to_box
-from walkie_vision.crop import COLOR_NAMES
+from walkie_vision.crops.colour import COLOR_NAMES
 from walkie_vision.embeddings import (
     CROP_MAX_SIDE,
     MIN_COLOR_PIXELS,

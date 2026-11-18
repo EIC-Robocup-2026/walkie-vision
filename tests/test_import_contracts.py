@@ -48,7 +48,7 @@ ROS_PACKAGE = re.compile(
 LAYER_OF = {
     "walkie_vision.boxes": 5,
     "walkie_vision.convert": 3,
-    "walkie_vision.crop": 3,
+    "walkie_vision.crops": 3,
     "walkie_vision.debug_viz": 0,
     "walkie_vision.depth": 3,
     "walkie_vision.embeddings": 3,

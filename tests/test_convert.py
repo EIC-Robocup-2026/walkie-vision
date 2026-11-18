@@ -12,7 +12,6 @@ from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray, PersonDetection, PersonDetectionArray
 from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
 
-from walkie_vision import crop
 from walkie_vision.convert import (
     MAX_CLOUD_POINTS,
     MIN_CLOUD_POINTS,
@@ -33,7 +32,9 @@ from walkie_vision.convert import (
     unit_vector,
     vectors_from_response,
 )
-from walkie_vision.crop import COLOR_NAMES, crop_person
+from walkie_vision.crops import person
+from walkie_vision.crops.colour import COLOR_NAMES
+from walkie_vision.crops.person import crop_person
 from walkie_vision.fakes import FakeEmbedder, FakeObjectDetector, figure_pose, paint_figure
 from walkie_vision.providers import CLIP_VIT_B16, Detection, Face, PersonPose
 
@@ -896,7 +897,7 @@ def test_an_occluded_person_crop_gives_the_person_and_the_overlaps():
 def test_a_person_crop_without_a_crop(track_id, status, monkeypatch):
     image, people = _crop_scene()
     # Track 8 is 750 px tall: too small only when the floor is above that.
-    monkeypatch.setattr(crop, "MIN_BOX_HEIGHT_PX", 800.0)
+    monkeypatch.setattr(person, "MIN_BOX_HEIGHT_PX", 800.0)
     found = crop_person(image, [pose_from_person_detection(p) for p in people.people], track_id)
     response = fill_person_crop_response(GetPersonCrop.Response(), people, found)
     assert response.status == status and response.message

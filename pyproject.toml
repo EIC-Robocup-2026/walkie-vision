@@ -42,7 +42,7 @@ name = "Model code imports no ROS package"
 type = "forbidden"
 source_modules = [
     "walkie_vision.boxes",
-    "walkie_vision.crop",
+    "walkie_vision.crops",
     "walkie_vision.embeddings",
     "walkie_vision.errors",
     "walkie_vision.face",
@@ -111,7 +111,7 @@ source_modules = [
 forbidden_modules = [
     "walkie_vision.boxes",
     "walkie_vision.convert",
-    "walkie_vision.crop",
+    "walkie_vision.crops",
     "walkie_vision.debug_viz",
     "walkie_vision.depth",
     "walkie_vision.embeddings",
@@ -146,7 +146,7 @@ source_modules = [
 ]
 forbidden_modules = [
     "walkie_vision.convert",
-    "walkie_vision.crop",
+    "walkie_vision.crops",
     "walkie_vision.debug_viz",
     "walkie_vision.depth",
     "walkie_vision.embeddings",

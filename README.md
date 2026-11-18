@@ -80,7 +80,7 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `src/walkie_vision/depth.py`        | Colour and registered depth, paired within bounds; object points and view quality. Off by default |
 | `src/walkie_vision/providers.py`    | The interfaces every model implements, and their result types    |
 | `src/walkie_vision/convert.py`      | Model results to messages, with checks                           |
-| `src/walkie_vision/crop.py`         | One person's crop, mask and colour shares for `GetPersonCrop`    |
+| `src/walkie_vision/crops/`          | One person's crop, mask and colour shares for `GetPersonCrop`    |
 | `src/walkie_vision/fakes.py`        | Fake models for tests                                            |
 | `src/walkie_vision/yolo.py`         | YOLOE-26 and YOLO26 pose with their trackers, and YOLOE-26 with no tracker for `DetectObjects` |
 | `src/walkie_vision/face/`           | SCRFD and ArcFace on ONNX Runtime (vendored InsightFace code, MIT) |

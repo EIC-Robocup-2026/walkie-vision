@@ -1,4 +1,4 @@
-"""walkie_vision.crop on synthetic figures: the gates, the mask and the colour shares. No ROS graph.
+"""walkie_vision.crops.person on synthetic figures: the gates, the mask and the colour shares. No ROS graph.
 
 The guest stands in GUEST, 320 px tall in a 300 x 400 image. Other people
 stand behind or in front: a box that ends lower in the image is nearer.
@@ -12,8 +12,10 @@ import numpy as np
 import pytest
 from walkie_vision_msgs.srv import GetPersonCrop
 
-from walkie_vision import boxes, crop
-from walkie_vision.crop import COLOR_NAMES, MASK_GREY, CropStatus, crop_person
+from walkie_vision import boxes
+from walkie_vision.crops import person
+from walkie_vision.crops.colour import COLOR_NAMES
+from walkie_vision.crops.person import MASK_GREY, CropStatus, crop_person
 from walkie_vision.fakes import figure_pose, paint_figure
 from walkie_vision.providers import COCO_KEYPOINTS
 
@@ -68,13 +70,6 @@ def test_the_statuses_are_the_response_constants():
     assert {k: int(v) for k, v in constants.items()} == {s.name: s.value for s in CropStatus}
     for status in CropStatus:
         assert getattr(GetPersonCrop.Response, status.name) == status.value
-
-
-def test_the_colour_names_are_the_ones_the_srv_lists():
-    comment = SRV.read_text().split("# The colour names", 1)[1].split("string[] color_names", 1)[0]
-    listed = " ".join(line.lstrip("# ") for line in comment.splitlines()).split("in order:", 1)[1]
-    names = [n.strip(" .") for n in re.split(r",| and ", listed) if n.strip(" .")]
-    assert tuple(names) == COLOR_NAMES
 
 
 # --- the gates ----------------------------------------------------------------
@@ -133,7 +128,7 @@ def test_a_nearer_person_over_the_legs_only_occludes_by_iou():
     nearer = figure_pose((60.0, 220.0, 180.0, 380.0), track_id=4)  # ends 20 px lower
     found = _crop(image, [guest, nearer])
     assert found.status == CropStatus.OCCLUDED
-    assert found.torso_cover == 0.0 and found.max_overlap > crop.OCCLUDED_IOU
+    assert found.torso_cover == 0.0 and found.max_overlap > person.OCCLUDED_IOU
     # 120 x 140 shared, out of 120 x 320 + 120 x 160 - 16800.
     assert found.max_overlap == pytest.approx(16800 / 40800)
 
@@ -144,7 +139,7 @@ def test_a_smaller_nearer_person_over_the_torso_occludes():
     child = figure_pose((100.0, 150.0, 140.0, 380.0), track_id=4)
     found = _crop(image, [guest, child])
     assert found.status == CropStatus.OCCLUDED
-    assert found.max_overlap < crop.OCCLUDED_IOU < found.torso_cover
+    assert found.max_overlap < person.OCCLUDED_IOU < found.torso_cover
     # The torso box is x 90 to 150 and y 104 to 206.4; the child covers 40 x 56.4 of it.
     assert found.torso_cover == pytest.approx(40 * 56.4 / (60 * 102.4))
 
@@ -156,7 +151,7 @@ def test_a_person_behind_over_40_percent_of_the_torso_is_masked_and_not_occludin
     guest = figure_pose(GUEST, track_id=3)
     paint_figure(image, guest, RED, BLUE)
     # The box covers x 126 to 150 of the torso box's x 90 to 150, at its full height.
-    assert boxes.box_cover(behind.box, crop.torso_box(guest)) == pytest.approx(0.4)
+    assert boxes.box_cover(behind.box, person.torso_box(guest)) == pytest.approx(0.4)
     found = _crop(image, [behind, guest])
     assert found.status == CropStatus.OK
     assert found.index == 1
@@ -287,31 +282,6 @@ def test_min_keypoint_score_gates_both_regions():
     assert found.top_shares is None and found.bottom_shares is None
 
 
-@pytest.mark.parametrize(
-    "bgr, name",
-    [
-        ((0, 0, 0), "black"),
-        ((255, 255, 255), "white"),
-        ((128, 128, 128), "grey"),
-        ((0, 0, 255), "red"),
-        ((0, 128, 255), "orange"),
-        ((0, 255, 255), "yellow"),
-        ((0, 255, 0), "green"),
-        ((255, 0, 0), "blue"),
-        ((255, 0, 128), "purple"),
-        ((128, 0, 128), "purple"),
-        ((180, 105, 255), "pink"),
-        ((203, 192, 255), "pink"),
-        ((19, 69, 139), "brown"),
-        ((196, 228, 255), "beige"),
-    ],
-)
-def test_colour_bins(bgr, name):
-    shares = crop.color_shares(np.array([bgr], dtype=np.uint8))
-    assert COLOR_NAMES[int(np.argmax(shares))] == name
-    assert shares.max() == 1.0
-
-
 # --- the crop -----------------------------------------------------------------
 
 
@@ -365,7 +335,7 @@ def test_the_crop_keeps_no_frame():
 )
 def test_is_nearer(other_box, own_box, own_scores, nearer):
     own = figure_pose(own_box, keypoint_score=own_scores)
-    assert crop.is_nearer(figure_pose(other_box), own, H, min_keypoint_score=0.5) == nearer
+    assert person.is_nearer(figure_pose(other_box), own, H, min_keypoint_score=0.5) == nearer
 
 
 @pytest.mark.parametrize(

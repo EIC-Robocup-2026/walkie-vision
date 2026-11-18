@@ -35,7 +35,8 @@ from walkie_vision_msgs.msg import (
 )
 from walkie_vision_msgs.srv import DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
 
-from .crop import COLOR_NAMES, CropStatus, PersonCrop
+from .crops.colour import COLOR_NAMES
+from .crops.person import CropStatus, PersonCrop
 from .providers import CLIP_VIT_B16, Detection, Embedder, Face, PersonPose
 
 MAX_CLOUD_POINTS = 2000
@@ -444,7 +445,7 @@ def pose_from_person_detection(msg: PersonDetection) -> PersonPose:
 def fill_person_crop_response(
     response: GetPersonCrop.Response, people: PersonDetectionArray, found: PersonCrop
 ) -> GetPersonCrop.Response:
-    """Fill a GetPersonCrop response from walkie_vision.crop.crop_person()'s result.
+    """Fill a GetPersonCrop response from walkie_vision.crops.person.crop_person()'s result.
 
     people is the published array of the image that found came from. The
     header is set for every status that found can have; the person and the

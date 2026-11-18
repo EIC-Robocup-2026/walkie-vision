@@ -37,7 +37,7 @@ from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
 
-from walkie_vision import crop, embeddings, errors, requests
+from walkie_vision import embeddings, errors, requests
 from walkie_vision import node as node_module
 from walkie_vision import pipeline as pipeline_module
 from walkie_vision.convert import (
@@ -48,6 +48,7 @@ from walkie_vision.convert import (
     embed_text_failure,
     vectors_from_response,
 )
+from walkie_vision.crops import colour, person
 from walkie_vision.depth import RgbdBuffer, frame_laplacian, view_quality
 from walkie_vision.fakes import (
     FakeEmbedder,
@@ -979,7 +980,7 @@ class PosesByImage:
 @pytest.fixture
 def small_boxes(monkeypatch):
     # The test images are 48 px tall; a real crop needs a 160 px box.
-    monkeypatch.setattr(crop, "MIN_BOX_HEIGHT_PX", 10.0)
+    monkeypatch.setattr(person, "MIN_BOX_HEIGHT_PX", 10.0)
 
 
 def test_the_crop_service_has_its_own_callback_group(harness):
@@ -1013,10 +1014,10 @@ def test_a_person_crop_comes_from_the_next_image(harness, small_boxes):
     decoded = cv2.imdecode(np.frombuffer(bytes(response.crop.data), dtype=np.uint8), cv2.IMREAD_COLOR)
     assert decoded.shape == (48, 44, 3)
     assert len(response.crop_keypoints) == 34 and len(response.masked_boxes) == 0
-    assert list(response.color_names) == list(crop.COLOR_NAMES)
+    assert list(response.color_names) == list(colour.COLOR_NAMES)
     # Image 2 is filled with 2: black.
-    assert response.top_shares[crop.COLOR_NAMES.index("black")] == pytest.approx(1.0)
-    assert response.bottom_shares[crop.COLOR_NAMES.index("black")] == pytest.approx(1.0)
+    assert response.top_shares[colour.COLOR_NAMES.index("black")] == pytest.approx(1.0)
+    assert response.bottom_shares[colour.COLOR_NAMES.index("black")] == pytest.approx(1.0)
 
 
 def test_a_request_during_an_image_is_answered_from_that_image(harness, small_boxes):

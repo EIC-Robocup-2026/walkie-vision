@@ -44,24 +44,10 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from .boxes import Rect, box_area, box_cover, box_iou, intersect_rects, outer_rect, pad_rect, subtract_rect
-from .providers import COCO_KEYPOINTS, PersonPose
-
-COLOR_NAMES = (
-    "black",
-    "white",
-    "grey",
-    "red",
-    "orange",
-    "yellow",
-    "green",
-    "blue",
-    "purple",
-    "pink",
-    "brown",
-    "beige",
-)
-"""The colour names of the shares, in GetPersonCrop.srv's order: the enum answers for a colour, without unknown."""
+from ..boxes import Rect, box_area, box_cover, box_iou, intersect_rects, outer_rect, pad_rect, subtract_rect
+from ..providers import COCO_KEYPOINTS, PersonPose
+from .colour import color_shares
+from .jpeg import encode_jpeg, scale_down
 
 MIN_BOX_HEIGHT_PX = 160.0
 """A box under this many pixels tall is TOO_SMALL."""
@@ -79,25 +65,12 @@ MIN_REGION_PIXELS = 50
 """A region with fewer pixels left gets no shares: a side view can make its polygon a sliver."""
 MASK_GREY = 128
 """The value of every channel of a greyed pixel."""
-JPEG_QUALITY = 90
 
 _KEYPOINT = {name: i for i, name in enumerate(COCO_KEYPOINTS)}
 TORSO = tuple(_KEYPOINT[n] for n in ("left_shoulder", "right_shoulder", "right_hip", "left_hip"))
 """The torso polygon's corners, in order around it."""
 THIGHS = tuple(_KEYPOINT[n] for n in ("left_hip", "right_hip", "right_knee", "left_knee"))
 """The thighs polygon's corners, in order around it."""
-
-# The colour bins, on OpenCV's HSV with the hue in degrees and saturation
-# and value from 0 to 1. Black and the greys come first, then the hue
-# families, split by saturation and value into pale (beige, pink) and dark
-# (brown, purple) shades.
-_BLACK_MAX_V = 0.22
-_GREY_MAX_S = 0.18
-_WHITE_MIN_V = 0.75
-_PALE_MAX_S = 0.45
-_PALE_MIN_V = 0.60
-_BROWN_MAX_V = 0.65
-_DARK_PINK_MAX_V = 0.55
 
 
 class CropStatus(enum.IntEnum):
@@ -247,52 +220,6 @@ def polygon_mask(polygon: np.ndarray, width: int, height: int) -> tuple[np.ndarr
     return out, total
 
 
-def color_indices(pixels: np.ndarray) -> np.ndarray:
-    """The index in COLOR_NAMES of each pixel of a uint8 BGR array, flattened."""
-    bgr = np.ascontiguousarray(pixels, dtype=np.uint8).reshape(-1, 1, 3)
-    if bgr.shape[0] == 0:
-        return np.zeros(0, dtype=np.intp)
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).reshape(-1, 3).astype(np.float64)
-    h, s, v = hsv[:, 0] * 2.0, hsv[:, 1] / 255.0, hsv[:, 2] / 255.0
-    red = (h < 15) | (h >= 345)
-    orange = (h >= 15) & (h < 45)
-    yellow = (h >= 45) & (h < 70)
-    green = (h >= 70) & (h < 165)
-    blue = (h >= 165) & (h < 260)
-    purple = (h >= 260) & (h < 300)
-    magenta = (h >= 300) & (h < 345)
-    pale = (s < _PALE_MAX_S) & (v >= _PALE_MIN_V)
-    dark = v < _BROWN_MAX_V
-    index = {name: i for i, name in enumerate(COLOR_NAMES)}
-    # np.select takes the first condition that holds.
-    rules = [
-        (v < _BLACK_MAX_V, "black"),
-        ((s < _GREY_MAX_S) & (v >= _WHITE_MIN_V), "white"),
-        (s < _GREY_MAX_S, "grey"),
-        (red & pale, "pink"),
-        (red, "red"),
-        (orange & dark, "brown"),
-        (orange & (s < _PALE_MAX_S), "beige"),
-        (orange, "orange"),
-        (yellow & (s < _PALE_MAX_S), "beige"),
-        (yellow & dark, "brown"),
-        (yellow, "yellow"),
-        (green, "green"),
-        (blue, "blue"),
-        (purple, "purple"),
-        (magenta & (v < _DARK_PINK_MAX_V), "purple"),
-    ]
-    return np.select([c for c, _ in rules], [index[n] for _, n in rules], default=index["pink"])
-
-
-def color_shares(pixels: np.ndarray) -> np.ndarray:
-    """The share of each colour in COLOR_NAMES among a non-empty set of uint8 BGR pixels; the shares sum to 1."""
-    indices = color_indices(pixels)
-    if indices.size == 0:
-        raise ValueError("no pixels to count")
-    return np.bincount(indices, minlength=len(COLOR_NAMES)).astype(np.float64) / indices.size
-
-
 def region_colors(
     pixels: np.ndarray, polygon: np.ndarray, box: Rect, masked: Sequence[Rect]
 ) -> tuple[np.ndarray | None, float]:
@@ -314,26 +241,6 @@ def region_colors(
     if total == 0 or count < MIN_REGION_PIXELS:
         return None, 0.0
     return color_shares(pixels[region]), count / total
-
-
-def scale_down(pixels: np.ndarray, max_side: int) -> tuple[np.ndarray, float, float]:
-    """Scale an image so that its longer side is at most max_side. Returns it with the x and y scales."""
-    height, width = pixels.shape[:2]
-    longest = max(height, width)
-    if longest <= max_side:
-        return pixels, 1.0, 1.0
-    scale = max_side / longest
-    new_width, new_height = max(1, round(width * scale)), max(1, round(height * scale))
-    out = cv2.resize(pixels, (new_width, new_height), interpolation=cv2.INTER_AREA)
-    return out, new_width / width, new_height / height
-
-
-def encode_jpeg(pixels: np.ndarray, quality: int = JPEG_QUALITY) -> bytes:
-    """Encode a uint8 BGR image as a JPEG."""
-    ok, data = cv2.imencode(".jpg", pixels, [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
-    if not ok:
-        raise ValueError(f"OpenCV could not encode a {pixels.shape} image as a JPEG")
-    return data.tobytes()
 
 
 def crop_person(

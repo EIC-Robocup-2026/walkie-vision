@@ -51,7 +51,7 @@ from std_msgs.msg import ColorRGBA, Header
 from visualization_msgs.msg import Marker, MarkerArray
 from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray
 
-from .crop import encode_jpeg
+from .crops.jpeg import encode_jpeg
 from .image import image_to_bgr
 
 NODE_NAME = "walkie_vision_debug_viz"

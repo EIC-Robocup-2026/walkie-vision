@@ -79,6 +79,13 @@ REMOVED = re.compile(
             r"|pad_rect|intersect_rects|subtract_rect|_area|_overlap_area)\b",
             r"\bimage(_module)?[.:]resize_mask\b",
             r"from (walkie_vision\.|\.+)image import [^\n]*\bresize_mask\b",
+            # The person crop left walkie_vision.crop for the walkie_vision.crops package:
+            # crops.person, with the colour names and bins in crops.colour and the JPEG
+            # encoding in crops.jpeg. crops, crop_person and the word crop are fine.
+            r"walkie_vision[./]crop\b",
+            r"from walkie_vision import [^\n]*\bcrop\b",
+            r"from \.+crop import",
+            r"from \.+ import [^\n]*\bcrop\b",
         ]
     )
 )
@@ -102,10 +109,33 @@ LEFT_CROP = frozenset(
         "_overlap_area",
     }
 )
-# The names that left crop.py and that it no longer uses: it does not even import them.
+# The names that left crop.py and that its successor, crops/person.py, no longer
+# uses: it does not even import them.
 UNUSED_IN_CROP = frozenset({"pad_box", "_area", "_overlap_area"})
 IMAGE = "walkie_vision.image"
 LEFT_IMAGE = frozenset({"resize_mask"})
+# crop.py became crops/person.py; the colour names and bins left it for
+# crops/colour.py, and the JPEG encoding for crops/jpeg.py.
+PERSON_CROP = "walkie_vision.crops.person"
+LEFT_PERSON_CROP = frozenset(
+    {
+        "COLOR_NAMES",
+        "_BLACK_MAX_V",
+        "_GREY_MAX_S",
+        "_WHITE_MIN_V",
+        "_PALE_MAX_S",
+        "_PALE_MIN_V",
+        "_BROWN_MAX_V",
+        "_DARK_PINK_MAX_V",
+        "color_indices",
+        "color_shares",
+        "JPEG_QUALITY",
+        "scale_down",
+        "encode_jpeg",
+    }
+)
+# The ones crops/person.py no longer uses: it does not even import them.
+UNUSED_IN_PERSON_CROP = LEFT_PERSON_CROP - {"color_shares", "scale_down", "encode_jpeg"}
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -387,18 +417,49 @@ def test_no_code_imports_the_model_file_table_from_models():
 
 def test_no_code_takes_the_box_helpers_from_crop_or_the_mask_resize_from_image():
     code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
-    assert {PACKAGE_DIR / "crop.py", PACKAGE_DIR / "yolo.py", ROOT / "tests" / "test_crop.py"} <= set(code)
+    person, person_tests = PACKAGE_DIR / "crops" / "person.py", ROOT / "tests" / "test_crops_person.py"
+    assert {person, PACKAGE_DIR / "yolo.py", person_tests} <= set(code)
+    # crop.py is crops/person.py now: neither the old module nor its successor serves them.
     assert [hit for file in code for hit in _reads_a_name_that_left(file, CROP, LEFT_CROP)] == []
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, PERSON_CROP, LEFT_CROP)] == []
     assert [hit for file in code for hit in _reads_a_name_that_left(file, IMAGE, LEFT_IMAGE)] == []
 
 
 def test_crop_and_image_do_not_define_the_box_helpers_or_the_mask_resize_again():
     assert (PACKAGE_DIR / "boxes.py").is_file()
-    # crop.py imports the helpers it still uses from boxes, but defines none of them,
-    # and does not import the ones it no longer uses. image.py uses none.
-    assert _binds_one_of(PACKAGE_DIR / "crop.py", LEFT_CROP, imports=False) == []
-    assert _binds_one_of(PACKAGE_DIR / "crop.py", UNUSED_IN_CROP) == []
+    # crops/person.py (crop.py until the crops package) imports the helpers it still
+    # uses from boxes, but defines none of them, and does not import the ones it no
+    # longer uses. image.py uses none.
+    assert _binds_one_of(PACKAGE_DIR / "crops" / "person.py", LEFT_CROP, imports=False) == []
+    assert _binds_one_of(PACKAGE_DIR / "crops" / "person.py", UNUSED_IN_CROP) == []
     assert _binds_one_of(PACKAGE_DIR / "image.py", LEFT_IMAGE) == []
+
+
+def test_the_person_crop_did_not_come_back_to_crop():
+    for module in ("__init__", "person", "colour", "jpeg"):
+        assert (PACKAGE_DIR / "crops" / f"{module}.py").is_file()
+    assert _old_homes(SRC, CROP) == []
+
+
+def test_no_code_imports_the_person_crop_from_crop():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {PACKAGE_DIR / "node.py", PACKAGE_DIR / "convert.py", ROOT / "tests" / "test_node.py"} <= set(code)
+    assert [hit for file in code for hit in _imports_a_module_that_left(file, CROP)] == []
+
+
+def test_no_code_takes_the_colour_or_jpeg_names_from_the_person_crop():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {PACKAGE_DIR / "node.py", PACKAGE_DIR / "fake_publisher.py", ROOT / "tests" / "test_node.py"} <= set(code)
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, PERSON_CROP, LEFT_PERSON_CROP)] == []
+
+
+def test_the_person_crop_does_not_define_the_colour_or_jpeg_names_again():
+    # crops/person.py imports color_shares, scale_down and encode_jpeg, which it
+    # uses, but defines none of the names that left, and imports none of the others:
+    # COLOR_NAMES stays one literal assignment, in crops/colour.py.
+    person = PACKAGE_DIR / "crops" / "person.py"
+    assert _binds_one_of(person, LEFT_PERSON_CROP, imports=False) == []
+    assert _binds_one_of(person, UNUSED_IN_PERSON_CROP) == []
 
 
 def test_the_tree_check_would_catch_a_module_imported_from_its_old_home(tmp_path, monkeypatch):
@@ -482,7 +543,7 @@ def test_the_sweep_would_catch_the_model_file_table_at_its_old_home(tmp_path):
         tmp_path / "good.py",
         "from walkie_vision.weights import ULTRALYTICS_DIR, models_dir\n"
         "from walkie_vision import embeddings, weights\n"
-        "from . import convert, crop, requests\n"
+        "from . import convert, crops, requests\n"
         "from .. import models_dir\n"
         "from .weights import CLIP_WEIGHTS, HUB_MODELS\n"
         'cmd = "python -m walkie_vision.weights"\n'
@@ -663,17 +724,18 @@ def test_the_sweep_would_catch_the_box_helpers_and_the_mask_resize_at_their_old_
         "walkie_vision.image:resize_mask keeps the mask at an equal size\n",
     )
     assert len(_mentions([bad], REMOVED)) == 12
-    # The new home, the names that stay in crop and image, longer names and prose are fine.
+    # The new home, the names that stay with the person crop and in image, longer
+    # names and prose are fine.
     good = _write(
         tmp_path / "good.py",
         "from walkie_vision.boxes import Rect, box_area, pad_rect, resize_mask\n"
         "from .boxes import box_cover, box_iou, intersect_rects, outer_rect, subtract_rect\n"
-        "from walkie_vision import boxes, crop, image\n"
-        "from walkie_vision.crop import COLOR_NAMES, MASK_GREY, CropStatus, crop_person\n"
+        "from walkie_vision import boxes, crops, image\n"
+        "from walkie_vision.crops.person import MASK_GREY, CropStatus, crop_person\n"
         "from .image import calibration_problem, camera_info_problem\n"
         "x1, y1, x2, y2 = boxes.pad_rect(box, CROP_PADDING, width, height)\n"
-        "assert boxes.box_cover(behind.box, crop.torso_box(guest)) == pytest.approx(0.4)\n"
-        "reduced, _, _ = crop.scale_down(pixels, CROP_MAX_SIDE)\n"
+        "assert boxes.box_cover(behind.box, person.torso_box(guest)) == pytest.approx(0.4)\n"
+        "reduced, _, _ = jpeg.scale_down(pixels, CROP_MAX_SIDE)\n"
         "person_crop.box_iou, crop.box_iou_floor, crop.Rects\n"
         "image.resize_masks(masks), image.shape[:2]\n"
         "Each mask is resized with resize_mask, and each box padded with pad_rect.\n",
@@ -738,3 +800,106 @@ def test_the_tree_check_would_catch_a_box_helper_or_the_mask_resize_at_its_old_h
     )
     assert _reads_a_name_that_left(good, CROP, LEFT_CROP) == []
     assert _reads_a_name_that_left(good, IMAGE, LEFT_IMAGE) == []
+
+
+def test_the_sweep_would_catch_the_person_crop_at_its_old_home(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision.crop import COLOR_NAMES, crop_person\n"
+        "import walkie_vision.crop\n"
+        "from walkie_vision import boxes, crop\n"
+        "from walkie_vision import crop as person_crop\n"
+        "from . import convert, crop, requests\n"
+        "from .crop import CropStatus\n"
+        "from ..crop import encode_jpeg\n"
+        "| `src/walkie_vision/crop.py` | One person's crop, mask and colour shares |\n"
+        "The pure code is in `walkie_vision.crop`, with no ROS and no model.\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 9
+    # The new package and its modules, crop_person, the crop fields of the messages
+    # and the word crop are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from walkie_vision.crops.person import CropStatus, crop_person\n"
+        "from walkie_vision.crops import colour, person\n"
+        "from walkie_vision import boxes, crops\n"
+        "from . import convert, crops, requests\n"
+        "from .crops.jpeg import encode_jpeg\n"
+        "from ..crops import colour\n"
+        "| `src/walkie_vision/crops/` | One person's crop, mask and colour shares |\n"
+        "found = person.crop_person(image, people, track_id)\n"
+        "assert det.crop.format == 'jpeg' and len(response.crop.data) > 0\n"
+        "A crop of each sampled object, from the crop service.\n",
+    )
+    assert _mentions([good], REMOVED) == []
+
+
+def test_the_tree_check_would_catch_the_person_crop_or_its_names_at_their_old_homes(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    # The module that left: crop, in any spelling of an import.
+    caller = _write(
+        tmp_path / "src" / "walkie_vision" / "services" / "get_person_crop.py",
+        "from .. import (\n"
+        "    convert,\n"
+        "    crop,\n"
+        ")\n"
+        "from ..crop import CropStatus\n"
+        "import walkie_vision.crop as person_crop\n",
+    )
+    assert _imports_a_module_that_left(caller, CROP) == [
+        "get_person_crop.py:1: imports walkie_vision.crop",
+        "get_person_crop.py:5: imports from walkie_vision.crop",
+        "get_person_crop.py:6: imports walkie_vision.crop",
+    ]
+    # The colour and JPEG names, taken from the person crop under any name.
+    reader = _write(
+        tmp_path / "src" / "walkie_vision" / "convert.py",
+        "from .crops import person\n"
+        "from walkie_vision.crops import person as person_crop\n"
+        "from .crops.person import (\n"
+        "    COLOR_NAMES,\n"
+        "    CropStatus,\n"
+        ")\n"
+        "a = person.encode_jpeg(pixels, person_crop.JPEG_QUALITY)\n"
+        'monkeypatch.setattr(person, "color_shares", fake)\n',
+    )
+    assert _reads_a_name_that_left(reader, PERSON_CROP, LEFT_PERSON_CROP) == [
+        "convert.py:3: imports COLOR_NAMES",
+        "convert.py:7: reads person.encode_jpeg",
+        "convert.py:7: reads person_crop.JPEG_QUALITY",
+        "convert.py:8: names color_shares",
+    ]
+    # A person crop that copies COLOR_NAMES (the alias walkie-database cannot read),
+    # or imports a name it no longer uses, puts it back at its old home.
+    copy = _write(
+        tmp_path / "person.py",
+        "from . import colour\n"
+        "from .colour import COLOR_NAMES, color_shares\n"
+        "from .jpeg import encode_jpeg as encode_jpeg\n"
+        "COLOR_NAMES = colour.COLOR_NAMES\n"
+        "def scale_down(pixels, max_side): ...\n",
+    )
+    assert _binds_one_of(copy, LEFT_PERSON_CROP, imports=False) == [
+        "person.py:3: binds encode_jpeg",
+        "person.py:4: binds COLOR_NAMES",
+        "person.py:5: binds scale_down",
+    ]
+    assert _binds_one_of(copy, UNUSED_IN_PERSON_CROP) == [
+        "person.py:2: binds COLOR_NAMES",
+        "person.py:4: binds COLOR_NAMES",
+    ]
+    # The new homes, the package and the names that stay with the person crop are fine.
+    good = _write(
+        tmp_path / "src" / "walkie_vision" / "node.py",
+        "from . import crops\n"
+        "from .crops import colour, jpeg, person\n"
+        "from .crops.colour import COLOR_NAMES\n"
+        "from .crops.person import CropStatus, crop_person\n"
+        "import walkie_vision.crops.person\n"
+        "a = person.check_options(0.1, 512, 0.5)\n"
+        "b = jpeg.encode_jpeg(pixels, jpeg.JPEG_QUALITY)\n"
+        "c = colour.COLOR_NAMES.index('black')\n"
+        'monkeypatch.setattr(person, "MIN_BOX_HEIGHT_PX", 10.0)\n',
+    )
+    assert _imports_a_module_that_left(good, CROP) == []
+    assert _reads_a_name_that_left(good, PERSON_CROP, LEFT_PERSON_CROP) == []

@@ -37,7 +37,7 @@ Threads:
 - One worker thread takes the newest image, runs walkie_vision.pipeline on
   it and publishes the two arrays. It is the only thread that touches a
   model. When a GetPersonCrop request waits, the worker answers it from
-  that image and its people (walkie_vision.crop), and then drops both.
+  that image and its people (walkie_vision.crops.person), and then drops both.
   Between images it runs the service job, and a job wakes it with no image.
   The slot stays taken until the worker has also processed the newest image
   after the job, so requests cannot stop the stream.
@@ -85,8 +85,9 @@ from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
 
-from . import convert, crop, requests
-from .crop import CropStatus
+from . import convert, requests
+from .crops import person
+from .crops.person import CropStatus
 from .depth import DepthRefused, RegisteredDepth, RgbdBuffer, read_registered_depth, stamp_ns
 from .errors import StartupError
 from .image import camera_info_problem, image_to_bgr
@@ -473,7 +474,7 @@ def crop_request_problem(request: GetPersonCrop.Request) -> str | None:
     if not (math.isfinite(timeout) and 0.0 < timeout <= MAX_CROP_TIMEOUT_S):
         return f"timeout_s must be more than 0 and at most {MAX_CROP_TIMEOUT_S:g}, not {timeout}"
     try:
-        crop.check_options(float(request.padding), int(request.max_side), float(request.min_keypoint_score))
+        person.check_options(float(request.padding), int(request.max_side), float(request.min_keypoint_score))
     except ValueError as e:
         return str(e)
     return None
@@ -1503,7 +1504,7 @@ class VisionNode(Node):
         """
         request = job.request
         try:
-            found = crop.crop_person(
+            found = person.crop_person(
                 image,
                 [convert.pose_from_person_detection(p) for p in people.people],
                 int(request.track_id),

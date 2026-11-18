@@ -146,7 +146,7 @@ def literal_definitions(package_dir: Path, name: str) -> list[tuple[Path, Any]]:
     A copy of the search in walkie-database's module_constant: every Assign and
     AnnAssign with a value, in any .py file, its value read with
     ast.literal_eval. A value that is not a literal (an alias such as
-    `COLOR_NAMES = crop.COLOR_NAMES`, or a computed tuple) raises there; here it
+    `COLOR_NAMES = colour.COLOR_NAMES`, or a computed tuple) raises there; here it
     fails the test with the file and line.
     """
     found = []
