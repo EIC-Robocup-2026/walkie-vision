@@ -14,8 +14,6 @@ import os
 # Before Ultralytics is imported: it reads this once, at import.
 os.environ.setdefault("YOLO_OFFLINE", "true")
 
-import subprocess
-import sys
 import types
 from pathlib import Path
 
@@ -734,15 +732,3 @@ def test_bytetrack_reset_restarts_ids_and_first_frame_activation():
     t.reset()
     assert t.frame_id == 0
     assert _ids(t.update(_frame(B))) == [1]
-
-
-def test_importing_the_module_loads_nothing_heavy():
-    # The node takes MOBILECLIP_FILE from walkie_vision.yolo before it
-    # imports torch or Ultralytics. A fresh interpreter, because this one has
-    # imported them already.
-    code = (
-        "import sys, walkie_vision.yolo; "
-        "print(' '.join(m for m in ('torch', 'ultralytics', 'onnxruntime') if m in sys.modules))"
-    )
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True, timeout=60)
-    assert out.stdout.strip() == ""

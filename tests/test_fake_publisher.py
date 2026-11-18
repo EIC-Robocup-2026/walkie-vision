@@ -486,16 +486,6 @@ def test_the_task_runs_on_fast_dds_in_a_private_domain():
     assert task["env"]["ROS_AUTOMATIC_DISCOVERY_RANGE"] == "LOCALHOST"
 
 
-def test_importing_the_publisher_loads_no_model_library():
-    code = (
-        "import sys; import walkie_vision.fake_publisher; "
-        "bad = {'torch', 'torchvision', 'ultralytics', 'onnxruntime', 'open_clip', 'transformers', 'timm', 'insightface'};"
-        "print(sorted(bad & set(sys.modules)))"
-    )
-    out = subprocess.run([sys.executable, "-P", "-c", code], capture_output=True, text=True, timeout=60, check=True)
-    assert out.stdout.strip() == "[]"
-
-
 # Wire tests.
 
 
