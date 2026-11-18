@@ -13,7 +13,7 @@ from huggingface_hub import hf_hub_download
 from PIL import Image
 
 from common import assets_dir, expect, finish, gpu_mem_of, timed_ms
-from walkie_vision.models import HUB_MODELS
+from walkie_vision.weights import HUB_MODELS
 
 hub = HUB_MODELS["clip"]
 print("open_clip", open_clip.__version__, f"| {hub.repo} at {hub.revision} ({hub.licence})")

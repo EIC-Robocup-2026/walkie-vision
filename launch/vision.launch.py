@@ -132,7 +132,7 @@ def _bool(name: str, text: str) -> bool:
 
 
 def _launch(context: LaunchContext) -> list[ExecuteProcess]:
-    from walkie_vision.models import ULTRALYTICS_DIR, models_dir
+    from walkie_vision.weights import ULTRALYTICS_DIR, models_dir
 
     task = LaunchConfiguration("task").perform(context)
     sim = _bool("sim", LaunchConfiguration("sim").perform(context))

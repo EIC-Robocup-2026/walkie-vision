@@ -19,7 +19,7 @@ from huggingface_hub.errors import LocalEntryNotFoundError
 from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import Header
 
-from walkie_vision import embeddings, models
+from walkie_vision import embeddings
 from walkie_vision.convert import bbox_to_box
 from walkie_vision.crop import COLOR_NAMES
 from walkie_vision.embeddings import (
@@ -550,32 +550,3 @@ def test_empty_batches_do_not_reach_the_model():
     assert embedder.embed_images([]).shape == (0, 512)
     assert embedder.embed_texts([]).shape == (0, 512)
     assert stub.pil_images == [] and stub.tokenized == []
-
-
-# --- fetching the weights --------------------------------------------------
-
-
-def test_fetch_models_asks_for_the_pinned_clip_file(monkeypatch, tmp_path, capsys):
-    calls = []
-
-    def stub(repo, filename, *, revision):
-        calls.append((repo, filename, revision))
-        return "/cache/file"
-
-    monkeypatch.setenv("WALKIE_VISION_MODELS", str(tmp_path))
-    monkeypatch.setattr(models, "DOWNLOADS", ())
-    monkeypatch.setattr("huggingface_hub.hf_hub_download", stub)
-    assert models.main() == 0
-    assert calls == [(CLIP_REPO, "open_clip_model.safetensors", CLIP_REVISION)]
-    assert "cached" in capsys.readouterr().out
-
-
-def test_a_fetch_that_fails_fails_the_task(monkeypatch, tmp_path, capsys):
-    def stub(*args, **kwargs):
-        raise OSError("no network")
-
-    monkeypatch.setenv("WALKIE_VISION_MODELS", str(tmp_path))
-    monkeypatch.setattr(models, "DOWNLOADS", ())
-    monkeypatch.setattr("huggingface_hub.hf_hub_download", stub)
-    assert models.main() == 1
-    assert "FAILED" in capsys.readouterr().out

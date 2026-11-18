@@ -11,8 +11,8 @@ import torch
 from PIL import Image
 
 from common import assets_dir, expect, finish, gpu_mem_of, timed_ms
-from walkie_vision.models import HUB_MODELS
 from walkie_vision.reid import INPUT_SIZE, MEAN, STD, load_osnet
+from walkie_vision.weights import HUB_MODELS
 
 hub = HUB_MODELS["osnet"]
 print(f"{hub.repo} at {hub.revision} ({hub.licence})")

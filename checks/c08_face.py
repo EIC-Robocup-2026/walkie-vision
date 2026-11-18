@@ -15,7 +15,7 @@ import onnxruntime as ort
 
 from common import assets_dir, expect, finish, gpu_mem_of, mapped_libs
 from walkie_vision.face import FaceAnalyzer
-from walkie_vision.models import BUFFALO_L_DIR, models_dir
+from walkie_vision.weights import BUFFALO_L_DIR, models_dir
 
 EXPECTED = {
     "zidane.jpg": [[913, 96, 1057, 276], [545, 230, 664, 451]],

@@ -65,7 +65,7 @@ def test_norm_crop_puts_the_landmarks_on_the_template():
 
 
 def _models_dir() -> Path | None:
-    from walkie_vision.models import BUFFALO_L_DIR, models_dir
+    from walkie_vision.weights import BUFFALO_L_DIR, models_dir
 
     try:
         path = models_dir() / BUFFALO_L_DIR

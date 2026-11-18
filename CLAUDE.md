@@ -46,7 +46,7 @@ build, because `scripts/activate.sh` sources the overlay on activation.
   perception (ADR-0013).
 - `src/walkie_vision/face/`, `src/walkie_vision/reid/`: vendored model code.
   Keep the licence headers and the change lists up to date.
-- `src/walkie_vision/models.py`: every downloaded file and Hugging Face
+- `src/walkie_vision/weights.py`: every downloaded file and Hugging Face
   commit, with checksums and licences.
 - `checks/`: the `check-env` checks, one process each. `c12_memory.py` is the
   memory task's explicit mode of check 12; `check-env` does not start it.

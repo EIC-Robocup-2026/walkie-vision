@@ -22,9 +22,9 @@ import torch  # noqa: E402
 from huggingface_hub.errors import LocalEntryNotFoundError  # noqa: E402
 
 from walkie_vision import embeddings, errors, node  # noqa: E402
-from walkie_vision.models import BUFFALO_L_DIR, ULTRALYTICS_DIR  # noqa: E402
 from walkie_vision.node import VisionConfig, build_providers  # noqa: E402
 from walkie_vision.pipeline import Providers  # noqa: E402
+from walkie_vision.weights import BUFFALO_L_DIR, ULTRALYTICS_DIR  # noqa: E402
 
 CLASSES = ("chair", "sofa")
 WARM_UP = "warming up the face models; the first run on this GPU can take minutes"

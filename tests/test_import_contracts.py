@@ -56,12 +56,12 @@ LAYER_OF = {
     "walkie_vision.fake_publisher": 1,
     "walkie_vision.fakes": 2,
     "walkie_vision.image": 3,
-    "walkie_vision.models": 5,
     "walkie_vision.node": 0,
     "walkie_vision.pipeline": 2,
     "walkie_vision.providers": 4,
     "walkie_vision.reid": 4,
     "walkie_vision.requests": 2,
+    "walkie_vision.weights": 5,
     "walkie_vision.yolo": 3,
 }
 NOT_LAYERED = {"_vendor"}

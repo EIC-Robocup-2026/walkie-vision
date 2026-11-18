@@ -42,7 +42,7 @@ size and again after shrinking it, so that its longest side is 32, 48, 64 or
 | `eg2_t70`          | EmbeddingGemma 2, at most 70 image tokens   | `google/embeddinggemma-2` at `914f7f8`                 |    768 | bfloat16 if the GPU has it in hardware, else float32 | Apache-2.0 |
 | `eg2_t140`         | EmbeddingGemma 2, at most 140 image tokens  | `google/embeddinggemma-2` at `914f7f8`                 |    768 | bfloat16 if the GPU has it in hardware, else float32 | Apache-2.0 |
 
-The full commits are in `src/walkie_vision/models.py`. Each model turns a
+The full commits are in `src/walkie_vision/weights.py`. Each model turns a
 query into text with its own template, because each was trained that way:
 
 | Name               | Query text                                                                                  | Image preprocessing                      |

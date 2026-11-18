@@ -1,4 +1,4 @@
-"""Check 6: Hugging Face models on the GPU, at the revisions pinned in walkie_vision.models.
+"""Check 6: Hugging Face models on the GPU, at the revisions pinned in walkie_vision.weights.
 
 Usage: python c06_transformers.py [siglip2|florence2|embeddinggemma2]
 
@@ -13,7 +13,7 @@ import torch
 from PIL import Image
 
 from common import assets_dir, expect, finish, gpu_mem_of, timed_ms
-from walkie_vision.models import HUB_MODELS
+from walkie_vision.weights import HUB_MODELS
 
 which = sys.argv[1] if len(sys.argv) > 1 else "siglip2"
 hub = HUB_MODELS[which]

@@ -27,8 +27,8 @@ import cv2
 import numpy as np
 
 from . import crop
-from .models import CLIP_WEIGHTS, HUB_MODELS
 from .providers import CLIP_VIT_B16, Detection
+from .weights import CLIP_WEIGHTS, HUB_MODELS
 
 SAMPLE_PERIOD = 10
 """A track is eligible once in this many processed images."""

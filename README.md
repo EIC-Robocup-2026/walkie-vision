@@ -89,7 +89,7 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `src/walkie_vision/reid/identifier.py` | OSNet on person crops, batched                                |
 | `src/walkie_vision/embeddings.py`   | The object sampler, padded crops, colour shares and the interim CLIP provider |
 | `src/walkie_vision/requests.py`     | Bounded service work: the job, its one slot, the current image and the request checks |
-| `src/walkie_vision/models.py`       | Every model file and Hugging Face commit, with checksums. `fetch-models` runs it. |
+| `src/walkie_vision/weights.py`      | Every model file and Hugging Face commit, with checksums. `fetch-models` runs it. |
 | `config/`                           | The vision node's parameters, and one file per task with its classes |
 | `launch/`                           | The launch file that runs the vision node and restarts it        |
 | `checks/`                           | The `check-env` checks, and the memory task's explicit mode of check 12 |

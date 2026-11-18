@@ -19,7 +19,7 @@ import time
 import torch
 
 from common import assets_dir, expect, finish, gpu_mem_of
-from walkie_vision.models import ULTRALYTICS_DIR, models_dir
+from walkie_vision.weights import ULTRALYTICS_DIR, models_dir
 
 which = sys.argv[1] if len(sys.argv) > 1 else "yoloe"
 bus = str(assets_dir() / "bus.jpg")

@@ -47,9 +47,9 @@ source_modules = [
     "walkie_vision.errors",
     "walkie_vision.face",
     "walkie_vision.fakes",
-    "walkie_vision.models",
     "walkie_vision.providers",
     "walkie_vision.reid",
+    "walkie_vision.weights",
 ]
 forbidden_modules = [
     "rclpy",
@@ -117,11 +117,11 @@ forbidden_modules = [
     "walkie_vision.fake_publisher",
     "walkie_vision.fakes",
     "walkie_vision.image",
-    "walkie_vision.models",
     "walkie_vision.node",
     "walkie_vision.pipeline",
     "walkie_vision.providers",
     "walkie_vision.requests",
+    "walkie_vision.weights",
     "walkie_vision.yolo",
     "walkie_vision.face.analysis",
     "walkie_vision.face.heads",
@@ -133,12 +133,12 @@ forbidden_modules = [
 # walkie_vision module, so a provider can be read and tested on its own.
 [[tool.importlinter.contracts]]
 id = "bottom-imports-nothing-above"
-name = "providers, models and errors import no other walkie_vision module"
+name = "providers, weights and errors import no other walkie_vision module"
 type = "forbidden"
 source_modules = [
     "walkie_vision.errors",
-    "walkie_vision.models",
     "walkie_vision.providers",
+    "walkie_vision.weights",
 ]
 forbidden_modules = [
     "walkie_vision.convert",

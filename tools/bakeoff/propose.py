@@ -17,7 +17,7 @@ from pathlib import Path
 import cv2
 
 from dataset import Crop, DatasetError, Object, list_images, write_manifest
-from walkie_vision.models import ULTRALYTICS_DIR, models_dir
+from walkie_vision.weights import ULTRALYTICS_DIR, models_dir
 
 WEIGHTS = "yoloe-26s-seg.pt"
 TEXT_ENCODER = "mobileclip2_b.ts"

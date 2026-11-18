@@ -12,6 +12,9 @@ re-export and no alias. Each move adds its rows here:
 - _reads_a_name_that_left reads the syntax tree of every Python file, so an import
   in parentheses over several lines, a wildcard import, an alias of the old module
   and a monkeypatch of the name at the old module count, and a docstring does not.
+- _imports_a_module_that_left reads the syntax tree for imports of a module that moved
+  as a whole, so `from . import x`, `from .. import x` and an import in parentheses
+  over several lines count, and a docstring does not.
 - _binds_one_of checks that a module a name left does not define or re-export it.
 - _old_homes finds a module, a package or a namespace folder at a removed path.
 
@@ -60,12 +63,20 @@ REMOVED = re.compile(
             # also catches a test's `from walkie_vision import node as node_module`.
             r"node(_module)?[.:]StartupError\b",
             r"from (walkie_vision\.|\.+)node import [^\n]*\bStartupError\b",
+            # The model file table left walkie_vision.models for walkie_vision.weights.
+            # The models/ folder, models_dir, WALKIE_VISION_MODELS and the fetch-models
+            # task keep their names.
+            r"walkie_vision[./]models\b",
+            r"from walkie_vision import [^\n]*\bmodels\b",
+            r"from \.+ import [^\n]*\bmodels\b",
+            r"from \.+models import",
         ]
     )
 )
 
 NODE = "walkie_vision.node"
 LEFT_NODE = frozenset({"StartupError"})
+MODELS = "walkie_vision.models"
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -143,6 +154,34 @@ def _reads_a_name_that_left(file: Path, module: str, names: frozenset[str]) -> l
             and node.args[1].value in names
         ):
             found.append(f"{file.name}:{node.lineno}: names {node.args[1].value}")
+    return sorted(found)
+
+
+def _imports_a_module_that_left(file: Path, module: str) -> list[str]:
+    """Where `file` imports `module` or a module inside it: `import module`,
+    `from module import name`, and `from parent import child` in any spelling, absolute
+    or relative, with an alias or in parentheses over several lines.
+
+    It reads the syntax tree rather than lines, and resolves a relative import by the
+    file's package, so `from . import models` counts in walkie_vision/node.py but not in
+    walkie_vision/reid/identifier.py, and a docstring that names the old home does not.
+    """
+    tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
+    parent, _, child = module.rpartition(".")
+
+    def inside(name: str) -> bool:
+        return name == module or name.startswith(f"{module}.")
+
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found += [f"{file.name}:{node.lineno}: imports {a.name}" for a in node.names if inside(a.name)]
+        elif isinstance(node, ast.ImportFrom):
+            imported = _imported_module(node, file)
+            if imported is not None and inside(imported):
+                found.append(f"{file.name}:{node.lineno}: imports from {imported}")
+            elif imported == parent:
+                found += [f"{file.name}:{node.lineno}: imports {module}" for a in node.names if a.name == child]
     return sorted(found)
 
 
@@ -304,6 +343,111 @@ def test_no_code_takes_the_startup_error_from_the_node():
 def test_the_node_does_not_define_the_startup_error_again():
     # node.py imports StartupError to raise and catch it, but does not define it.
     assert _binds_one_of(PACKAGE_DIR / "node.py", LEFT_NODE, imports=False) == []
+
+
+def test_the_model_file_table_did_not_come_back_to_models():
+    assert (PACKAGE_DIR / "weights.py").is_file()
+    assert _old_homes(SRC, "walkie_vision.models") == []
+
+
+def test_no_code_imports_the_model_file_table_from_models():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert PACKAGE_DIR / "node.py" in code
+    assert [hit for file in code for hit in _imports_a_module_that_left(file, MODELS)] == []
+
+
+def test_the_tree_check_would_catch_a_module_imported_from_its_old_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    caller = _write(
+        tmp_path / "src" / "walkie_vision" / "loading.py",
+        "import walkie_vision.models\n"
+        "import walkie_vision.models as table\n"
+        "from walkie_vision import models\n"
+        "from walkie_vision import (\n"
+        "    embeddings,\n"
+        "    models,\n"
+        ")\n"
+        "from . import models as table\n"
+        "from walkie_vision.models import (\n"
+        "    DOWNLOADS,\n"
+        ")\n"
+        "from .models import HUB_MODELS\n"
+        "def build():\n"
+        "    from . import models\n"
+        "    return models\n",
+    )
+    assert _imports_a_module_that_left(caller, MODELS) == [
+        "loading.py:12: imports from walkie_vision.models",
+        "loading.py:14: imports walkie_vision.models",
+        "loading.py:1: imports walkie_vision.models",
+        "loading.py:2: imports walkie_vision.models",
+        "loading.py:3: imports walkie_vision.models",
+        "loading.py:4: imports walkie_vision.models",
+        "loading.py:8: imports walkie_vision.models",
+        "loading.py:9: imports from walkie_vision.models",
+    ]
+    nested = _write(
+        tmp_path / "src" / "walkie_vision" / "reid" / "__init__.py",
+        "from .. import (\n    models,\n)\nfrom ..models import OSNET_CHECKPOINT\n",
+    )
+    assert _imports_a_module_that_left(nested, MODELS) == [
+        "__init__.py:1: imports walkie_vision.models",
+        "__init__.py:4: imports from walkie_vision.models",
+    ]
+    # Outside src/, an absolute import over several lines still counts.
+    check = _write(tmp_path / "checks" / "c05_clip.py", "from walkie_vision import (\n    models,\n)\n")
+    assert _imports_a_module_that_left(check, MODELS) == ["c05_clip.py:1: imports walkie_vision.models"]
+    # The new home, a module of the same name in a subpackage, a longer module name,
+    # a name called models and a docstring that names the old home are fine.
+    good = _write(
+        tmp_path / "src" / "walkie_vision" / "reid" / "identifier.py",
+        '"""walkie_vision.models became walkie_vision.weights."""\n'
+        "import walkie_vision.weights\n"
+        "import walkie_vision.models_cache\n"
+        "from walkie_vision import (\n"
+        "    embeddings,\n"
+        "    weights,\n"
+        ")\n"
+        "from .. import weights\n"
+        "from . import models\n"
+        "from ..face import models\n"
+        "from ..weights import models_dir\n"
+        "from walkie_vision.models_cache import entries\n",
+    )
+    assert _imports_a_module_that_left(good, MODELS) == []
+
+
+def test_the_sweep_would_catch_the_model_file_table_at_its_old_home(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision.models import ULTRALYTICS_DIR, models_dir\n"
+        "import walkie_vision.models\n"
+        "from walkie_vision import embeddings, models\n"
+        "from . import convert, models\n"
+        "from .models import CLIP_WEIGHTS, HUB_MODELS\n"
+        "from ..models import HUB_MODELS, OSNET_CHECKPOINT\n"
+        'cmd = "python -m walkie_vision.models"\n'
+        "| `src/walkie_vision/models.py` | Every model file and Hugging Face commit |\n"
+        "Every model is pinned to the commit in walkie_vision.models.HUB_MODELS.\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 9
+    # The new home, the models/ folder, models_dir, the environment variable, the
+    # fetch-models task and a longer module name are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from walkie_vision.weights import ULTRALYTICS_DIR, models_dir\n"
+        "from walkie_vision import embeddings, weights\n"
+        "from . import convert, crop, requests\n"
+        "from .. import models_dir\n"
+        "from .weights import CLIP_WEIGHTS, HUB_MODELS\n"
+        'cmd = "python -m walkie_vision.weights"\n'
+        "[tasks.fetch-models]\n"
+        "Model files are kept in models/ at the repository root.\n"
+        'env["WALKIE_VISION_MODELS"] = str(models_dir())\n'
+        'names = args.models.split(",")\n'
+        "from walkie_vision.models_cache import entries\n",
+    )
+    assert _mentions([good], REMOVED) == []
 
 
 def test_a_relative_import_resolves_by_the_file_package():

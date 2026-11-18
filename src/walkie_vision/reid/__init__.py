@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import torch
 
-from ..models import HUB_MODELS, OSNET_CHECKPOINT
+from ..weights import HUB_MODELS, OSNET_CHECKPOINT
 from .osnet import osnet_x1_0
 
 # The input the checkpoint was trained with: RGB crops resized to 256x128

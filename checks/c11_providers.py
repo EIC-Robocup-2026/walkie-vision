@@ -35,11 +35,11 @@ import numpy as np
 import torch
 
 from common import assets_dir, expect, finish, gpu_mem_of, timed_ms
-from walkie_vision.models import BUFFALO_L_DIR, ULTRALYTICS_DIR, models_dir
 from walkie_vision.node import VisionConfig
 from walkie_vision.pipeline import dedupe_poses
 from walkie_vision.providers import PersonPose
 from walkie_vision.reid.identifier import OSNetReIdentifier
+from walkie_vision.weights import BUFFALO_L_DIR, ULTRALYTICS_DIR, models_dir
 from walkie_vision.yolo import YoloeTracker, YoloPoseTracker
 
 # The two faces of zidane.jpg, as checks/c08_face.py expects them (InsightFace

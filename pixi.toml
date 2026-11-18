@@ -149,7 +149,7 @@ cmd = "pytest"
 description = "Run the test suite"
 
 [tasks.fetch-models]
-cmd = "python -m walkie_vision.models"
+cmd = "python -m walkie_vision.weights"
 description = "Download the model files that are not fetched on first use into models/ and verify their SHA-256"
 
 [tasks.check-env]

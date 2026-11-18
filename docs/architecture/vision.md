@@ -1242,7 +1242,7 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.face.heads`  | Faces from crops around each person's head (`HeadFaceRecognizer`, a `PersonFaceRecognizer`) |
 | `walkie_vision.reid`        | OSNet x1.0 and its weights (`load_osnet`)                                         |
 | `walkie_vision.reid.identifier` | OSNet on person crops (`OSNetReIdentifier`, a `ReIdentifier`)                 |
-| `walkie_vision.models`      | Every model file and Hugging Face commit, with its checksum and licence           |
+| `walkie_vision.weights`     | Every model file and Hugging Face commit, with its checksum and licence           |
 | `walkie_vision.image`       | `sensor_msgs/Image` to a BGR array, and the `camera_info` size check              |
 | `walkie_vision.embeddings`  | The object sampler, padded crops, colour recipe v1 and the interim CLIP provider (`ClipEmbedder`, an `Embedder`) |
 | `walkie_vision.requests`    | Bounded service work: the job, its one slot, the current image and the request checks ([Bounded services](#bounded-services)) |

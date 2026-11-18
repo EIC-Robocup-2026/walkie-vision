@@ -601,7 +601,7 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
     """
     started = time.perf_counter()
     from .embeddings import ClipEmbedder, clip_checkpoint
-    from .models import BUFFALO_L_DIR, HUB_MODELS, OSNET_CHECKPOINT, ULTRALYTICS_DIR, models_dir
+    from .weights import BUFFALO_L_DIR, HUB_MODELS, OSNET_CHECKPOINT, ULTRALYTICS_DIR, models_dir
     from .yolo import MOBILECLIP_FILE
 
     root = models_dir()

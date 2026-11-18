@@ -5,7 +5,7 @@ prepare() only checks (or downloads) the model files, so that a missing
 model fails the run before any model is loaded. load() reads the files from
 the local Hugging Face cache, never from the network.
 
-Every model is pinned to the commit in walkie_vision.models.HUB_MODELS.
+Every model is pinned to the commit in walkie_vision.weights.HUB_MODELS.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Sequence
 import numpy as np
 from PIL import Image
 
-from walkie_vision.models import HUB_MODELS, HubModel
+from walkie_vision.weights import HUB_MODELS, HubModel
 
 
 class ModelUnavailable(RuntimeError):
