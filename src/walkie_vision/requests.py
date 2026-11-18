@@ -23,9 +23,9 @@ from builtin_interfaces.msg import Time
 from sensor_msgs.msg import Image
 from walkie_vision_msgs.srv import DetectObjects, EmbedCrop
 
-from . import convert, crop, embeddings
+from . import boxes, convert, embeddings
+from .boxes import resize_mask
 from .depth import RegisteredDepth, depth_cover, frame_laplacian, stamp_ns, view_quality
-from .image import resize_mask
 from .providers import Embedder
 
 INVALID = "INVALID"
@@ -379,9 +379,9 @@ def embed_crop_problem(request: EmbedCrop.Request) -> str | None:
     box = convert.bbox_to_box(bbox)
     if not np.all(np.isfinite(box)):
         return "bbox has a corner that is not finite"
-    if not np.all(np.isfinite(crop.pad_box(box, embeddings.CROP_PADDING))):
+    if not np.all(np.isfinite(boxes.pad_box(box, embeddings.CROP_PADDING))):
         return "bbox's padded crop has a corner that is not finite"
-    if crop.intersect_rects(crop.outer_rect(box), (0, 0, width, height)) is None:
+    if boxes.intersect_rects(boxes.outer_rect(box), (0, 0, width, height)) is None:
         return f"bbox has no pixels in a {width}x{height} image"
     return None
 
@@ -417,7 +417,7 @@ def rectangle_quality(
     The same four terms as a detection. The depth term is 0 without depth.
     """
     height, width = image.shape[:2]
-    x1, y1, x2, y2 = crop.intersect_rects(crop.outer_rect(box), (0, 0, width, height)) or (0, 0, 0, 0)
+    x1, y1, x2, y2 = boxes.intersect_rects(boxes.outer_rect(box), (0, 0, width, height)) or (0, 0, 0, 0)
     mask = np.zeros((height, width), dtype=bool)
     mask[y1:y2, x1:x2] = True
     cover = 0.0

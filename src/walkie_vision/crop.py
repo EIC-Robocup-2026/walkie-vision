@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+from .boxes import Rect, box_area, box_cover, box_iou, intersect_rects, outer_rect, pad_rect, subtract_rect
 from .providers import COCO_KEYPOINTS, PersonPose
 
 COLOR_NAMES = (
@@ -135,9 +136,6 @@ class PersonCrop:
     bottom_left: float = 0.0
 
 
-Rect = tuple[int, int, int, int]
-
-
 def check_options(padding: float, max_side: int, min_keypoint_score: float) -> None:
     """Raise ValueError naming the first request option that is out of range."""
     if not (math.isfinite(padding) and 0.0 <= padding <= 1.0):
@@ -146,19 +144,6 @@ def check_options(padding: float, max_side: int, min_keypoint_score: float) -> N
         raise ValueError(f"max_side must be at least 1, not {max_side}")
     if not (math.isfinite(min_keypoint_score) and 0.0 <= min_keypoint_score <= 1.0):
         raise ValueError(f"min_keypoint_score must be from 0 to 1, not {min_keypoint_score}")
-
-
-def box_iou(a: np.ndarray, b: np.ndarray) -> float:
-    """Intersection over union of two boxes; 0 when the union has no area."""
-    inter = _overlap_area(a, b)
-    union = _area(a) + _area(b) - inter
-    return float(inter / union) if union > 0 else 0.0
-
-
-def box_cover(box: np.ndarray, region: np.ndarray) -> float:
-    """The share of region's area that box covers; 0 when region has no area."""
-    area = _area(region)
-    return float(_overlap_area(box, region) / area) if area > 0 else 0.0
 
 
 def torso_box(person: PersonPose) -> np.ndarray | None:
@@ -177,7 +162,7 @@ def torso_box(person: PersonPose) -> np.ndarray | None:
             np.clip(points[:, 1].max(), y1, y2),
         ]
     )
-    return box if _area(box) > 0 else None
+    return box if box_area(box) > 0 else None
 
 
 def is_nearer(other: PersonPose, person: PersonPose, image_height: int, min_keypoint_score: float) -> bool:
@@ -218,56 +203,6 @@ def occlusion(
         if torso is not None:
             torso_cover = max(torso_cover, box_cover(other.box, torso))
     return max_overlap, torso_cover
-
-
-def outer_rect(box: np.ndarray) -> Rect:
-    """The whole pixels that a box touches, also in part."""
-    x1, y1, x2, y2 = np.asarray(box, dtype=np.float64)
-    return math.floor(x1), math.floor(y1), math.ceil(x2), math.ceil(y2)
-
-
-def pad_box(box: np.ndarray, padding: float) -> np.ndarray:
-    """The box grown by padding times its width and height on each side, in float pixels, not clipped.
-
-    A corner can overflow to infinity, with no warning. outer_rect() cannot
-    take such a box, so a request's box is checked with this first.
-    """
-    x1, y1, x2, y2 = (float(v) for v in np.asarray(box, dtype=np.float64))
-    grow = float(padding)
-    dx, dy = grow * (x2 - x1), grow * (y2 - y1)
-    return np.array([x1 - dx, y1 - dy, x2 + dx, y2 + dy])
-
-
-def pad_rect(box: np.ndarray, padding: float, width: int, height: int) -> Rect:
-    """The box grown by padding times its width and height on each side, clipped to the image."""
-    x0, y0, x3, y3 = outer_rect(pad_box(box, padding))
-    return max(0, x0), max(0, y0), min(width, x3), min(height, y3)
-
-
-def intersect_rects(a: Rect, b: Rect) -> Rect | None:
-    """The overlap of two rectangles; None when they do not overlap."""
-    x0, y0 = max(a[0], b[0]), max(a[1], b[1])
-    x1, y1 = min(a[2], b[2]), min(a[3], b[3])
-    return (x0, y0, x1, y1) if x1 > x0 and y1 > y0 else None
-
-
-def subtract_rect(rect: Rect, hole: Rect) -> list[Rect]:
-    """rect minus hole, as up to 4 rectangles: above, below, left of and right of the hole."""
-    inner = intersect_rects(rect, hole)
-    if inner is None:
-        return [rect]
-    x0, y0, x1, y1 = rect
-    hx0, hy0, hx1, hy1 = inner
-    out = []
-    if hy0 > y0:
-        out.append((x0, y0, x1, hy0))
-    if hy1 < y1:
-        out.append((x0, hy1, x1, y1))
-    if hx0 > x0:
-        out.append((x0, hy0, hx0, hy1))
-    if hx1 < x1:
-        out.append((hx1, hy0, x1, hy1))
-    return out
 
 
 def mask_rects(own_box: np.ndarray, other_boxes: Sequence[np.ndarray], crop_rect: Rect) -> list[Rect]:
@@ -473,17 +408,6 @@ def crop_person(
         bottom_left=bottom_left,
         **found,
     )
-
-
-def _area(box: np.ndarray) -> float:
-    x1, y1, x2, y2 = np.asarray(box, dtype=np.float64)
-    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
-
-
-def _overlap_area(a: np.ndarray, b: np.ndarray) -> float:
-    ax1, ay1, ax2, ay2 = np.asarray(a, dtype=np.float64)
-    bx1, by1, bx2, by2 = np.asarray(b, dtype=np.float64)
-    return max(0.0, min(ax2, bx2) - max(ax1, bx1)) * max(0.0, min(ay2, by2) - max(ay1, by1))
 
 
 def _contains(box: np.ndarray, point: np.ndarray) -> bool:

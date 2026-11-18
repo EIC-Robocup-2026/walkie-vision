@@ -70,6 +70,15 @@ REMOVED = re.compile(
             r"from walkie_vision import [^\n]*\bmodels\b",
             r"from \.+ import [^\n]*\bmodels\b",
             r"from \.+models import",
+            # The box and rectangle helpers left walkie_vision.crop, and resize_mask
+            # left walkie_vision.image, for walkie_vision.boxes; crop's private _area
+            # became boxes.box_area. crop.py imports the ones it still uses from boxes.
+            r"\bcrop(_module)?[.:](Rect|box_iou|box_cover|box_area|outer_rect|pad_box|pad_rect|intersect_rects"
+            r"|subtract_rect|_area|_overlap_area)\b",
+            r"from (walkie_vision\.|\.+)crop import [^\n]*\b(Rect|box_iou|box_cover|box_area|outer_rect|pad_box"
+            r"|pad_rect|intersect_rects|subtract_rect|_area|_overlap_area)\b",
+            r"\bimage(_module)?[.:]resize_mask\b",
+            r"from (walkie_vision\.|\.+)image import [^\n]*\bresize_mask\b",
         ]
     )
 )
@@ -77,6 +86,26 @@ REMOVED = re.compile(
 NODE = "walkie_vision.node"
 LEFT_NODE = frozenset({"StartupError"})
 MODELS = "walkie_vision.models"
+CROP = "walkie_vision.crop"
+LEFT_CROP = frozenset(
+    {
+        "Rect",
+        "box_iou",
+        "box_cover",
+        "box_area",
+        "outer_rect",
+        "pad_box",
+        "pad_rect",
+        "intersect_rects",
+        "subtract_rect",
+        "_area",
+        "_overlap_area",
+    }
+)
+# The names that left crop.py and that it no longer uses: it does not even import them.
+UNUSED_IN_CROP = frozenset({"pad_box", "_area", "_overlap_area"})
+IMAGE = "walkie_vision.image"
+LEFT_IMAGE = frozenset({"resize_mask"})
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -356,6 +385,22 @@ def test_no_code_imports_the_model_file_table_from_models():
     assert [hit for file in code for hit in _imports_a_module_that_left(file, MODELS)] == []
 
 
+def test_no_code_takes_the_box_helpers_from_crop_or_the_mask_resize_from_image():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {PACKAGE_DIR / "crop.py", PACKAGE_DIR / "yolo.py", ROOT / "tests" / "test_crop.py"} <= set(code)
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, CROP, LEFT_CROP)] == []
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, IMAGE, LEFT_IMAGE)] == []
+
+
+def test_crop_and_image_do_not_define_the_box_helpers_or_the_mask_resize_again():
+    assert (PACKAGE_DIR / "boxes.py").is_file()
+    # crop.py imports the helpers it still uses from boxes, but defines none of them,
+    # and does not import the ones it no longer uses. image.py uses none.
+    assert _binds_one_of(PACKAGE_DIR / "crop.py", LEFT_CROP, imports=False) == []
+    assert _binds_one_of(PACKAGE_DIR / "crop.py", UNUSED_IN_CROP) == []
+    assert _binds_one_of(PACKAGE_DIR / "image.py", LEFT_IMAGE) == []
+
+
 def test_the_tree_check_would_catch_a_module_imported_from_its_old_home(tmp_path, monkeypatch):
     monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
     caller = _write(
@@ -599,3 +644,97 @@ def test_the_old_home_check_would_catch_a_module_a_package_or_a_namespace_folder
     assert _old_homes(good.parent, "walkie_vision.gone") == []
     assert _old_homes(good.parent, "walkie_vision.gone_package") == []
     assert _old_homes(good.parent, "walkie_vision.crops") == [good / "crops"]
+
+
+def test_the_sweep_would_catch_the_box_helpers_and_the_mask_resize_at_their_old_homes(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision.crop import COLOR_NAMES, Rect\n"
+        "from .crop import CropStatus, pad_rect\n"
+        "from ..crop import _overlap_area\n"
+        "x1, y1, x2, y2 = crop.pad_rect(box, CROP_PADDING, width, height)\n"
+        "if crop.intersect_rects(crop.outer_rect(box), (0, 0, width, height)) is None:\n"
+        "assert crop.box_cover(behind.box, crop.torso_box(guest)) == pytest.approx(0.4)\n"
+        "return box if crop._area(box) > 0 else None\n"
+        "`walkie_vision.crop.box_iou` clamps at zero\n"
+        "from walkie_vision.image import image_to_bgr, resize_mask\n"
+        "from .image import resize_mask\n"
+        "on_raster = image.resize_mask(mask, *depth.metres.shape)\n"
+        "walkie_vision.image:resize_mask keeps the mask at an equal size\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 12
+    # The new home, the names that stay in crop and image, longer names and prose are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from walkie_vision.boxes import Rect, box_area, pad_rect, resize_mask\n"
+        "from .boxes import box_cover, box_iou, intersect_rects, outer_rect, subtract_rect\n"
+        "from walkie_vision import boxes, crop, image\n"
+        "from walkie_vision.crop import COLOR_NAMES, MASK_GREY, CropStatus, crop_person\n"
+        "from .image import calibration_problem, camera_info_problem\n"
+        "x1, y1, x2, y2 = boxes.pad_rect(box, CROP_PADDING, width, height)\n"
+        "assert boxes.box_cover(behind.box, crop.torso_box(guest)) == pytest.approx(0.4)\n"
+        "reduced, _, _ = crop.scale_down(pixels, CROP_MAX_SIDE)\n"
+        "person_crop.box_iou, crop.box_iou_floor, crop.Rects\n"
+        "image.resize_masks(masks), image.shape[:2]\n"
+        "Each mask is resized with resize_mask, and each box padded with pad_rect.\n",
+    )
+    assert _mentions([good], REMOVED) == []
+
+
+def test_the_tree_check_would_catch_a_box_helper_or_the_mask_resize_at_its_old_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    caller = _write(
+        tmp_path / "src" / "walkie_vision" / "requests.py",
+        "from walkie_vision import crop as person_crop\n"
+        "from . import crop, image\n"
+        "from .crop import (\n"
+        "    CropStatus,\n"
+        "    pad_box,\n"
+        ")\n"
+        "from .image import resize_mask as resize\n"
+        "a = crop.intersect_rects(crop.outer_rect(box), (0, 0, width, height))\n"
+        "b = person_crop.box_area(box)\n"
+        'monkeypatch.setattr(image, "resize_mask", fake)\n',
+    )
+    found = _reads_a_name_that_left(caller, CROP, LEFT_CROP) + _reads_a_name_that_left(caller, IMAGE, LEFT_IMAGE)
+    assert sorted(found) == [
+        "requests.py:10: names resize_mask",
+        "requests.py:3: imports pad_box",
+        "requests.py:7: imports resize_mask",
+        "requests.py:8: reads crop.intersect_rects",
+        "requests.py:8: reads crop.outer_rect",
+        "requests.py:9: reads person_crop.box_area",
+    ]
+    # A crop that imports a helper it no longer uses, or binds one under its old name,
+    # puts it back at its old home.
+    crop = _write(
+        tmp_path / "crop.py",
+        "from .boxes import Rect, box_area, intersect_rects\n"
+        "from .boxes import box_area as _area\n"
+        "from .boxes import pad_box\n"
+        "def _overlap_area(a, b): ...\n",
+    )
+    assert _binds_one_of(crop, LEFT_CROP, imports=False) == [
+        "crop.py:2: binds _area",
+        "crop.py:4: binds _overlap_area",
+    ]
+    assert _binds_one_of(crop, UNUSED_IN_CROP) == [
+        "crop.py:2: binds _area",
+        "crop.py:3: binds pad_box",
+        "crop.py:4: binds _overlap_area",
+    ]
+    image = _write(tmp_path / "image.py", "import numpy as np\nfrom .boxes import resize_mask\n")
+    assert _binds_one_of(image, LEFT_IMAGE) == ["image.py:2: binds resize_mask"]
+    # The new home and the names that stay are fine.
+    good = _write(
+        tmp_path / "src" / "walkie_vision" / "pipeline.py",
+        "from . import boxes, crop, image\n"
+        "from .boxes import intersect_rects, resize_mask\n"
+        "from .crop import COLOR_NAMES, CropStatus\n"
+        "from .image import image_to_bgr\n"
+        "a = boxes.pad_box(box, 0.1)\n"
+        "b = crop.scale_down(pixels, 512)\n"
+        'monkeypatch.setattr(crop, "MIN_BOX_HEIGHT_PX", 10.0)\n',
+    )
+    assert _reads_a_name_that_left(good, CROP, LEFT_CROP) == []
+    assert _reads_a_name_that_left(good, IMAGE, LEFT_IMAGE) == []

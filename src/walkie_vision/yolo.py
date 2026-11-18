@@ -29,7 +29,7 @@ from typing import Any
 
 import numpy as np
 
-from .image import resize_mask
+from .boxes import resize_mask
 from .providers import COCO_KEYPOINTS, Detection, PersonPose
 
 # YOLOE.set_classes() loads this text encoder by file name from the working

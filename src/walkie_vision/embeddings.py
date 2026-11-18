@@ -26,7 +26,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from . import crop
+from . import boxes, crop
 from .providers import CLIP_VIT_B16, Detection
 from .weights import CLIP_WEIGHTS, HUB_MODELS
 
@@ -106,7 +106,7 @@ def padded_crop(image: np.ndarray, box: np.ndarray) -> np.ndarray:
     Raises ValueError when no pixel is left.
     """
     height, width = image.shape[:2]
-    x1, y1, x2, y2 = crop.pad_rect(box, CROP_PADDING, width, height)
+    x1, y1, x2, y2 = boxes.pad_rect(box, CROP_PADDING, width, height)
     if x2 <= x1 or y2 <= y1:
         raise ValueError(f"the box {np.asarray(box).tolist()} has no pixels in a {width}x{height} image")
     return image[y1:y2, x1:x2]

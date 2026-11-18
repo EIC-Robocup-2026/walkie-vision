@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from walkie_vision_msgs.srv import GetPersonCrop
 
-from walkie_vision import crop
+from walkie_vision import boxes, crop
 from walkie_vision.crop import COLOR_NAMES, MASK_GREY, CropStatus, crop_person
 from walkie_vision.fakes import figure_pose, paint_figure
 from walkie_vision.providers import COCO_KEYPOINTS
@@ -156,7 +156,7 @@ def test_a_person_behind_over_40_percent_of_the_torso_is_masked_and_not_occludin
     guest = figure_pose(GUEST, track_id=3)
     paint_figure(image, guest, RED, BLUE)
     # The box covers x 126 to 150 of the torso box's x 90 to 150, at its full height.
-    assert crop.box_cover(behind.box, crop.torso_box(guest)) == pytest.approx(0.4)
+    assert boxes.box_cover(behind.box, crop.torso_box(guest)) == pytest.approx(0.4)
     found = _crop(image, [behind, guest])
     assert found.status == CropStatus.OK
     assert found.index == 1
@@ -366,16 +366,6 @@ def test_the_crop_keeps_no_frame():
 def test_is_nearer(other_box, own_box, own_scores, nearer):
     own = figure_pose(own_box, keypoint_score=own_scores)
     assert crop.is_nearer(figure_pose(other_box), own, H, min_keypoint_score=0.5) == nearer
-
-
-def test_subtract_rect():
-    rect = (0, 0, 10, 10)
-    pieces = crop.subtract_rect(rect, (3, 4, 6, 8))
-    assert len(pieces) == 4
-    assert sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in pieces) == 100 - 12
-    assert crop.subtract_rect(rect, (20, 20, 30, 30)) == [rect]
-    assert crop.subtract_rect(rect, (-1, -1, 11, 11)) == []
-    assert crop.subtract_rect(rect, (5, -1, 11, 11)) == [(0, 0, 5, 10)]
 
 
 @pytest.mark.parametrize(

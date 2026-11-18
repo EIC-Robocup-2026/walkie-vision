@@ -35,13 +35,13 @@ include_external_packages = true
 
 # The model code runs without ROS: checks, tools and tests load the models in
 # a plain Python process, and the node is the one place that turns their
-# output into messages. yolo is not listed yet: it imports image, which
-# imports sensor_msgs.
+# output into messages.
 [[tool.importlinter.contracts]]
 id = "model-code-knows-no-ros"
 name = "Model code imports no ROS package"
 type = "forbidden"
 source_modules = [
+    "walkie_vision.boxes",
     "walkie_vision.crop",
     "walkie_vision.embeddings",
     "walkie_vision.errors",
@@ -50,6 +50,7 @@ source_modules = [
     "walkie_vision.providers",
     "walkie_vision.reid",
     "walkie_vision.weights",
+    "walkie_vision.yolo",
 ]
 forbidden_modules = [
     "rclpy",
@@ -108,6 +109,7 @@ source_modules = [
     "walkie_vision.reid.osnet",
 ]
 forbidden_modules = [
+    "walkie_vision.boxes",
     "walkie_vision.convert",
     "walkie_vision.crop",
     "walkie_vision.debug_viz",
@@ -128,14 +130,16 @@ forbidden_modules = [
     "walkie_vision.reid.identifier",
 ]
 
-# The provider interfaces, the model file table and the exception classes sit
-# at the bottom: every other module may import them, and they import no other
-# walkie_vision module, so a provider can be read and tested on its own.
+# The provider interfaces, the box maths, the model file table and the
+# exception classes sit at the bottom: every other module may import them, and
+# they import no other walkie_vision module, so a provider can be read and
+# tested on its own.
 [[tool.importlinter.contracts]]
 id = "bottom-imports-nothing-above"
-name = "providers, weights and errors import no other walkie_vision module"
+name = "providers, boxes, weights and errors import no other walkie_vision module"
 type = "forbidden"
 source_modules = [
+    "walkie_vision.boxes",
     "walkie_vision.errors",
     "walkie_vision.providers",
     "walkie_vision.weights",

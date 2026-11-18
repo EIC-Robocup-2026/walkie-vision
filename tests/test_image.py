@@ -4,26 +4,9 @@ import numpy as np
 import pytest
 from sensor_msgs.msg import CameraInfo, Image
 
-from walkie_vision.image import SUPPORTED_ENCODINGS, camera_info_problem, image_to_bgr, resize_mask
+from walkie_vision.image import SUPPORTED_ENCODINGS, camera_info_problem, image_to_bgr
 
 HEIGHT, WIDTH = 4, 5
-
-
-def test_resize_mask_takes_the_pixel_under_each_output_centre():
-    mask = np.array([[True, False, False, False], [False, False, True, False]])
-    # Output column i takes input column floor((i + 0.5) * 4 / 2): columns 1 and 3.
-    np.testing.assert_array_equal(resize_mask(mask, 2, 2), [[False, False], [False, False]])
-    # Output column i takes input column floor((i + 0.5) * 4 / 3): columns 0, 2 and 3.
-    np.testing.assert_array_equal(resize_mask(mask, 2, 3), [[True, False, False], [False, True, False]])
-    # Each input pixel becomes two.
-    np.testing.assert_array_equal(
-        resize_mask(np.array([[True, False]]), 2, 4), [[True, True, False, False], [True, True, False, False]]
-    )
-
-
-def test_resize_mask_of_an_equal_size_returns_the_mask():
-    mask = np.zeros((3, 4), bool)
-    assert resize_mask(mask, 3, 4) is mask
 
 
 def _bgr() -> np.ndarray:

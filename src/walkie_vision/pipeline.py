@@ -48,8 +48,8 @@ from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray, PersonDetectionArray
 
 from . import convert, embeddings
+from .boxes import resize_mask
 from .depth import RegisteredDepth, depth_cover, frame_laplacian, lift_mask, view_quality
-from .image import resize_mask
 from .providers import (
     FAKE_MODEL_PREFIX,
     Detection,

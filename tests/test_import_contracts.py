@@ -46,6 +46,7 @@ ROS_PACKAGE = re.compile(
 # the same or a larger number, never a smaller one. The vendored code is left
 # out (the protected contracts cover it).
 LAYER_OF = {
+    "walkie_vision.boxes": 5,
     "walkie_vision.convert": 3,
     "walkie_vision.crop": 3,
     "walkie_vision.debug_viz": 0,
@@ -62,7 +63,7 @@ LAYER_OF = {
     "walkie_vision.reid": 4,
     "walkie_vision.requests": 2,
     "walkie_vision.weights": 5,
-    "walkie_vision.yolo": 3,
+    "walkie_vision.yolo": 4,
 }
 NOT_LAYERED = {"_vendor"}
 

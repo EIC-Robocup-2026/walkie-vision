@@ -48,6 +48,7 @@ from tf2_msgs.msg import TFMessage
 from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray
 
 from . import convert, crop
+from .boxes import pad_rect
 from .embeddings import CROP_MAX_SIDE, CROP_PADDING, MIN_COLOR_PIXELS, PALETTE_RGB
 from .fakes import hash_vector
 from .providers import FAKE_MODEL_PREFIX, Detection
@@ -367,7 +368,7 @@ def _shares(color: str | None, pixels: int) -> np.ndarray | None:
 
 
 def _encode_crop(image: np.ndarray, bounds: np.ndarray) -> array.array:
-    x1, y1, x2, y2 = crop.pad_rect(bounds, CROP_PADDING, image.shape[1], image.shape[0])
+    x1, y1, x2, y2 = pad_rect(bounds, CROP_PADDING, image.shape[1], image.shape[0])
     pixels, _, _ = crop.scale_down(image[y1:y2, x1:x2], CROP_MAX_SIDE)
     data = array.array("B")
     data.frombytes(crop.encode_jpeg(pixels, crop.JPEG_QUALITY))
