@@ -50,7 +50,8 @@ from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray
 from . import convert
 from .boxes import pad_rect
 from .crops import colour, jpeg
-from .embeddings import CROP_MAX_SIDE, CROP_PADDING, MIN_COLOR_PIXELS, PALETTE_RGB
+from .crops.colour import MIN_COLOR_PIXELS, PALETTE_RGB
+from .crops.objects import CROP_MAX_SIDE, CROP_PADDING
 from .fakes import hash_vector
 from .providers import FAKE_MODEL_PREFIX, Detection
 

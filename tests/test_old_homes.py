@@ -86,6 +86,15 @@ REMOVED = re.compile(
             r"from walkie_vision import [^\n]*\bcrop\b",
             r"from \.+crop import",
             r"from \.+ import [^\n]*\bcrop\b",
+            # The object sampler and the padded crops left walkie_vision.embeddings for
+            # walkie_vision.crops.objects, and the Lab palette shares for
+            # walkie_vision.crops.colour. The CLIP provider stays in embeddings.
+            r"\bembeddings(_module)?[.:](SAMPLE_PERIOD|SAMPLE_MAX_OBJECTS|SAMPLE_MIN_SIDE_PX|_short_side"
+            r"|select_samples|usable_samples|CROP_PADDING|CROP_MAX_SIDE|padded_crop|encode_crop|MIN_COLOR_PIXELS"
+            r"|PALETTE_RGB|_PALETTE_LAB|nearest_palette_indices|mask_color_shares)\b",
+            r"from (walkie_vision\.|\.+)embeddings import [^\n]*\b(SAMPLE_PERIOD|SAMPLE_MAX_OBJECTS"
+            r"|SAMPLE_MIN_SIDE_PX|_short_side|select_samples|usable_samples|CROP_PADDING|CROP_MAX_SIDE|padded_crop"
+            r"|encode_crop|MIN_COLOR_PIXELS|PALETTE_RGB|_PALETTE_LAB|nearest_palette_indices|mask_color_shares)\b",
         ]
     )
 )
@@ -136,6 +145,29 @@ LEFT_PERSON_CROP = frozenset(
 )
 # The ones crops/person.py no longer uses: it does not even import them.
 UNUSED_IN_PERSON_CROP = LEFT_PERSON_CROP - {"color_shares", "scale_down", "encode_jpeg"}
+# The object sampler and the padded crops left embeddings.py for crops/objects.py,
+# and the Lab palette shares for crops/colour.py. embeddings.py, which keeps the CLIP
+# provider, uses none of them, so it does not even import them.
+EMBEDDINGS = "walkie_vision.embeddings"
+LEFT_EMBEDDINGS = frozenset(
+    {
+        "SAMPLE_PERIOD",
+        "SAMPLE_MAX_OBJECTS",
+        "SAMPLE_MIN_SIDE_PX",
+        "_short_side",
+        "select_samples",
+        "usable_samples",
+        "CROP_PADDING",
+        "CROP_MAX_SIDE",
+        "padded_crop",
+        "encode_crop",
+        "MIN_COLOR_PIXELS",
+        "PALETTE_RGB",
+        "_PALETTE_LAB",
+        "nearest_palette_indices",
+        "mask_color_shares",
+    }
+)
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -460,6 +492,28 @@ def test_the_person_crop_does_not_define_the_colour_or_jpeg_names_again():
     person = PACKAGE_DIR / "crops" / "person.py"
     assert _binds_one_of(person, LEFT_PERSON_CROP, imports=False) == []
     assert _binds_one_of(person, UNUSED_IN_PERSON_CROP) == []
+
+
+def test_no_code_takes_the_sampler_or_the_palette_from_embeddings():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "pipeline.py",
+        PACKAGE_DIR / "requests.py",
+        PACKAGE_DIR / "fake_publisher.py",
+        ROOT / "tests" / "test_pipeline.py",
+        ROOT / "tests" / "test_node.py",
+    } <= set(code)
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, EMBEDDINGS, LEFT_EMBEDDINGS)] == []
+
+
+def test_embeddings_does_not_define_or_import_the_sampler_or_the_palette():
+    for module in ("objects", "colour"):
+        assert (PACKAGE_DIR / "crops" / f"{module}.py").is_file()
+    embeddings = PACKAGE_DIR / "embeddings.py"
+    assert _binds_one_of(embeddings, LEFT_EMBEDDINGS) == []
+    # The CLIP code uses no box or crop helper, so embeddings imports neither.
+    assert _imports_a_module_that_left(embeddings, "walkie_vision.crops") == []
+    assert _imports_a_module_that_left(embeddings, "walkie_vision.boxes") == []
 
 
 def test_the_tree_check_would_catch_a_module_imported_from_its_old_home(tmp_path, monkeypatch):
@@ -903,3 +957,104 @@ def test_the_tree_check_would_catch_the_person_crop_or_its_names_at_their_old_ho
     )
     assert _imports_a_module_that_left(good, CROP) == []
     assert _reads_a_name_that_left(good, PERSON_CROP, LEFT_PERSON_CROP) == []
+
+
+def test_the_sweep_would_catch_the_sampler_or_the_palette_at_their_old_home(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision.embeddings import CROP_MAX_SIDE, CROP_PADDING, MIN_COLOR_PIXELS, PALETTE_RGB\n"
+        "from .embeddings import ClipEmbedder, select_samples\n"
+        "from ..embeddings import _PALETTE_LAB\n"
+        "chosen = embeddings.select_samples(detections, counter, width, height)\n"
+        "if not np.all(np.isfinite(boxes.pad_box(box, embeddings.CROP_PADDING))):\n"
+        'monkeypatch.setattr(embeddings_module, "encode_crop", clock.slowed(embeddings_module.encode_crop, 3.0))\n'
+        "`walkie_vision.embeddings.mask_color_shares` counts the Lab palette\n"
+        "`walkie_vision/embeddings:nearest_palette_indices` takes the earlier centre\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 8
+    # The new homes, the CLIP provider that stays, longer names and the other
+    # PALETTE_RGB in debug_viz are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from walkie_vision.embeddings import ClipEmbedder, clip_checkpoint\n"
+        "from .embeddings import ClipEmbedder, clip_checkpoint\n"
+        "from walkie_vision.crops.objects import CROP_MAX_SIDE, CROP_PADDING\n"
+        "from .crops.colour import MIN_COLOR_PIXELS, PALETTE_RGB\n"
+        "chosen = object_crops.select_samples(detections, counter, width, height)\n"
+        'monkeypatch.setattr(objects_module, "encode_crop", clock.slowed(objects_module.encode_crop, 3.0))\n'
+        "`walkie_vision.embeddings.ClipEmbedder` is the interim provider\n"
+        "embeddings.ClipEmbedder, embeddings.CLIP_DIM, object_embeddings.select_samples\n"
+        "r, g, b = debug_viz.PALETTE_RGB[0]\n",
+    )
+    assert _mentions([good], REMOVED) == []
+
+
+def test_the_tree_check_would_catch_the_sampler_or_the_palette_at_their_old_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    # The moved names, taken from embeddings under any name.
+    reader = _write(
+        tmp_path / "src" / "walkie_vision" / "services" / "embed_crop.py",
+        "from .. import (\n"
+        "    convert,\n"
+        "    embeddings,\n"
+        ")\n"
+        "from ..embeddings import (\n"
+        "    ClipEmbedder,\n"
+        "    padded_crop,\n"
+        ")\n"
+        "from walkie_vision import embeddings as embeddings_module\n"
+        "a = embeddings.encode_crop(pixels)\n"
+        'monkeypatch.setattr(embeddings_module, "mask_color_shares", fake)\n'
+        "b = embeddings.ClipEmbedder(checkpoint)\n",
+    )
+    assert _reads_a_name_that_left(reader, EMBEDDINGS, LEFT_EMBEDDINGS) == [
+        "embed_crop.py:10: reads embeddings.encode_crop",
+        "embed_crop.py:11: names mask_color_shares",
+        "embed_crop.py:5: imports padded_crop",
+    ]
+    # An embeddings that imports, re-exports or copies a moved name, or still imports
+    # the box or crop helpers, puts them back at their old home.
+    copy = _write(
+        tmp_path / "src" / "walkie_vision" / "embeddings.py",
+        "from . import boxes\n"
+        "from .crops import objects\n"
+        "from .crops.objects import CROP_PADDING, padded_crop\n"
+        "from .crops.colour import *\n"
+        "SAMPLE_PERIOD = objects.SAMPLE_PERIOD\n"
+        "def select_samples(detections, counter, width, height): ...\n",
+    )
+    assert _binds_one_of(copy, LEFT_EMBEDDINGS) == [
+        "embeddings.py:3: binds CROP_PADDING",
+        "embeddings.py:3: binds padded_crop",
+        "embeddings.py:4: binds *",
+        "embeddings.py:5: binds SAMPLE_PERIOD",
+        "embeddings.py:6: binds select_samples",
+    ]
+    assert _imports_a_module_that_left(copy, "walkie_vision.crops") == [
+        "embeddings.py:2: imports from walkie_vision.crops",
+        "embeddings.py:3: imports from walkie_vision.crops.objects",
+        "embeddings.py:4: imports from walkie_vision.crops.colour",
+    ]
+    assert _imports_a_module_that_left(copy, "walkie_vision.boxes") == ["embeddings.py:1: imports walkie_vision.boxes"]
+    # The new homes and the CLIP names that stay are fine.
+    good = _write(
+        tmp_path / "src" / "walkie_vision" / "pipeline.py",
+        "from . import convert, embeddings\n"
+        "from .crops import colour\n"
+        "from .crops import objects as object_crops\n"
+        "from .embeddings import ClipEmbedder, clip_checkpoint\n"
+        "a = object_crops.select_samples(detections, counter, width, height)\n"
+        "b = colour.mask_color_shares(image, mask)\n"
+        "c = embeddings.ClipEmbedder(checkpoint)\n"
+        'monkeypatch.setattr(embeddings, "ClipEmbedder", fake)\n',
+    )
+    assert _reads_a_name_that_left(good, EMBEDDINGS, LEFT_EMBEDDINGS) == []
+    clean = _write(
+        tmp_path / "src" / "walkie_vision" / "clean" / "embeddings.py",
+        "from ..providers import CLIP_VIT_B16\n"
+        "from ..weights import CLIP_WEIGHTS, HUB_MODELS\n"
+        "CLIP_DIM = 512\n"
+        "def clip_checkpoint(download=None): ...\n",
+    )
+    assert _binds_one_of(clean, LEFT_EMBEDDINGS) == []
+    assert _imports_a_module_that_left(clean, "walkie_vision.crops") == []

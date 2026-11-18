@@ -12,8 +12,9 @@ from builtin_interfaces.msg import Time
 from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import Header
 
-from walkie_vision import embeddings as embeddings_module
 from walkie_vision import pipeline as pipeline_module
+from walkie_vision.crops import colour as colour_module
+from walkie_vision.crops import objects as objects_module
 from walkie_vision.depth import RegisteredDepth, frame_laplacian, view_quality
 from walkie_vision.fakes import (
     FakeEmbedder,
@@ -741,8 +742,8 @@ def test_on_demand_fills_points_and_colour_shares_with_geometry_and_masks():
 def test_on_demand_with_the_additions_off_does_no_added_work(monkeypatch):
     # Flags stay orthogonal: on-demand alone gives boxes, and nothing more.
     _forbid(monkeypatch, "frame_laplacian", "lift_mask", "depth_cover", "view_quality", "resize_mask")
-    monkeypatch.setattr(embeddings_module, "encode_crop", _raises_if_called)
-    monkeypatch.setattr(embeddings_module, "mask_color_shares", _raises_if_called)
+    monkeypatch.setattr(objects_module, "encode_crop", _raises_if_called)
+    monkeypatch.setattr(colour_module, "mask_color_shares", _raises_if_called)
     det = Detection(box=np.array(BIG), label="cup", score=0.8, mask=box_mask(48, 64, BIG))
     [got] = _on_demand_pipeline(det).detect_on_demand(IMAGE, _header(), _info(), _plain_depth()).objects.detections
     assert got.points.width == 0 and len(got.embedding) == 0 and len(got.crop.data) == 0 and len(got.color_shares) == 0
@@ -814,7 +815,7 @@ def stage_clock(monkeypatch) -> _StageClock:
     clock = _StageClock()
     monkeypatch.setattr(pipeline_module, "time", clock)
     monkeypatch.setattr(pipeline_module, "lift_mask", clock.slowed(pipeline_module.lift_mask, 5.0))
-    monkeypatch.setattr(embeddings_module, "encode_crop", clock.slowed(embeddings_module.encode_crop, 3.0))
+    monkeypatch.setattr(objects_module, "encode_crop", clock.slowed(objects_module.encode_crop, 3.0))
     return clock
 
 

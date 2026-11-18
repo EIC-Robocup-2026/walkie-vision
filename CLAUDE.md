@@ -33,8 +33,9 @@ build, because `scripts/activate.sh` sources the overlay on activation.
   detector behind `DetectObjects` (ADR-0009). Off by default.
 - `src/walkie_vision/depth.py`: pairs colour with registered depth, bounded by
   wall time (ADR-0014), lifts masks to points and scores views. Off by default.
-- `src/walkie_vision/embeddings.py`: the object sampler, padded crops, colour
-  shares and the interim CLIP provider. Off by default.
+- `src/walkie_vision/crops/objects.py`, `crops/colour.py`: the object sampler,
+  padded crops and colour shares. `src/walkie_vision/embeddings.py`: the
+  interim CLIP provider. Off by default.
 - `src/walkie_vision/requests.py`: bounded service work on the one model worker
   (ADR-0015): the job, its slot, the current image and the request checks.
 - `config/`: the node's parameters (`vision.yaml`, `sim.yaml`) and each task's

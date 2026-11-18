@@ -23,8 +23,9 @@ from builtin_interfaces.msg import Time
 from sensor_msgs.msg import Image
 from walkie_vision_msgs.srv import DetectObjects, EmbedCrop
 
-from . import boxes, convert, embeddings
+from . import boxes, convert
 from .boxes import resize_mask
+from .crops import objects
 from .depth import RegisteredDepth, depth_cover, frame_laplacian, stamp_ns, view_quality
 from .providers import Embedder
 
@@ -379,7 +380,7 @@ def embed_crop_problem(request: EmbedCrop.Request) -> str | None:
     box = convert.bbox_to_box(bbox)
     if not np.all(np.isfinite(box)):
         return "bbox has a corner that is not finite"
-    if not np.all(np.isfinite(boxes.pad_box(box, embeddings.CROP_PADDING))):
+    if not np.all(np.isfinite(boxes.pad_box(box, objects.CROP_PADDING))):
         return "bbox's padded crop has a corner that is not finite"
     if boxes.intersect_rects(boxes.outer_rect(box), (0, 0, width, height)) is None:
         return f"bbox has no pixels in a {width}x{height} image"
@@ -436,14 +437,14 @@ def embed_crop_answer(
     depth_max_m: float,
 ) -> EmbedCrop.Response:
     """Crop and embed one box of one image. Raises when the box, the model or its vector fails."""
-    pixels = embeddings.padded_crop(image, box)
+    pixels = objects.padded_crop(image, box)
     vectors = np.asarray(embedder.embed_images([pixels]))
     if vectors.shape != (1, embedder.dim):
         raise ValueError(f"the embedder returned shape {vectors.shape} for one crop of dim {embedder.dim}")
     return convert.fill_embed_crop_response(
         EmbedCrop.Response(),
         header,
-        embeddings.encode_crop(pixels),
+        objects.encode_crop(pixels),
         embedder,
         vectors[0],
         rectangle_quality(image, box, depth, depth_min_m, depth_max_m),

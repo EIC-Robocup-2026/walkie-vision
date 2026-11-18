@@ -11,7 +11,7 @@ view quality (walkie_vision.depth). Without it, masks are ignored and no
 geometry work runs.
 
 With object_crops_enabled or object_embeddings_enabled, up to three detections
-per image are sampled (walkie_vision.embeddings). The two flags are separate,
+per image are sampled (walkie_vision.crops.objects). The two flags are separate,
 and one sampler serves both. A sampled detection gets its crop, its vector or
 both, and the colour shares of its mask. The time counts in the build stage.
 With both off, no embedder runs, and no JPEG or colour share is computed.
@@ -47,8 +47,10 @@ from sensor_msgs.msg import CameraInfo, CompressedImage, PointCloud2
 from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray, PersonDetectionArray
 
-from . import convert, embeddings
+from . import convert
 from .boxes import resize_mask
+from .crops import colour
+from .crops import objects as object_crops
 from .depth import RegisteredDepth, depth_cover, frame_laplacian, lift_mask, view_quality
 from .providers import (
     FAKE_MODEL_PREFIX,
@@ -364,7 +366,7 @@ class VisionPipeline:
         height, width = image.shape[:2]
         found_geometry = self._geometry(image, header, kept, depth, times)
         started = time.perf_counter()
-        samples = self._fill_samples(image, header, kept, embeddings.usable_samples(kept, width, height), dropped, times)
+        samples = self._fill_samples(image, header, kept, object_crops.usable_samples(kept, width, height), dropped, times)
         times.crop = max(0.0, _ms_since(started) - times.embed)
         objects = self._to_objects(kept, found_geometry, samples)
         array = convert.to_object_detection_array(header, info, detector.classes, objects, stream_id=self._stream_id)
@@ -530,7 +532,7 @@ class VisionPipeline:
             return [_Sample()] * len(detections)
         started = time.perf_counter()
         height, width = image.shape[:2]
-        chosen = embeddings.select_samples(detections, self._processed_images, width, height)
+        chosen = object_crops.select_samples(detections, self._processed_images, width, height)
         samples = self._fill_samples(image, header, detections, chosen, dropped, times)
         times.crop = max(0.0, _ms_since(started) - times.embed)
         return samples
@@ -552,7 +554,7 @@ class VisionPipeline:
         if not chosen or not (self._crops_enabled or self._embeddings_enabled):
             return samples
         height, width = image.shape[:2]
-        sources = [embeddings.padded_crop(image, detections[i].box) for i in chosen]
+        sources = [object_crops.padded_crop(image, detections[i].box) for i in chosen]
         started = time.perf_counter()
         vectors = self._embed(sources, dropped) if self._embeddings_enabled else [None] * len(chosen)
         times.embed = _ms_since(started)
@@ -560,12 +562,12 @@ class VisionPipeline:
         for i, source, vector in zip(chosen, sources, vectors, strict=True):
             mask = detections[i].mask
             samples[i] = _Sample(
-                crop=convert.to_jpeg_image(header, embeddings.encode_crop(source)) if self._crops_enabled else None,
+                crop=convert.to_jpeg_image(header, object_crops.encode_crop(source)) if self._crops_enabled else None,
                 embedding=vector,
                 embedding_model=model if vector is not None else "",
                 color_shares=None
                 if mask is None
-                else embeddings.mask_color_shares(image, _native_mask(mask, height, width)),
+                else colour.mask_color_shares(image, _native_mask(mask, height, width)),
                 chosen=True,
             )
         return samples

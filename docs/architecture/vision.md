@@ -1244,10 +1244,10 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.reid.identifier` | OSNet on person crops (`OSNetReIdentifier`, a `ReIdentifier`)                 |
 | `walkie_vision.weights`     | Every model file and Hugging Face commit, with its checksum and licence           |
 | `walkie_vision.image`       | `sensor_msgs/Image` to a BGR array, and the `camera_info` size check              |
-| `walkie_vision.embeddings`  | The object sampler, padded crops, colour recipe v1 and the interim CLIP provider (`ClipEmbedder`, an `Embedder`) |
+| `walkie_vision.embeddings`  | The interim CLIP provider (`ClipEmbedder`, an `Embedder`)                        |
 | `walkie_vision.requests`    | Bounded service work: the job, its one slot, the current image and the request checks ([Bounded services](#bounded-services)) |
 | `walkie_vision.pipeline`    | One image through every provider to the two arrays, with the score floors, the person dedupe (`dedupe_poses`) and the track id base. No ROS node |
-| `walkie_vision.crops`       | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. No ROS node and no model |
+| `walkie_vision.crops`       | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. The object sampler and padded crops (`crops.objects`), and colour recipe v1 (`crops.colour`). No ROS node and no model |
 | `walkie_vision.node`        | The vision node: parameters, threads, publishing, health checks and `build_providers` |
 
 The node holds one provider for each model, and `pipeline` uses `convert`

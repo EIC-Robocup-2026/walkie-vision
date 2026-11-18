@@ -37,7 +37,7 @@ from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
 
-from walkie_vision import embeddings, errors, requests
+from walkie_vision import errors, requests
 from walkie_vision import node as node_module
 from walkie_vision import pipeline as pipeline_module
 from walkie_vision.convert import (
@@ -48,7 +48,7 @@ from walkie_vision.convert import (
     embed_text_failure,
     vectors_from_response,
 )
-from walkie_vision.crops import colour, person
+from walkie_vision.crops import colour, objects, person
 from walkie_vision.depth import RgbdBuffer, frame_laplacian, view_quality
 from walkie_vision.fakes import (
     FakeEmbedder,
@@ -1774,7 +1774,7 @@ def test_embed_crop_answers_from_the_current_image(harness):
     assert response.success and response.error_code == "" and response.message == ""
     assert response.header.stamp == Time(sec=1) and response.header.frame_id == FRAME
     assert response.crop.header == response.header and response.crop.format == "jpeg"
-    pixels = embeddings.padded_crop(array, np.array(BOX))
+    pixels = objects.padded_crop(array, np.array(BOX))
     assert pixels.shape == (26, 26, 3)
     decoded = cv2.imdecode(np.frombuffer(bytes(response.crop.data), np.uint8), cv2.IMREAD_COLOR)
     assert decoded.shape == pixels.shape
@@ -2613,7 +2613,8 @@ def test_a_new_list_leaves_the_streaming_detector_alone(harness):
 
 ADDED_STREAM_WORK = (
     (pipeline_module, ("frame_laplacian", "lift_mask", "depth_cover", "view_quality", "resize_mask")),
-    (embeddings, ("select_samples", "padded_crop", "encode_crop", "mask_color_shares")),
+    (objects, ("select_samples", "padded_crop", "encode_crop")),
+    (colour, ("mask_color_shares",)),
     (node_module, ("read_registered_depth",)),
 )
 ADDED_WORDS = {

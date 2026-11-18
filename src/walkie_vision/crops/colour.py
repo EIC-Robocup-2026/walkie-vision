@@ -4,6 +4,10 @@ COLOR_NAMES is the one place the names and their order are written: the
 person crop's shares, GetPersonCrop's colour_names and the object samples'
 shares all follow it. It stays one literal assignment, since walkie-database
 reads it from the source with ast.literal_eval.
+
+Two recipes count the shares. A person's torso and thighs use the HSV colour
+bins (color_shares). A sampled object's mask uses colour recipe v1, the
+nearest Lab palette centre (mask_color_shares).
 """
 
 from __future__ import annotations
@@ -84,3 +88,58 @@ def color_shares(pixels: np.ndarray) -> np.ndarray:
     if indices.size == 0:
         raise ValueError("no pixels to count")
     return np.bincount(indices, minlength=len(COLOR_NAMES)).astype(np.float64) / indices.size
+
+
+MIN_COLOR_PIXELS = 50
+"""Fewer mask pixels than this give no colour shares."""
+
+# Colour recipe v1: RGB, in the order of crops.colour.COLOR_NAMES. This is deterministic
+# plumbing, not colour constancy. Its accuracy has not been measured.
+PALETTE_RGB = (
+    (0, 0, 0),
+    (255, 255, 255),
+    (128, 128, 128),
+    (220, 35, 35),
+    (245, 130, 25),
+    (245, 220, 35),
+    (45, 155, 65),
+    (40, 90, 205),
+    (135, 65, 175),
+    (235, 145, 180),
+    (115, 75, 45),
+    (210, 190, 145),
+)
+_PALETTE_LAB = cv2.cvtColor(np.array(PALETTE_RGB, dtype=np.float32).reshape(-1, 1, 3) / 255.0, cv2.COLOR_RGB2Lab).reshape(-1, 3)
+
+
+def nearest_palette_indices(lab: np.ndarray, centres: np.ndarray = _PALETTE_LAB) -> np.ndarray:
+    """The index of the nearest Lab centre of each Lab pixel, by Euclidean distance. A tie takes the earlier centre.
+
+    Compares one centre at a time, so a large mask does not need a pixels x
+    centres array.
+    """
+    lab = np.asarray(lab, dtype=np.float32).reshape(-1, 3)
+    best = np.full(lab.shape[0], np.inf, dtype=np.float32)
+    indices = np.zeros(lab.shape[0], dtype=np.intp)
+    for i, centre in enumerate(centres):
+        distance = np.sum((lab - centre) ** 2, axis=1)
+        nearer = distance < best
+        best[nearer] = distance[nearer]
+        indices[nearer] = i
+    return indices
+
+
+def mask_color_shares(image: np.ndarray, mask: np.ndarray) -> np.ndarray | None:
+    """The shares of the palette colours among a mask's pixels of a BGR image; None under MIN_COLOR_PIXELS.
+
+    Uses the original mask and pixels: no padding, resizing or JPEG. OpenCV
+    converts float32 sRGB to CIELAB. The shares follow crops.colour.COLOR_NAMES and sum
+    to 1.
+    """
+    pixels = image[np.asarray(mask, dtype=bool)]
+    count = pixels.shape[0]
+    if count < MIN_COLOR_PIXELS:
+        return None
+    lab = cv2.cvtColor(pixels.reshape(-1, 1, 3).astype(np.float32) / 255.0, cv2.COLOR_BGR2Lab)
+    counts = np.bincount(nearest_palette_indices(lab), minlength=len(PALETTE_RGB))
+    return counts.astype(np.float64) / count

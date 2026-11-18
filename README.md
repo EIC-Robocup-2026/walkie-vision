@@ -80,14 +80,14 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `src/walkie_vision/depth.py`        | Colour and registered depth, paired within bounds; object points and view quality. Off by default |
 | `src/walkie_vision/providers.py`    | The interfaces every model implements, and their result types    |
 | `src/walkie_vision/convert.py`      | Model results to messages, with checks                           |
-| `src/walkie_vision/crops/`          | One person's crop, mask and colour shares for `GetPersonCrop`    |
+| `src/walkie_vision/crops/`          | One person's crop, mask and colour shares for `GetPersonCrop`; the object sampler, padded crops and colour shares |
 | `src/walkie_vision/fakes.py`        | Fake models for tests                                            |
 | `src/walkie_vision/yolo.py`         | YOLOE-26 and YOLO26 pose with their trackers, and YOLOE-26 with no tracker for `DetectObjects` |
 | `src/walkie_vision/face/`           | SCRFD and ArcFace on ONNX Runtime (vendored InsightFace code, MIT) |
 | `src/walkie_vision/face/heads.py`   | Faces from crops around each person's head                       |
 | `src/walkie_vision/reid/`           | OSNet re-identification (vendored deep-person-reid code, MIT)    |
 | `src/walkie_vision/reid/identifier.py` | OSNet on person crops, batched                                |
-| `src/walkie_vision/embeddings.py`   | The object sampler, padded crops, colour shares and the interim CLIP provider |
+| `src/walkie_vision/embeddings.py`   | The interim CLIP provider                                        |
 | `src/walkie_vision/requests.py`     | Bounded service work: the job, its one slot, the current image and the request checks |
 | `src/walkie_vision/weights.py`      | Every model file and Hugging Face commit, with checksums. `fetch-models` runs it. |
 | `config/`                           | The vision node's parameters, and one file per task with its classes |
