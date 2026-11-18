@@ -88,6 +88,7 @@ from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, Embed
 from . import convert, crop, requests
 from .crop import CropStatus
 from .depth import DepthRefused, RegisteredDepth, RgbdBuffer, read_registered_depth, stamp_ns
+from .errors import StartupError
 from .image import camera_info_problem, image_to_bgr
 from .pipeline import ON_DEMAND_MAX_OBJECTS, Providers, StageTimes, TrackIdBase, VisionPipeline
 
@@ -143,10 +144,6 @@ _FACE_FILES = ("det_10g.onnx", "w600k_r50.onnx")
 _WARN_PERIOD_S = 5.0
 _OTHER_PUBLISHER_WARN_PERIOD_S = 30.0
 _JOIN_TIMEOUT_S = 5.0
-
-
-class StartupError(RuntimeError):
-    """A startup failure whose message says what to do; main() logs it without a traceback."""
 
 
 class StartupLogger(Protocol):

@@ -37,7 +37,7 @@ from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
 
-from walkie_vision import crop, embeddings, requests
+from walkie_vision import crop, embeddings, errors, requests
 from walkie_vision import node as node_module
 from walkie_vision import pipeline as pipeline_module
 from walkie_vision.convert import (
@@ -825,7 +825,7 @@ def _raised(error: BaseException) -> BaseException:
 @pytest.mark.parametrize(
     "error, traceback_logged",
     [
-        (node_module.StartupError("OSNet is not in the Hugging Face cache"), False),
+        (errors.StartupError("OSNet is not in the Hugging Face cache"), False),
         (FileNotFoundError("model files are missing"), False),
         (ValueError("parameter classes"), False),
         (RuntimeError("CUDA out of memory"), True),

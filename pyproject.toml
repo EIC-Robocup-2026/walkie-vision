@@ -44,6 +44,7 @@ type = "forbidden"
 source_modules = [
     "walkie_vision.crop",
     "walkie_vision.embeddings",
+    "walkie_vision.errors",
     "walkie_vision.face",
     "walkie_vision.fakes",
     "walkie_vision.models",
@@ -112,6 +113,7 @@ forbidden_modules = [
     "walkie_vision.debug_viz",
     "walkie_vision.depth",
     "walkie_vision.embeddings",
+    "walkie_vision.errors",
     "walkie_vision.fake_publisher",
     "walkie_vision.fakes",
     "walkie_vision.image",
@@ -126,14 +128,15 @@ forbidden_modules = [
     "walkie_vision.reid.identifier",
 ]
 
-# The provider interfaces and the model file table sit at the bottom: every
-# other module may import them, and they import no other walkie_vision
-# module, so a provider can be read and tested on its own.
+# The provider interfaces, the model file table and the exception classes sit
+# at the bottom: every other module may import them, and they import no other
+# walkie_vision module, so a provider can be read and tested on its own.
 [[tool.importlinter.contracts]]
 id = "bottom-imports-nothing-above"
-name = "providers and models import no other walkie_vision module"
+name = "providers, models and errors import no other walkie_vision module"
 type = "forbidden"
 source_modules = [
+    "walkie_vision.errors",
     "walkie_vision.models",
     "walkie_vision.providers",
 ]

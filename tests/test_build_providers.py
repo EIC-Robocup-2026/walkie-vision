@@ -21,7 +21,7 @@ import onnxruntime  # noqa: E402
 import torch  # noqa: E402
 from huggingface_hub.errors import LocalEntryNotFoundError  # noqa: E402
 
-from walkie_vision import embeddings, node  # noqa: E402
+from walkie_vision import embeddings, errors, node  # noqa: E402
 from walkie_vision.models import BUFFALO_L_DIR, ULTRALYTICS_DIR  # noqa: E402
 from walkie_vision.node import VisionConfig, build_providers  # noqa: E402
 from walkie_vision.pipeline import Providers  # noqa: E402
@@ -322,7 +322,7 @@ def test_osnet_that_cannot_download_fails_before_any_model_loads(models, manager
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", mock.Mock(side_effect=OSError("no network")))
     # StartupError is a RuntimeError that main() logs without a traceback.
-    with pytest.raises(node.StartupError, match="internet") as caught:
+    with pytest.raises(errors.StartupError, match="internet") as caught:
         build_providers(VisionConfig(classes=CLASSES), manager.logger)
     assert isinstance(caught.value, RuntimeError)
     assert "no network" in str(caught.value)
