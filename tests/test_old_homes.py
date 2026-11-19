@@ -108,6 +108,14 @@ REMOVED = re.compile(
             r"from (walkie_vision\.|\.+)node import [^\n]*\bNewestFrame\b",
             r"\brequests(_module)?[.:]CurrentImage\b",
             r"from (walkie_vision\.|\.+)requests import [^\n]*\bCurrentImage\b",
+            # providers.py became the walkie_vision.providers package: one base module per
+            # vision task and vector_tables, re-exported by the package, so
+            # walkie_vision.providers.Detection is fine. EMBEDDING_DIMS left
+            # walkie_vision.convert for providers.vector_tables, and check_model_dim for
+            # providers.image_embed.base.
+            r"\bproviders\.py\b",
+            r"\bconvert(_module)?[.:](EMBEDDING_DIMS|check_model_dim)\b",
+            r"from (walkie_vision\.|\.+)convert import [^\n]*\b(EMBEDDING_DIMS|check_model_dim)\b",
         ]
     )
 )
@@ -218,6 +226,10 @@ LEFT_DEPTH = frozenset(
 LEFT_NODE_MAILBOX = frozenset({"NewestFrame"})
 REQUESTS = "walkie_vision.requests"
 LEFT_REQUESTS = frozenset({"CurrentImage"})
+# The vector lengths left convert.py for providers/vector_tables.py, and the length
+# check for providers/image_embed/base.py. convert.py imports both, which it still uses.
+CONVERT = "walkie_vision.convert"
+LEFT_CONVERT = frozenset({"EMBEDDING_DIMS", "check_model_dim"})
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -1316,3 +1328,109 @@ def test_the_tree_check_would_catch_image_depth_or_the_mailboxes_at_their_old_ho
     assert _reads_a_name_that_left(good, CAMERA_DEPTH, LEFT_DEPTH) == []
     assert _reads_a_name_that_left(good, REQUESTS, LEFT_REQUESTS) == []
     assert _binds_one_of(good, LEFT_NODE_MAILBOX, imports=False) == []
+
+
+def test_the_provider_interfaces_did_not_come_back_to_providers_py():
+    providers = PACKAGE_DIR / "providers"
+    assert (providers / "vector_tables.py").is_file()
+    for task in ("object_detection", "pose_estimation", "face_recognition", "reid", "image_embed"):
+        assert (providers / task / "base.py").is_file()
+    # The package is the new home; a providers.py beside it would be the old one.
+    assert _old_homes(SRC, "walkie_vision.providers") == [providers]
+
+
+def test_no_code_takes_the_vector_lengths_or_the_dim_check_from_convert():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {PACKAGE_DIR / "convert.py", PACKAGE_DIR / "pipeline.py", ROOT / "tests" / "test_convert.py"} <= set(code)
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, CONVERT, LEFT_CONVERT)] == []
+
+
+def test_convert_does_not_define_the_vector_lengths_or_the_dim_check_again():
+    # convert.py imports EMBEDDING_DIMS and check_model_dim, which it still uses, but
+    # defines neither.
+    assert _binds_one_of(PACKAGE_DIR / "convert.py", LEFT_CONVERT, imports=False) == []
+
+
+def test_the_sweep_would_catch_providers_py_or_the_vector_lengths_at_their_old_homes(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "| `src/walkie_vision/providers.py`    | The interfaces every model implements |\n"
+        "- `src/walkie_vision/providers.py`: model interfaces and result types.\n"
+        "expected = convert.EMBEDDING_DIMS.get(name)\n"
+        "convert.check_model_dim(providers.embedder)\n"
+        "from walkie_vision.convert import EMBEDDING_DIMS, to_point_cloud\n"
+        "from .convert import bounded_message, check_model_dim\n"
+        "from ..convert import EMBEDDING_DIMS\n"
+        "`walkie_vision.convert:check_model_dim` checks the length\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 8
+    # The new homes, the re-exported names, the names that stay in convert, longer
+    # file names and the bare call are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "| `src/walkie_vision/providers/`      | The interfaces every model implements |\n"
+        "src/walkie_vision/providers/__init__.py re-exports them\n"
+        "from walkie_vision.providers import CLIP_VIT_B16, Detection\n"
+        "from walkie_vision.providers.vector_tables import EMBEDDING_DIMS\n"
+        "from .providers.image_embed.base import check_model_dim\n"
+        "from ..vector_tables import EMBEDDING_DIMS\n"
+        "checks/c11_providers.py and tests/test_build_providers.py\n"
+        "convert.to_point_cloud(header, points), convert.bounded_message(text)\n"
+        "from walkie_vision.convert import fill_embed_crop_response\n"
+        "check_model_dim(providers.embedder)\n",
+    )
+    assert _mentions([good], REMOVED) == []
+
+
+def test_the_tree_check_would_catch_the_vector_lengths_or_the_dim_check_at_their_old_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    reader = _write(
+        tmp_path / "src" / "walkie_vision" / "services" / "embed_crop.py",
+        "from .. import convert\n"
+        "from walkie_vision import convert as convert_module\n"
+        "from ..convert import (\n"
+        "    EMBEDDING_DIMS,\n"
+        "    bounded_message,\n"
+        ")\n"
+        "a = convert.check_model_dim(embedder)\n"
+        'monkeypatch.setattr(convert_module, "EMBEDDING_DIMS", {})\n'
+        "from ..convert import *\n",
+    )
+    assert _reads_a_name_that_left(reader, CONVERT, LEFT_CONVERT) == [
+        "embed_crop.py:3: imports EMBEDDING_DIMS",
+        "embed_crop.py:7: reads convert.check_model_dim",
+        "embed_crop.py:8: names EMBEDDING_DIMS",
+        "embed_crop.py:9: imports *",
+    ]
+    # A convert that re-exports or defines them again puts them back at their old home.
+    copy = _write(
+        tmp_path / "convert.py",
+        "from .providers.vector_tables import EMBEDDING_DIMS\n"
+        "from .providers.image_embed.base import check_model_dim as check_model_dim\n"
+        "EMBEDDING_DIMS = {}\n"
+        "def check_model_dim(embedder): ...\n",
+    )
+    assert _binds_one_of(copy, LEFT_CONVERT, imports=False) == [
+        "convert.py:2: binds check_model_dim",
+        "convert.py:3: binds EMBEDDING_DIMS",
+        "convert.py:4: binds check_model_dim",
+    ]
+    # The new homes, a convert that only imports and uses them, and the names that stay
+    # in convert are fine.
+    good = _write(
+        tmp_path / "src" / "walkie_vision" / "pipeline.py",
+        "from . import convert\n"
+        "from .providers.image_embed.base import check_model_dim\n"
+        "from .providers.vector_tables import EMBEDDING_DIMS\n"
+        "a = convert.to_point_cloud(header, points)\n"
+        "b = check_model_dim(embedder)\n"
+        'monkeypatch.setattr(convert, "new_stream_id", fake)\n',
+    )
+    assert _reads_a_name_that_left(good, CONVERT, LEFT_CONVERT) == []
+    clean = _write(
+        tmp_path / "clean" / "convert.py",
+        "from .providers.image_embed.base import check_model_dim\n"
+        "from .providers.vector_tables import EMBEDDING_DIMS\n"
+        "expected = EMBEDDING_DIMS.get(name)\n",
+    )
+    assert _binds_one_of(clean, LEFT_CONVERT, imports=False) == []

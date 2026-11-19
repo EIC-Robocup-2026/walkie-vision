@@ -12,10 +12,12 @@ Two rules that the contracts do not express are checked here directly:
   A module added at the top level must be given a layer, and a module that moves or
   is removed takes its entry with it.
 - Every __init__.py holds exactly one statement, a non-empty docstring, except the
-  packages in INIT_WITH_CODE. Python runs a package's __init__ before any module in
-  it, so code there runs on every import of any of its modules. Every folder that
-  holds Python code has an __init__.py: grimp leaves a folder without one out of
-  the graph, so no contract or layer check would see its modules.
+  packages in INIT_WITH_CODE and REEXPORTS. Python runs a package's __init__ before
+  any module in it, so code there runs on every import of any of its modules. A
+  package in REEXPORTS holds its docstring, from-imports of names from the modules
+  REEXPORTS lists, and __all__ naming exactly those names, and nothing else. Every
+  folder that holds Python code has an __init__.py: grimp leaves a folder without
+  one out of the graph, so no contract or layer check would see its modules.
 """
 
 import ast
@@ -75,6 +77,23 @@ INIT_WITH_CODE = frozenset(
         "walkie_vision.reid",
     }
 )
+
+# The packages whose __init__.py re-exports names, and the modules of the package
+# (relative to it) it may take them from. walkie_vision.providers re-exports the
+# names of the five base modules and vector_tables, so walkie_vision.providers.Detection
+# keeps working; importing it never loads a registry or a provider module.
+REEXPORTS = {
+    "walkie_vision.providers": frozenset(
+        {
+            "face_recognition.base",
+            "image_embed.base",
+            "object_detection.base",
+            "pose_estimation.base",
+            "reid.base",
+            "vector_tables",
+        }
+    ),
+}
 
 
 def lint(config: Path) -> tuple[bool, str]:
@@ -151,14 +170,70 @@ def holds_code(body: list[ast.stmt]) -> bool:
     return bool(body)
 
 
-def init_problems(package_dir: Path, package: str, init_with_code: Iterable[str]) -> list[str]:
+def is_string_list(node: ast.expr) -> bool:
+    """Whether an expression is a list or a tuple of string literals."""
+    return isinstance(node, ast.List | ast.Tuple) and all(
+        isinstance(element, ast.Constant) and isinstance(element.value, str) for element in node.elts
+    )
+
+
+def reexport_problems(path: str, body: list[ast.stmt], modules: Iterable[str]) -> list[str]:
+    """Where a re-exporting __init__.py breaks its rule.
+
+    It holds a non-empty docstring, then from-imports of names from the listed
+    modules of its own package (each name under its own name, no wildcard), then
+    __all__ as a literal list of exactly the imported names, and nothing else.
+    """
+    allowed = set(modules)
+    problems = []
+    statements = body
+    if body and is_docstring_only(body[:1]):
+        statements = body[1:]
+    else:
+        problems.append(f"{path} must start with a non-empty docstring")
+    imported: list[str] = []
+    exported: list[str] | None = None
+    for statement in statements:
+        where = f"{path}:{statement.lineno}"
+        if isinstance(statement, ast.ImportFrom) and statement.level == 1 and statement.module in allowed:
+            for alias in statement.names:
+                if alias.name == "*" or alias.asname not in (None, alias.name):
+                    problems.append(f"{where} must import each name under its own name: {ast.unparse(statement)}")
+                else:
+                    imported.append(alias.name)
+        elif (
+            exported is None
+            and isinstance(statement, ast.Assign)
+            and [ast.unparse(target) for target in statement.targets] == ["__all__"]
+            and is_string_list(statement.value)
+        ):
+            exported = [element.value for element in statement.value.elts]
+        else:
+            problems.append(
+                f"{where} may only import names from .{', .'.join(sorted(allowed))} and list them in __all__:"
+                f" {ast.unparse(statement)}"
+            )
+    if exported is None:
+        problems.append(f"{path} must list the names it re-exports in __all__")
+    elif sorted(exported) != sorted(imported) or len(set(exported)) != len(exported):
+        problems.append(f"{path}: __all__ must list each name it imports once, and no other")
+    return problems
+
+
+def init_problems(
+    package_dir: Path,
+    package: str,
+    init_with_code: Iterable[str],
+    reexports: Mapping[str, Iterable[str]] | None = None,
+) -> list[str]:
     """Every folder with Python code but no __init__.py, every __init__.py that breaks the rule,
-    and every stale INIT_WITH_CODE entry.
+    and every stale INIT_WITH_CODE or REEXPORTS entry.
 
     Python imports a folder without __init__.py as a namespace package, but grimp
     leaves it out of the graph, so the contracts and the layer map would skip it.
     """
     allowed = set(init_with_code)
+    reexports = reexports or {}
     packages = set()
     sources = [source.relative_to(package_dir).parts for source in package_dir.rglob("*.py")]
     folders = {package_dir.joinpath(*parts[:depth]) for parts in sources for depth in range(len(parts))}
@@ -173,11 +248,14 @@ def init_problems(package_dir: Path, package: str, init_with_code: Iterable[str]
         packages.add(name)
         path = init.relative_to(package_dir).as_posix()
         body = ast.parse(init.read_text(encoding="utf-8"), filename=str(init)).body
-        if name in allowed and not holds_code(body):
+        if name in reexports:
+            problems += reexport_problems(path, body, reexports[name])
+        elif name in allowed and not holds_code(body):
             problems.append(f"{path} holds no code, so {name} is a stale entry of INIT_WITH_CODE")
         elif name not in allowed and not is_docstring_only(body):
             problems.append(f"{path} must hold exactly one statement, a non-empty docstring")
     problems += [f"{name} is in INIT_WITH_CODE but is not a package" for name in sorted(allowed - packages)]
+    problems += [f"{name} is in REEXPORTS but is not a package" for name in sorted(set(reexports) - packages)]
     return problems
 
 
@@ -263,7 +341,7 @@ def test_an_upward_import_is_reported_with_its_file_and_line(tmp_path, monkeypat
 
 
 def test_every_package_init_holds_only_a_docstring_unless_allowed():
-    problems = init_problems(PACKAGE_DIR, PACKAGE, INIT_WITH_CODE)
+    problems = init_problems(PACKAGE_DIR, PACKAGE, INIT_WITH_CODE, REEXPORTS)
     assert not problems, "\n".join(problems)
 
 
@@ -288,4 +366,47 @@ def test_an_init_with_code_or_a_stale_entry_is_reported(tmp_path):
         "empty/__init__.py must hold exactly one statement, a non-empty docstring",
         "stale/__init__.py holds no code, so contract_probe.stale is a stale entry of INIT_WITH_CODE",
         "contract_probe.gone is in INIT_WITH_CODE but is not a package",
+    ]
+
+
+def test_a_reexporting_init_that_breaks_its_rule_is_reported(tmp_path):
+    package = tmp_path / "contract_probe"
+    _write(package / "__init__.py", '"""A probe package."""\n')
+    _write(
+        package / "fine" / "__init__.py",
+        '"""Re-exports."""\n\nfrom .base import A, B\nfrom .tables import C as C\n\n__all__ = ["A", "B", "C"]\n',
+    )
+    _write(
+        package / "broken" / "__init__.py",
+        "from .base import A\n"
+        "from .registry import Spec\n"
+        "from .base import B as Renamed\n"
+        "from .base import *\n"
+        "from . import base\n"
+        "x = 1\n"
+        '__all__ = ["A", "Z"]\n',
+    )
+    _write(package / "unlisted" / "__init__.py", '"""Re-exports without __all__."""\nfrom .base import A\n')
+    _write(package / "twice" / "__init__.py", '"""Re-exports."""\nfrom .base import A\n__all__ = ["A", "A"]\n')
+    reexports = {
+        "contract_probe.fine": {"base", "tables"},
+        "contract_probe.broken": {"base"},
+        "contract_probe.unlisted": {"base"},
+        "contract_probe.twice": {"base"},
+        "contract_probe.gone": {"base"},
+    }
+
+    problems = init_problems(package, "contract_probe", set(), reexports)
+
+    assert problems == [
+        "broken/__init__.py must start with a non-empty docstring",
+        "broken/__init__.py:2 may only import names from .base and list them in __all__: from .registry import Spec",
+        "broken/__init__.py:3 must import each name under its own name: from .base import B as Renamed",
+        "broken/__init__.py:4 must import each name under its own name: from .base import *",
+        "broken/__init__.py:5 may only import names from .base and list them in __all__: from . import base",
+        "broken/__init__.py:6 may only import names from .base and list them in __all__: x = 1",
+        "broken/__init__.py: __all__ must list each name it imports once, and no other",
+        "twice/__init__.py: __all__ must list each name it imports once, and no other",
+        "unlisted/__init__.py must list the names it re-exports in __all__",
+        "contract_probe.gone is in REEXPORTS but is not a package",
     ]

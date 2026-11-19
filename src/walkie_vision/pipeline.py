@@ -64,6 +64,7 @@ from .providers import (
     PoseEstimator,
     ReIdentifier,
 )
+from .providers.image_embed.base import check_model_dim
 
 TRACK_ID_SPACE = 2**32 - 1
 """The number of non-zero uint32 values, which a published track id can take."""
@@ -285,7 +286,7 @@ class VisionPipeline:
                 raise ValueError("object_embeddings_enabled needs an embedder")
             if providers.embedder.model_name.startswith(FAKE_MODEL_PREFIX) and not allow_fake_embedder:
                 raise ValueError(f"the fake embedder {providers.embedder.model_name} must not run with the real models")
-            convert.check_model_dim(providers.embedder)
+            check_model_dim(providers.embedder)
         if not 0.0 < depth_min_m < depth_max_m < float("inf"):
             raise ValueError(f"the depth range must be positive and finite, not {depth_min_m} to {depth_max_m}")
         for name, value in (("people_min_score", people_min_score), ("objects_min_score", objects_min_score)):

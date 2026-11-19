@@ -25,7 +25,8 @@ build, because `scripts/activate.sh` sources the overlay on activation.
 ## Layout
 
 - `ros2_ws/src/walkie_vision_msgs/`: the messages and the services only.
-- `src/walkie_vision/providers.py`: model interfaces and result types.
+- `src/walkie_vision/providers/`: model interfaces and result types, one
+  `base.py` per vision task, and the vector model names in `vector_tables.py`.
 - `src/walkie_vision/convert.py`: results to messages, with validation.
 - `src/walkie_vision/node.py`, `pipeline.py`: the vision node,
   one process for every model (ADR-0010). `yolo.py` and `face/heads.py` are

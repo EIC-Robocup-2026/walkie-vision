@@ -37,7 +37,9 @@ from walkie_vision_msgs.srv import DetectObjects, EmbedCrop, EmbedText, GetPerso
 
 from .crops.colour import COLOR_NAMES
 from .crops.person import CropStatus, PersonCrop
-from .providers import CLIP_VIT_B16, Detection, Embedder, Face, PersonPose
+from .providers import Detection, Embedder, Face, PersonPose
+from .providers.image_embed.base import check_model_dim
+from .providers.vector_tables import EMBEDDING_DIMS
 
 MAX_CLOUD_POINTS = 2000
 """The most points that one object's cloud may hold."""
@@ -47,8 +49,6 @@ POINT_STEP = 12
 """The bytes of one point: x, y and z as float32."""
 JPEG_FORMAT = "jpeg"
 """The value of CompressedImage.format for every object crop."""
-EMBEDDING_DIMS = {CLIP_VIT_B16: 512}
-"""The vector length of each real object embedder. Other names, such as a fake's, are not checked."""
 MAX_MESSAGE_CHARS = 256
 """The longest failure message of a service response."""
 
@@ -513,13 +513,6 @@ def fill_embed_text_response(
 def bounded_message(text: str) -> str:
     """Cut a failure message down to MAX_MESSAGE_CHARS."""
     return text if len(text) <= MAX_MESSAGE_CHARS else text[: MAX_MESSAGE_CHARS - 3] + "..."
-
-
-def check_model_dim(embedder: Embedder) -> None:
-    """Raise ValueError for a real model's name on a vector of another length."""
-    expected = EMBEDDING_DIMS.get(embedder.model_name)
-    if expected is not None and embedder.dim != expected:
-        raise ValueError(f"{embedder.model_name} has {expected} dimensions, not {embedder.dim}")
 
 
 def embed_text_failure(code: str, message: str) -> EmbedText.Response:

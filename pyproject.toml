@@ -161,6 +161,18 @@ forbidden_modules = [
     "walkie_vision.yolo",
 ]
 
+# walkie_vision.providers re-exports the names of its modules for callers
+# outside it. A module inside providers/ imports the module that defines a
+# name, never the package: importing the package runs its __init__, which
+# imports the module back before it has finished loading.
+[[tool.importlinter.contracts]]
+id = "providers-modules-skip-the-package-init"
+name = "Modules inside providers/ do not import the providers package itself"
+type = "forbidden"
+as_packages = false
+source_modules = ["walkie_vision.providers.**"]
+forbidden_modules = ["walkie_vision.providers"]
+
 # Two modules of one package never import each other, directly or through
 # others: a cycle means neither can be understood or moved alone.
 [[tool.importlinter.contracts]]
