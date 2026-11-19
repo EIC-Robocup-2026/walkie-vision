@@ -1598,6 +1598,8 @@ def test_embed_text_stops_at_its_deadline_and_discards_the_late_result(harness, 
     try:
         response = h.answer(h.call(EmbedText, _text_request()))
         assert not response.success and response.message.startswith(jobs.TIMEOUT)
+        # The node reads the deadline from embed_text at call time, so the patch bites.
+        assert response.message.endswith("no answer in 0.2 s"), response.message
         assert response.embedding_model == "" and len(response.vectors) == 0
         # The model still runs, so the slot stays taken.
         assert h.answer(h.call(EmbedText, _text_request())).message.startswith(jobs.BUSY)

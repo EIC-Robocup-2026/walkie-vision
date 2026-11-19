@@ -14,6 +14,8 @@ from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray, PersonDetection, PersonDetectionArray
 from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
 
+from walkie_vision.crops.colour import COLOR_NAMES
+from walkie_vision.fakes import FakeEmbedder, FakeObjectDetector
 from walkie_vision.messages import (
     MAX_CLOUD_POINTS,
     MIN_CLOUD_POINTS,
@@ -32,8 +34,6 @@ from walkie_vision.messages import (
     to_point_cloud,
     unit_vector,
 )
-from walkie_vision.crops.colour import COLOR_NAMES
-from walkie_vision.fakes import FakeEmbedder, FakeObjectDetector
 from walkie_vision.providers import CLIP_VIT_B16, Detection, Face, PersonPose
 
 # HD2K, the ZED 2i's resolution on the robot.
