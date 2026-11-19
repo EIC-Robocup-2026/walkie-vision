@@ -32,10 +32,11 @@ build, because `scripts/activate.sh` sources the overlay on activation.
   the detector, pose and head-crop face providers, including the second
   detector behind `DetectObjects` (ADR-0009). Off by default.
 - `src/walkie_vision/camera/`: the camera input. `camera/image.py` turns images
-  into BGR arrays, `camera/depth.py` reads registered depth and
-  `camera/mailboxes.py` pairs colour with it, bounded by wall time (ADR-0014).
-  `src/walkie_vision/geometry.py` lifts masks to points and scores views.
-  Off by default.
+  into BGR arrays. `camera/depth.py` reads registered depth, and
+  `camera/mailboxes.py` pairs colour with it, bounded by wall time (ADR-0014);
+  the depth pairing is off by default.
+- `src/walkie_vision/geometry.py`: lifts masks to points and scores views. Off
+  by default.
 - `src/walkie_vision/crops/objects.py`, `crops/colour.py`: the object sampler,
   padded crops and colour shares. `src/walkie_vision/embeddings.py`: the
   interim CLIP provider. Off by default.
