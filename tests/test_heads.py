@@ -300,7 +300,7 @@ def test_faces_are_in_whole_image_pixels_and_inside_the_image():
     for f in out:
         assert 0 <= f.bbox[0] < f.bbox[2] <= WIDTH and 0 <= f.bbox[1] < f.bbox[3] <= HEIGHT
         assert f.embedding.shape == (512,) and f.embedding.dtype == np.float32
-        # Not normalised: convert does that.
+        # Not normalised: messages does that.
         assert np.linalg.norm(f.embedding) == pytest.approx(3.0, rel=1e-5)
     assert not np.allclose(out[0].embedding, out[1].embedding)
     # One SCRFD call per person, at the smallest size that holds a 120 px crop.

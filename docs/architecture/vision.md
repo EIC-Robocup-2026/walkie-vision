@@ -1054,7 +1054,7 @@ The array, its `camera_info`, each cloud and each sampled crop have the same
 header. An empty cloud still has its three fields and that header. Its fields
 are x, y and z at offsets 0, 4 and 8, FLOAT32, count 1, with `point_step` 12,
 `row_step` 12 times `width`, little-endian and dense.
-`convert.check_object_detection_array` holds these rules
+`messages.check_object_detection_array` holds these rules
 ([ADR-0013](decisions/0013-memory-observation-contract.md)).
 
 ### PersonDetectionArray and PersonDetection
@@ -1238,7 +1238,7 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.providers`   | The interfaces every model implements (`ObjectDetector`, `Embedder`, `PoseEstimator`, `ReIdentifier`, `FaceRecognizer`, `PersonFaceRecognizer`) and their result types, one `base` module per vision task (`providers.object_detection.base` and the others), and the vector model names with their lengths (`providers.vector_tables`) |
 | `walkie_vision.fakes`       | A fake for each interface, with deterministic vectors, for tests without a GPU (`FakePersonFaceRecognizer` among them), and painted figures for the crop tests (`figure_pose`, `paint_figure`) |
 | `walkie_vision.fake_publisher` | Synthetic object arrays from a scene file, with no model, for consumers' tests ([The fake publisher](../guides/vision-node.md#fake-publisher)) |
-| `walkie_vision.convert`     | Model results to messages, with the checks the message comments state             |
+| `walkie_vision.messages`    | Model results to messages, with the checks the message comments state, and the QoS profiles of the camera input and the two arrays |
 | `walkie_vision.yolo`        | YOLOE-26 and YOLO26 pose with their trackers (`YoloeTracker`, `YoloPoseTracker`)  |
 | `walkie_vision.face`        | SCRFD and ArcFace on ONNX Runtime (`FaceAnalyzer`, a `FaceRecognizer`)            |
 | `walkie_vision.face.heads`  | Faces from crops around each person's head (`HeadFaceRecognizer`, a `PersonFaceRecognizer`) |
@@ -1253,7 +1253,7 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.crops`       | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. The object sampler and padded crops (`crops.objects`), and colour recipe v1 (`crops.colour`). No ROS node and no model |
 | `walkie_vision.node`        | The vision node: parameters, threads, publishing, health checks and `build_providers` |
 
-The node holds one provider for each model, and `pipeline` uses `convert`
+The node holds one provider for each model, and `pipeline` uses `messages`
 to build what they return into messages. The tests run the same path with
 the fakes, so the node is tested without a GPU.
 
@@ -1551,7 +1551,7 @@ bodies, so the node finds no people there.
 | -------------------------------------------------------- | ----------------------------------------------------------- | ------ |
 | The `DetectObjects` service type                         | `ros2_ws/src/walkie_vision_msgs/srv/DetectObjects.srv`      | Done   |
 | Its entry in `rosidl_generate_interfaces`                | `ros2_ws/src/walkie_vision_msgs/CMakeLists.txt`             | Done   |
-| Field pins for its request and response                  | `test_message_fields` in `tests/test_convert.py`            | Done   |
+| Field pins for its request and response                  | `test_message_fields` in `tests/test_messages.py`           | Done   |
 | Filling the response                                     | `walkie_vision.pipeline`. `detect_on_demand` fills `objects`, and `services.detect_objects.detect_objects_failure` fills a failure. | Done |
 | The `DetectObjects` server, with its own YOLOE instance and no tracker | The vision node (`walkie_vision.node`), and `YoloeDetector` in `walkie_vision.yolo` | Done on fakes. Not run with a real model. |
 | The `EmbedText` server                                   | The vision node (`walkie_vision.node`)                      | Done ([Bounded services](#bounded-services)). No change to its type. |

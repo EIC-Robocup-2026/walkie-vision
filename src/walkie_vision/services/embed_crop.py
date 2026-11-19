@@ -17,12 +17,12 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Header
 from walkie_vision_msgs.srv import EmbedCrop
 
-from .. import boxes, convert
+from .. import boxes, messages
 from ..boxes import resize_mask
 from ..camera.depth import RegisteredDepth
-from ..convert import float32_array, stamp_ns, to_jpeg_image, unit_vector
 from ..crops import objects
 from ..geometry import depth_cover, frame_laplacian, view_quality
+from ..messages import float32_array, stamp_ns, to_jpeg_image, unit_vector
 from ..providers import Embedder
 from ..providers.image_embed.base import check_model_dim
 from .jobs import MAX_TIMEOUT_S, bounded_message
@@ -78,7 +78,7 @@ def embed_crop_problem(request: EmbedCrop.Request) -> str | None:
         return f"bbox must have a positive area, not {bbox.size_x} by {bbox.size_y}"
     # Finite fields can still add up past the largest float. A corner that is
     # not finite cannot become a whole pixel, so it is refused here.
-    box = convert.bbox_to_box(bbox)
+    box = messages.bbox_to_box(bbox)
     if not np.all(np.isfinite(box)):
         return "bbox has a corner that is not finite"
     if not np.all(np.isfinite(boxes.pad_box(box, objects.CROP_PADDING))):

@@ -17,7 +17,7 @@ os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
 def pytest_configure(config):
     # The message package is built separately (`pixi run build-msgs`), and
     # scripts/activate.sh adds it to the environment only once it exists.
-    # Without it, every test module that imports walkie_vision.convert would
+    # Without it, every test module that imports walkie_vision.messages would
     # fail with an ImportError that does not say what to do.
     if importlib.util.find_spec("walkie_vision_msgs") is None:
         raise pytest.UsageError(

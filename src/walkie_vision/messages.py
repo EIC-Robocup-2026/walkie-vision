@@ -14,6 +14,9 @@ node cannot publish a message that breaks them:
 
 Unbounded float32[] fields are filled with array.array("f"): rosidl's Python
 setters accept that type or a list, not a numpy array.
+
+The QoS profiles of the camera input and of the two output arrays are here too,
+next to the messages they carry.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import uuid
 from collections.abc import Iterable, Sequence
 
 import numpy as np
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, CompressedImage, PointCloud2, PointField
 from std_msgs.msg import Header
 from vision_msgs.msg import BoundingBox2D
@@ -46,6 +50,24 @@ POINT_STEP = 12
 """The bytes of one point: x, y and z as float32."""
 JPEG_FORMAT = "jpeg"
 """The value of CompressedImage.format for every object crop."""
+
+# The camera's newest image only: a late image is worth less than none.
+IMAGE_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+)
+CAMERA_INFO_QOS = IMAGE_QOS
+# RELIABLE, as walkie-agent-ros's oracle_perception: a reliable subscriber
+# such as a bag recorder gets every array, and a BEST_EFFORT one, such as the
+# agent's VisionFeed, matches too.
+OUTPUT_QOS = QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=5,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.VOLATILE,
+)
 
 _CLOUD_FIELDS = (("x", 0), ("y", 4), ("z", 8))
 _JPEG_START = b"\xff\xd8"

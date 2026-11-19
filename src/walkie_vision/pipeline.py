@@ -47,7 +47,7 @@ from sensor_msgs.msg import CameraInfo, CompressedImage, PointCloud2
 from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray, PersonDetectionArray
 
-from . import convert
+from . import messages
 from .boxes import resize_mask
 from .camera.depth import RegisteredDepth
 from .crops import colour
@@ -302,7 +302,7 @@ class VisionPipeline:
         self._people_min_score = float(people_min_score)
         self._objects_min_score = float(objects_min_score)
         self._people_dedupe_iou = float(people_dedupe_iou)
-        self._stream_id = convert.new_stream_id() if stream_id is None else stream_id
+        self._stream_id = messages.new_stream_id() if stream_id is None else stream_id
         self._geometry_enabled = bool(geometry_enabled)
         self._depth_min_m = float(depth_min_m)
         self._depth_max_m = float(depth_max_m)
@@ -371,7 +371,7 @@ class VisionPipeline:
         samples = self._fill_samples(image, header, kept, object_crops.usable_samples(kept, width, height), dropped, times)
         times.crop = max(0.0, _ms_since(started) - times.embed)
         objects = self._to_objects(kept, found_geometry, samples)
-        array = convert.to_object_detection_array(header, info, detector.classes, objects, stream_id=self._stream_id)
+        array = messages.to_object_detection_array(header, info, detector.classes, objects, stream_id=self._stream_id)
         times.build = max(0.0, _ms_since(t) - times.lift - times.crop - times.embed)
         return OnDemandResult(
             objects=array, times=times, dropped=dropped, sampled=sum(sample.chosen for sample in samples)
@@ -433,7 +433,7 @@ class VisionPipeline:
         info = copy.deepcopy(camera_info)
         info.header = header
         people = [
-            convert.to_person_detection(
+            messages.to_person_detection(
                 dataclasses.replace(pose, track_id=self._ids.map(pose.track_id)),
                 face=face,
                 face_model=p.faces.model_name if face is not None else "",
@@ -446,8 +446,8 @@ class VisionPipeline:
         found_geometry = self._geometry(image, header, detections, depth, times)
         samples = self._samples(image, header, published, dropped, times)
         objects = self._to_objects(published, found_geometry, samples)
-        people_array = convert.to_person_detection_array(header, info, people)
-        objects_array = convert.to_object_detection_array(
+        people_array = messages.to_person_detection_array(header, info, people)
+        objects_array = messages.to_object_detection_array(
             header, info, self._classes, objects, stream_id=self._stream_id
         )
         times.build = max(0.0, _ms_since(t) - times.lift - times.crop - times.embed)
@@ -469,7 +469,7 @@ class VisionPipeline:
     ) -> list[ObjectDetection]:
         """Return the message of each detection, with its geometry and its sample."""
         return [
-            convert.to_object_detection(
+            messages.to_object_detection(
                 det,
                 points=points,
                 view_quality=quality,
@@ -510,7 +510,7 @@ class VisionPipeline:
             if depth is not None:
                 on_raster = resize_mask(mask, *depth.metres.shape)
                 cover = depth_cover(on_raster, depth.metres, self._depth_min_m, self._depth_max_m)
-                points = convert.to_point_cloud(header, lift_mask(on_raster, depth, self._depth_min_m, self._depth_max_m))
+                points = messages.to_point_cloud(header, lift_mask(on_raster, depth, self._depth_min_m, self._depth_max_m))
             found.append((points, view_quality(mask, det.box, laplacian, cover)))
         times.lift = _ms_since(started)
         return found
@@ -564,7 +564,7 @@ class VisionPipeline:
         for i, source, vector in zip(chosen, sources, vectors, strict=True):
             mask = detections[i].mask
             samples[i] = _Sample(
-                crop=convert.to_jpeg_image(header, object_crops.encode_crop(source)) if self._crops_enabled else None,
+                crop=messages.to_jpeg_image(header, object_crops.encode_crop(source)) if self._crops_enabled else None,
                 embedding=vector,
                 embedding_model=model if vector is not None else "",
                 color_shares=None

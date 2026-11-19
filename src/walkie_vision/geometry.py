@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from .camera.depth import RegisteredDepth
-from .convert import MAX_CLOUD_POINTS, MIN_CLOUD_POINTS, evenly_spaced_indices
+from .messages import MAX_CLOUD_POINTS, MIN_CLOUD_POINTS, evenly_spaced_indices
 
 # The erosion amount: a share of the mask's smaller extent, within these bounds.
 _EROSION_SHARE = 0.05

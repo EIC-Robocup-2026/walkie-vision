@@ -15,7 +15,7 @@ from collections.abc import Callable
 from sensor_msgs.msg import Image
 from walkie_vision_msgs.srv import DetectObjects
 
-from ..convert import stamp_ns
+from ..messages import stamp_ns
 from .jobs import MAX_TIMEOUT_S, bounded_message
 
 MAX_CLASSES = 32

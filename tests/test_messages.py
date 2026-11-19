@@ -1,3 +1,4 @@
+"""walkie_vision.messages: the stream message builders and their checks, and the message definitions they fill."""
 import array
 import json
 import uuid
@@ -13,7 +14,7 @@ from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray, PersonDetection, PersonDetectionArray
 from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
 
-from walkie_vision.convert import (
+from walkie_vision.messages import (
     MAX_CLOUD_POINTS,
     MIN_CLOUD_POINTS,
     bbox_to_box,

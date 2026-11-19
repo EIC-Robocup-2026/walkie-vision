@@ -7,11 +7,11 @@ from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import Header
 from walkie_vision_msgs.srv import GetPersonCrop
 
-from walkie_vision.convert import pose_from_person_detection, to_person_detection, to_person_detection_array
 from walkie_vision.crops import person
 from walkie_vision.crops.colour import COLOR_NAMES
 from walkie_vision.crops.person import crop_person
 from walkie_vision.fakes import figure_pose, paint_figure
+from walkie_vision.messages import pose_from_person_detection, to_person_detection, to_person_detection_array
 from walkie_vision.services.get_person_crop import fill_person_crop_response
 
 

@@ -11,7 +11,6 @@ from builtin_interfaces.msg import Time
 from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import Header
 
-from walkie_vision.convert import bbox_to_box
 from walkie_vision.crops import colour, objects
 from walkie_vision.crops.colour import PALETTE_RGB
 from walkie_vision.crops.objects import encode_crop, padded_crop
@@ -24,6 +23,7 @@ from walkie_vision.fakes import (
     box_mask,
     hash_vector,
 )
+from walkie_vision.messages import bbox_to_box
 from walkie_vision.pipeline import Providers, TrackIdBase, VisionPipeline
 from walkie_vision.providers import CLIP_VIT_B16, Detection
 

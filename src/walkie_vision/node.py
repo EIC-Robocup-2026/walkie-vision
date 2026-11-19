@@ -78,21 +78,20 @@ from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.logging import get_logger
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.validate_full_topic_name import validate_full_topic_name
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
 
-from . import convert
+from . import messages
 from .camera.depth import DepthRefused, RegisteredDepth, read_registered_depth
 from .camera.image import camera_info_problem, image_to_bgr
 from .camera.mailboxes import CurrentImage, NewestFrame, RgbdBuffer
-from .convert import stamp_ns
 from .crops import person
 from .crops.person import CropStatus
 from .errors import StartupError
+from .messages import CAMERA_INFO_QOS, IMAGE_QOS, OUTPUT_QOS, stamp_ns
 from .pipeline import ON_DEMAND_MAX_OBJECTS, Providers, StageTimes, TrackIdBase, VisionPipeline
 from .services import detect_objects, embed_crop, jobs
 from .services import embed_text as embed_text_service
@@ -107,24 +106,6 @@ from .services.get_person_crop import (
 NODE_NAME = "walkie_vision"
 
 _T = TypeVar("_T")
-
-# The camera's newest image only: a late image is worth less than none.
-IMAGE_QOS = QoSProfile(
-    history=HistoryPolicy.KEEP_LAST,
-    depth=1,
-    reliability=ReliabilityPolicy.BEST_EFFORT,
-    durability=DurabilityPolicy.VOLATILE,
-)
-CAMERA_INFO_QOS = IMAGE_QOS
-# RELIABLE, as walkie-agent-ros's oracle_perception: a reliable subscriber
-# such as a bag recorder gets every array, and a BEST_EFFORT one, such as the
-# agent's VisionFeed, matches too.
-OUTPUT_QOS = QoSProfile(
-    history=HistoryPolicy.KEEP_LAST,
-    depth=5,
-    reliability=ReliabilityPolicy.RELIABLE,
-    durability=DurabilityPolicy.VOLATILE,
-)
 
 TARGET_RATE_HZ = 5.0
 """The contract's lowest output rate."""
@@ -1182,7 +1163,7 @@ class VisionNode(Node):
             self._embedder,
             image_to_bgr(msg),
             Header(stamp=msg.header.stamp, frame_id=msg.header.frame_id),
-            convert.bbox_to_box(request.bbox),
+            messages.bbox_to_box(request.bbox),
             self._current_depth(msg, depth_msg),
             cfg.depth_min_m,
             cfg.depth_max_m,
@@ -1370,7 +1351,7 @@ class VisionNode(Node):
         try:
             found = person.crop_person(
                 image,
-                [convert.pose_from_person_detection(p) for p in people.people],
+                [messages.pose_from_person_detection(p) for p in people.people],
                 int(request.track_id),
                 padding=float(request.padding),
                 max_side=int(request.max_side),

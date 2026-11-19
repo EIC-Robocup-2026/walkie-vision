@@ -27,7 +27,8 @@ build, because `scripts/activate.sh` sources the overlay on activation.
 - `ros2_ws/src/walkie_vision_msgs/`: the messages and the services only.
 - `src/walkie_vision/providers/`: model interfaces and result types, one
   `base.py` per vision task, and the vector model names in `vector_tables.py`.
-- `src/walkie_vision/convert.py`: results to messages, with validation.
+- `src/walkie_vision/messages.py`: results to messages, with validation, and
+  the QoS profiles.
 - `src/walkie_vision/node.py`, `pipeline.py`: the vision node,
   one process for every model (ADR-0010). `yolo.py` and `face/heads.py` are
   the detector, pose and head-crop face providers, including the second
@@ -77,8 +78,9 @@ build, because `scripts/activate.sh` sources the overlay on activation.
   (`docs/guides/vision-node.md`).
 - Use only ungated Hugging Face models, pinned to a commit in `HUB_MODELS`,
   and pass that `revision` when loading. Never log in to Hugging Face.
-- A message change needs: the `.msg` comments, `convert.py`, the field pins
-  in `tests/test_convert.py`, and a rebuild in every consuming repository
+- A message change needs: the `.msg` comments, `messages.py`, the field pins
+  in `tests/test_messages.py`, the digests in `tests/test_golden_messages.py`,
+  and a rebuild in every consuming repository
   (walkie-database, walkie-agent-ros). Under rmw_zenoh, a mismatched
   definition fails silently.
 - A significant decision gets an ADR in `docs/architecture/decisions/`,

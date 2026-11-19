@@ -31,7 +31,6 @@ from std_msgs.msg import Header
 from walkie_vision_msgs.srv import DetectObjects, EmbedText, GetPersonCrop
 
 from walkie_vision.camera.depth import RegisteredDepth
-from walkie_vision.convert import check_object_detection_array, pose_from_person_detection
 from walkie_vision.crops.person import CropStatus, crop_person
 from walkie_vision.fake_publisher import DEFAULT_SCENE, FakeStream, load_scene
 from walkie_vision.fakes import (
@@ -44,6 +43,7 @@ from walkie_vision.fakes import (
     figure_pose,
     paint_figure,
 )
+from walkie_vision.messages import check_object_detection_array, pose_from_person_detection
 from walkie_vision.pipeline import Providers, TrackIdBase, VisionPipeline
 from walkie_vision.providers import Detection, Face
 from walkie_vision.services.detect_objects import detect_objects_failure

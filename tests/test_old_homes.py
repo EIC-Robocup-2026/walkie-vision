@@ -141,6 +141,17 @@ REMOVED = re.compile(
             r"|MAX_CROP_TIMEOUT_S)\b",
             r"\bconvert(_module)?[.:]fill_person_crop_response\b",
             r"from (walkie_vision\.|\.+)convert import [^\n]*\bfill_person_crop_response\b",
+            # walkie_vision.convert became walkie_vision.messages, and the QoS profiles left
+            # walkie_vision.node for it. The word convert is fine: PIL's Image.convert and
+            # the convert stage of the latency log keep it.
+            r"walkie_vision[./]convert\b",
+            r"from walkie_vision import [^\n]*\bconvert\b",
+            r"from \.+convert import",
+            r"from \.+ import [^\n]*\bconvert\b",
+            r"\bconvert\.py\b",
+            r"\btest_convert\.py\b",
+            r"\bnode(_module)?[.:](IMAGE_QOS|CAMERA_INFO_QOS|OUTPUT_QOS)\b",
+            r"from (walkie_vision\.|\.+)node import [^\n]*\b(IMAGE_QOS|CAMERA_INFO_QOS|OUTPUT_QOS)\b",
         ]
     )
 )
@@ -279,6 +290,11 @@ LEFT_NODE_PERSON_CROP = frozenset(
     {"MAX_CROP_TIMEOUT_S", "_crop_answer", "CropJob", "CropMailbox", "crop_request_problem"}
 )
 LEFT_CONVERT_PERSON_CROP = frozenset({"fill_person_crop_response"})
+# convert.py became messages.py, which serves none of the names that left convert.py
+# before it. The QoS profiles left node.py for messages.py; node.py imports them, since
+# it subscribes and publishes with them, but defines none.
+MESSAGES = "walkie_vision.messages"
+LEFT_NODE_QOS = frozenset({"IMAGE_QOS", "CAMERA_INFO_QOS", "OUTPUT_QOS"})
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -588,7 +604,7 @@ def test_the_person_crop_did_not_come_back_to_crop():
 
 def test_no_code_imports_the_person_crop_from_crop():
     code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
-    assert {PACKAGE_DIR / "node.py", PACKAGE_DIR / "convert.py", ROOT / "tests" / "test_node.py"} <= set(code)
+    assert {PACKAGE_DIR / "node.py", PACKAGE_DIR / "messages.py", ROOT / "tests" / "test_node.py"} <= set(code)
     assert [hit for file in code for hit in _imports_a_module_that_left(file, CROP)] == []
 
 
@@ -715,7 +731,7 @@ def test_the_sweep_would_catch_the_model_file_table_at_its_old_home(tmp_path):
         tmp_path / "good.py",
         "from walkie_vision.weights import ULTRALYTICS_DIR, models_dir\n"
         "from walkie_vision import embeddings, weights\n"
-        "from . import convert, crops, services\n"
+        "from . import crops, messages, services\n"
         "from .. import models_dir\n"
         "from .weights import CLIP_WEIGHTS, HUB_MODELS\n"
         'cmd = "python -m walkie_vision.weights"\n'
@@ -996,7 +1012,7 @@ def test_the_sweep_would_catch_the_person_crop_at_its_old_home(tmp_path):
         "from walkie_vision.crops.person import CropStatus, crop_person\n"
         "from walkie_vision.crops import colour, person\n"
         "from walkie_vision import boxes, crops\n"
-        "from . import convert, crops, services\n"
+        "from . import crops, messages, services\n"
         "from .crops.jpeg import encode_jpeg\n"
         "from ..crops import colour\n"
         "| `src/walkie_vision/crops/` | One person's crop, mask and colour shares |\n"
@@ -1212,7 +1228,7 @@ def test_camera_depth_does_not_define_or_import_the_depth_maths_the_mailboxes_or
     assert _binds_one_of(depth, LEFT_DEPTH) == []
     # The raster reading needs no mailbox and no message conversion.
     assert _imports_a_module_that_left(depth, "walkie_vision.camera.mailboxes") == []
-    assert _imports_a_module_that_left(depth, "walkie_vision.convert") == []
+    assert _imports_a_module_that_left(depth, MESSAGES) == []
 
 
 def test_no_code_takes_the_mailbox_from_the_node_or_the_current_image_from_requests():
@@ -1264,7 +1280,7 @@ def test_the_sweep_would_catch_image_depth_and_the_mailboxes_at_their_old_homes(
         "from .image import calibration_problem, camera_info_problem\n"
         "from . import depth, image\n"
         "from .camera.mailboxes import CurrentImage, NewestFrame, RgbdBuffer\n"
-        "from . import convert, geometry, services\n"
+        "from . import geometry, messages, services\n"
         "| `src/walkie_vision/camera/` | The camera input and its mailboxes |\n"
         "The pairing is walkie_vision.camera.mailboxes.RgbdBuffer (ADR-0014).\n"
         "assert isinstance(h.node._mailbox, NewestFrame)\n"
@@ -1395,16 +1411,18 @@ def test_the_provider_interfaces_did_not_come_back_to_providers_py():
 
 def test_no_code_takes_the_vector_lengths_or_the_dim_check_from_convert():
     code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
-    assert {PACKAGE_DIR / "convert.py", PACKAGE_DIR / "pipeline.py", ROOT / "tests" / "test_convert.py"} <= set(code)
+    assert {PACKAGE_DIR / "messages.py", PACKAGE_DIR / "pipeline.py", ROOT / "tests" / "test_messages.py"} <= set(code)
+    # convert.py is messages.py now: neither the old module nor its successor serves them.
     assert [hit for file in code for hit in _reads_a_name_that_left(file, CONVERT, LEFT_CONVERT)] == []
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, MESSAGES, LEFT_CONVERT)] == []
 
 
 def test_convert_does_not_define_the_vector_lengths_or_the_dim_check_again():
-    # convert.py imports EMBEDDING_DIMS, which it still uses, but defines neither. The
-    # dim check's one caller in it left for services/embed_crop.py, so it does not even
-    # import that.
-    assert _binds_one_of(PACKAGE_DIR / "convert.py", LEFT_CONVERT, imports=False) == []
-    assert _binds_one_of(PACKAGE_DIR / "convert.py", frozenset({"check_model_dim"})) == []
+    # messages.py (convert.py until the rename) imports EMBEDDING_DIMS, which it still
+    # uses, but defines neither. The dim check's one caller in it left for
+    # services/embed_crop.py, so it does not even import that.
+    assert _binds_one_of(PACKAGE_DIR / "messages.py", LEFT_CONVERT, imports=False) == []
+    assert _binds_one_of(PACKAGE_DIR / "messages.py", frozenset({"check_model_dim"})) == []
 
 
 def test_the_sweep_would_catch_providers_py_or_the_vector_lengths_at_their_old_homes(tmp_path):
@@ -1420,8 +1438,8 @@ def test_the_sweep_would_catch_providers_py_or_the_vector_lengths_at_their_old_h
         "`walkie_vision.convert:check_model_dim` checks the length\n",
     )
     assert len(_mentions([bad], REMOVED)) == 8
-    # The new homes, the re-exported names, the names that stay in convert, longer
-    # file names and the bare call are fine.
+    # The new homes, the re-exported names, the names that stay in convert (messages
+    # since the rename), longer file names and the bare call are fine.
     good = _write(
         tmp_path / "good.py",
         "| `src/walkie_vision/providers/`      | The interfaces every model implements |\n"
@@ -1431,8 +1449,8 @@ def test_the_sweep_would_catch_providers_py_or_the_vector_lengths_at_their_old_h
         "from .providers.image_embed.base import check_model_dim\n"
         "from ..vector_tables import EMBEDDING_DIMS\n"
         "checks/c11_providers.py and tests/test_build_providers.py\n"
-        "convert.to_point_cloud(header, points), convert.unit_vector(vector)\n"
-        "from walkie_vision.convert import pose_from_person_detection\n"
+        "messages.to_point_cloud(header, points), messages.unit_vector(vector)\n"
+        "from walkie_vision.messages import pose_from_person_detection\n"
         "check_model_dim(providers.embedder)\n",
     )
     assert _mentions([good], REMOVED) == []
@@ -1517,10 +1535,12 @@ def test_no_code_takes_the_service_builders_or_the_message_bound_from_convert():
         ROOT / "tests" / "test_services_jobs.py",
     } <= set(code)
     assert [hit for file in code for hit in _reads_a_name_that_left(file, CONVERT, LEFT_CONVERT_SERVICES)] == []
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, MESSAGES, LEFT_CONVERT_SERVICES)] == []
 
 
 def test_convert_does_not_define_or_import_the_service_builders_or_the_message_bound():
-    assert _binds_one_of(PACKAGE_DIR / "convert.py", LEFT_CONVERT_SERVICES) == []
+    # messages.py is convert.py renamed.
+    assert _binds_one_of(PACKAGE_DIR / "messages.py", LEFT_CONVERT_SERVICES) == []
 
 
 def test_the_sweep_would_catch_requests_or_the_service_builders_at_their_old_homes(tmp_path):
@@ -1543,22 +1563,22 @@ def test_the_sweep_would_catch_requests_or_the_service_builders_at_their_old_hom
         "`walkie_vision.convert:fill_embed_crop_response` fills a crop\n",
     )
     assert len(_mentions([bad], REMOVED)) == 15
-    # The new homes, the names that stay in convert, float32_array, the requests
-    # library and the word requests are fine.
+    # The new homes, the names that stay in convert (messages since the rename),
+    # float32_array, the requests library and the word requests are fine.
     good = _write(
         tmp_path / "good.py",
         "from walkie_vision.services import detect_objects, embed_crop, embed_text, jobs\n"
         "from walkie_vision.services.jobs import BUSY, ServiceJob\n"
         "from .services import embed_text as embed_text_service\n"
         "from .jobs import MAX_TIMEOUT_S, bounded_message\n"
-        "from ..convert import float32_array, stamp_ns, unit_vector\n"
-        "from walkie_vision.convert import box_to_bbox, pose_from_person_detection\n"
-        "response.embedding = convert.float32_array(unit)\n"
+        "from ..messages import float32_array, stamp_ns, unit_vector\n"
+        "from walkie_vision.messages import box_to_bbox, pose_from_person_detection\n"
+        "response.embedding = messages.float32_array(unit)\n"
         "| `src/walkie_vision/services/` | Bounded service work |\n"
         "The pure parts are tested in tests/test_services_jobs.py.\n"
         "import requests\n"
         "Each callback checks its request, so requests cannot stop the stream.\n"
-        "convert.pose_from_person_detection(person)\n",
+        "messages.pose_from_person_detection(person)\n",
     )
     assert _mentions([good], REMOVED) == []
 
@@ -1651,16 +1671,18 @@ def test_no_code_takes_the_person_crop_service_from_the_node_or_convert():
     } <= set(code)
     assert [hit for file in code for hit in _reads_a_name_that_left(file, NODE, LEFT_NODE_PERSON_CROP)] == []
     assert [hit for file in code for hit in _reads_a_name_that_left(file, CONVERT, LEFT_CONVERT_PERSON_CROP)] == []
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, MESSAGES, LEFT_CONVERT_PERSON_CROP)] == []
 
 
 def test_the_node_and_convert_do_not_define_the_person_crop_service_again():
     # node.py imports the job, the mailbox, the check and the answers it uses, but
     # defines none of them; the timeout cap is used only by the check, so node.py does
-    # not even import it. convert.py does not use the response builder.
+    # not even import it. messages.py (convert.py until the rename) does not use the
+    # response builder.
     node = PACKAGE_DIR / "node.py"
     assert _binds_one_of(node, LEFT_NODE_PERSON_CROP, imports=False) == []
     assert _binds_one_of(node, frozenset({"MAX_CROP_TIMEOUT_S"})) == []
-    assert _binds_one_of(PACKAGE_DIR / "convert.py", LEFT_CONVERT_PERSON_CROP) == []
+    assert _binds_one_of(PACKAGE_DIR / "messages.py", LEFT_CONVERT_PERSON_CROP) == []
 
 
 def test_the_sweep_would_catch_the_person_crop_service_at_its_old_homes(tmp_path):
@@ -1678,8 +1700,8 @@ def test_the_sweep_would_catch_the_person_crop_service_at_its_old_homes(tmp_path
         "from .convert import fill_person_crop_response\n",
     )
     assert len(_mentions([bad], REMOVED)) == 10
-    # The new home, the names that stay in node and convert, longer names and the
-    # bare calls are fine.
+    # The new home, the names that stay in node and convert (messages since the
+    # rename), longer names and the bare calls are fine.
     good = _write(
         tmp_path / "good.py",
         "from walkie_vision.services.get_person_crop import CropJob, CropMailbox, fill_person_crop_response\n"
@@ -1687,9 +1709,9 @@ def test_the_sweep_would_catch_the_person_crop_service_at_its_old_homes(tmp_path
         "from .get_person_crop import MAX_CROP_TIMEOUT_S\n"
         "from walkie_vision.services import get_person_crop\n"
         "mailbox = get_person_crop.CropMailbox()\n"
-        "from walkie_vision.node import IMAGE_QOS, NODE_NAME, VisionConfig, VisionNode\n"
-        "from walkie_vision.convert import pose_from_person_detection, to_person_detection_array\n"
-        "convert.to_person_detection_array(header, info, people), node.CropJobs\n"
+        "from walkie_vision.node import EXECUTOR_THREADS, NODE_NAME, VisionConfig, VisionNode\n"
+        "from walkie_vision.messages import pose_from_person_detection, to_person_detection_array\n"
+        "messages.to_person_detection_array(header, info, people), node.CropJobs\n"
         "self._crops = CropMailbox()\n"
         "response = fill_person_crop_response(GetPersonCrop.Response(), people, found)\n",
     )
@@ -1764,3 +1786,184 @@ def test_the_tree_check_would_catch_the_person_crop_service_at_its_old_homes(tmp
     assert _reads_a_name_that_left(good, NODE, LEFT_NODE_PERSON_CROP) == []
     assert _reads_a_name_that_left(good, CONVERT, LEFT_CONVERT_PERSON_CROP) == []
     assert _binds_one_of(good, LEFT_NODE_PERSON_CROP, imports=False) == []
+
+
+def test_convert_did_not_come_back_to_the_package_root():
+    assert (PACKAGE_DIR / "messages.py").is_file()
+    assert _old_homes(SRC, CONVERT) == []
+
+
+def test_no_code_imports_convert():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "node.py",
+        PACKAGE_DIR / "pipeline.py",
+        PACKAGE_DIR / "geometry.py",
+        PACKAGE_DIR / "services" / "embed_crop.py",
+        ROOT / "checks" / "c12_memory.py",
+        ROOT / "tests" / "test_messages.py",
+    } <= set(code)
+    assert [hit for file in code for hit in _imports_a_module_that_left(file, CONVERT)] == []
+
+
+def test_no_code_takes_the_qos_profiles_from_the_node():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "fake_publisher.py",
+        PACKAGE_DIR / "debug_viz.py",
+        ROOT / "tests" / "test_node.py",
+        ROOT / "tests" / "test_fake_publisher.py",
+    } <= set(code)
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, NODE, LEFT_NODE_QOS)] == []
+
+
+def test_the_node_does_not_define_the_qos_profiles_again():
+    # node.py imports the three profiles, since it subscribes and publishes with them,
+    # but defines none; messages.py defines all three.
+    assert _binds_one_of(PACKAGE_DIR / "node.py", LEFT_NODE_QOS, imports=False) == []
+    messages = _binds_one_of(PACKAGE_DIR / "messages.py", LEFT_NODE_QOS, imports=False)
+    assert {hit.rpartition(" ")[2] for hit in messages} == LEFT_NODE_QOS
+
+
+def test_the_sweep_would_catch_convert_or_the_qos_profiles_at_their_old_homes(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision.convert import bbox_to_box, stamp_ns\n"
+        "import walkie_vision.convert\n"
+        "from walkie_vision import convert, errors\n"
+        "from walkie_vision import convert as convert_module\n"
+        "from . import boxes, convert\n"
+        "from .convert import MAX_CLOUD_POINTS, evenly_spaced_indices\n"
+        "from ..convert import float32_array\n"
+        "| `src/walkie_vision/convert.py`      | Model results to messages, with checks |\n"
+        "- A message change needs: the `.msg` comments, `convert.py`, the field pins\n"
+        "  in `tests/test_convert.py`, and a rebuild in every consuming repository\n"
+        "`walkie_vision.convert.check_object_detection_array` holds these rules\n"
+        "self._people_pub = self.create_publisher(PersonDetectionArray, topic, node.OUTPUT_QOS)\n"
+        "assert OBSERVATION_QOS == node_module.OUTPUT_QOS\n"
+        "from walkie_vision.node import IMAGE_QOS, NODE_NAME, VisionConfig, VisionNode\n"
+        "from .node import CAMERA_INFO_QOS\n"
+        "`walkie_vision.node:OUTPUT_QOS` is RELIABLE\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 16
+    # The new home, the QoS profiles at it and in debug_viz, PIL's convert, the convert
+    # stage of the latency log, a longer module name and the word converted are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from walkie_vision.messages import bbox_to_box, stamp_ns\n"
+        "from walkie_vision import errors, messages\n"
+        "from . import boxes, messages\n"
+        "from .messages import CAMERA_INFO_QOS, IMAGE_QOS, OUTPUT_QOS, stamp_ns\n"
+        "from ..messages import float32_array\n"
+        "| `src/walkie_vision/messages.py`     | Model results to messages, with checks, and the QoS profiles |\n"
+        'bus = Image.open(assets_dir() / "bus.jpg").convert("RGB")\n'
+        'cache[c.image] = ImageOps.exif_transpose(im).convert("RGB")\n'
+        "ms p50/p95: wait 3/9 convert 6/8 objects 21/30\n"
+        'BASE_STAGES = ("wait", "convert", "objects")\n'
+        "convert_ms = (time.perf_counter() - start) * 1000.0 - depth_ms\n"
+        "from walkie_vision.converters import to_ros\n"
+        "from walkie_vision.node import EXECUTOR_THREADS, NODE_NAME, VisionConfig\n"
+        "assert OBSERVATION_QOS == messages.OUTPUT_QOS\n"
+        "from walkie_vision.debug_viz import ARRAY_QOS, IMAGE_QOS, OUTPUT_QOS\n"
+        "self.create_subscription(Image, cfg.image_topic, self._ring.add, debug_viz.IMAGE_QOS)\n"
+        "Each image is converted to BGR before the models run.\n",
+    )
+    assert _mentions([good], REMOVED) == []
+
+
+def test_the_tree_check_would_catch_convert_or_the_qos_profiles_at_their_old_homes(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    # The module that left: convert, in any spelling of an import.
+    caller = _write(
+        tmp_path / "src" / "walkie_vision" / "services" / "embed_crop.py",
+        "from .. import (\n"
+        "    boxes,\n"
+        "    convert,\n"
+        ")\n"
+        "from ..convert import stamp_ns\n"
+        "import walkie_vision.convert as conversions\n"
+        "from walkie_vision import convert as convert_module\n"
+        "def answer():\n"
+        "    from ..convert import bbox_to_box\n"
+        "    return bbox_to_box\n",
+    )
+    assert _imports_a_module_that_left(caller, CONVERT) == [
+        "embed_crop.py:1: imports walkie_vision.convert",
+        "embed_crop.py:5: imports from walkie_vision.convert",
+        "embed_crop.py:6: imports walkie_vision.convert",
+        "embed_crop.py:7: imports walkie_vision.convert",
+        "embed_crop.py:9: imports from walkie_vision.convert",
+    ]
+    # The names that left convert before the rename, taken from its successor.
+    successor = _write(
+        tmp_path / "src" / "walkie_vision" / "services" / "embed_text.py",
+        "from .. import messages\n"
+        "from ..messages import (\n"
+        "    bounded_message,\n"
+        "    float32_array,\n"
+        ")\n"
+        "a = messages.check_model_dim(embedder)\n"
+        "b = messages.fill_person_crop_response(response, people, found)\n",
+    )
+    left_convert = LEFT_CONVERT | LEFT_CONVERT_SERVICES | LEFT_CONVERT_PERSON_CROP
+    assert _reads_a_name_that_left(successor, MESSAGES, left_convert) == [
+        "embed_text.py:2: imports bounded_message",
+        "embed_text.py:6: reads messages.check_model_dim",
+        "embed_text.py:7: reads messages.fill_person_crop_response",
+    ]
+    # The QoS profiles, taken from the node under any name.
+    reader = _write(
+        tmp_path / "src" / "walkie_vision" / "fake_publisher.py",
+        "from . import node\n"
+        "from walkie_vision import node as node_module\n"
+        "from .node import (\n"
+        "    NODE_NAME,\n"
+        "    OUTPUT_QOS,\n"
+        ")\n"
+        "a = node.IMAGE_QOS\n"
+        'monkeypatch.setattr(node_module, "CAMERA_INFO_QOS", profile)\n'
+        "from .node import *\n",
+    )
+    assert _reads_a_name_that_left(reader, NODE, LEFT_NODE_QOS) == [
+        "fake_publisher.py:3: imports OUTPUT_QOS",
+        "fake_publisher.py:7: reads node.IMAGE_QOS",
+        "fake_publisher.py:8: names CAMERA_INFO_QOS",
+        "fake_publisher.py:9: imports *",
+    ]
+    # A node that defines, re-exports or star-imports a profile puts it back at its old home.
+    copy = _write(
+        tmp_path / "node.py",
+        "from .messages import IMAGE_QOS, OUTPUT_QOS\n"
+        "from .messages import CAMERA_INFO_QOS as CAMERA_INFO_QOS\n"
+        "OUTPUT_QOS = QoSProfile(depth=5)\n"
+        "from .messages import *\n",
+    )
+    assert _binds_one_of(copy, LEFT_NODE_QOS, imports=False) == [
+        "node.py:2: binds CAMERA_INFO_QOS",
+        "node.py:3: binds OUTPUT_QOS",
+        "node.py:4: binds *",
+    ]
+    # The new home, a module of the same name in a subpackage, a longer module name, a
+    # node that only imports and uses the profiles, and a docstring are fine.
+    sibling = _write(
+        tmp_path / "src" / "walkie_vision" / "camera" / "mailboxes.py",
+        '"""stamp_ns came from walkie_vision.convert."""\n'
+        "from .. import messages\n"
+        "from ..messages import stamp_ns\n"
+        "from . import convert\n"
+        "from walkie_vision.messages import OUTPUT_QOS\n"
+        "import walkie_vision.converters\n",
+    )
+    assert _imports_a_module_that_left(sibling, CONVERT) == []
+    good = _write(
+        tmp_path / "src" / "walkie_vision" / "node.py",
+        "from . import messages\n"
+        "from .messages import CAMERA_INFO_QOS, IMAGE_QOS, OUTPUT_QOS, stamp_ns\n"
+        "a = messages.bbox_to_box(request.bbox)\n"
+        "b = self.create_publisher(PersonDetectionArray, topic, OUTPUT_QOS)\n"
+        'monkeypatch.setattr(messages, "new_stream_id", fake)\n',
+    )
+    assert _imports_a_module_that_left(good, CONVERT) == []
+    assert _reads_a_name_that_left(good, NODE, LEFT_NODE_QOS) == []
+    assert _reads_a_name_that_left(good, MESSAGES, left_convert) == []
+    assert _binds_one_of(good, LEFT_NODE_QOS, imports=False) == []

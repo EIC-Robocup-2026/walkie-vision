@@ -34,7 +34,6 @@ from rclpy.time import Time as RosTime
 from tf2_msgs.msg import TFMessage
 from walkie_vision_msgs.msg import ObjectDetectionArray
 
-from walkie_vision.convert import MAX_CLOUD_POINTS, bbox_to_box, check_object_detection_array
 from walkie_vision.crops.colour import COLOR_NAMES
 from walkie_vision.fake_publisher import (
     DEFAULT_SCENE,
@@ -45,7 +44,7 @@ from walkie_vision.fake_publisher import (
     load_scene,
     parse_scene,
 )
-from walkie_vision.node import OUTPUT_QOS
+from walkie_vision.messages import MAX_CLOUD_POINTS, OUTPUT_QOS, bbox_to_box, check_object_detection_array
 
 REPO = Path(__file__).resolve().parents[1]
 STREAM_ID = "6f1c1b52-8c1e-4a53-9f0e-2d3b7a6c9e10"

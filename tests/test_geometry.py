@@ -11,9 +11,9 @@ from builtin_interfaces.msg import Time
 from sensor_msgs.msg import Image
 
 from walkie_vision.camera.depth import RegisteredDepth, depth_to_metres
-from walkie_vision.convert import MAX_CLOUD_POINTS, MIN_CLOUD_POINTS
 from walkie_vision.fakes import box_mask
 from walkie_vision.geometry import depth_cover, erosion_radius, frame_laplacian, lift_mask, view_quality
+from walkie_vision.messages import MAX_CLOUD_POINTS, MIN_CLOUD_POINTS
 
 FRAME = "zed_head_left_camera_frame_optical"
 BASE_MS = 100_000  # Stamps start at 100 s: a zero stamp never pairs.

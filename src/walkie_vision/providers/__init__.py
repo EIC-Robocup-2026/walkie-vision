@@ -11,7 +11,7 @@ Conventions for every provider:
 - A box is (x1, y1, x2, y2) in pixels of that image, as a float array.
 - embed_* methods return a float32 array of shape (n, dim): one row per
   input, in the order of the inputs. The rows need not have unit length:
-  walkie_vision.convert normalises every vector that goes into a message.
+  walkie_vision.messages normalises every vector that goes into a message.
 - model_name is the <model> part of walkie-database's vector table names
   (for example arcface_w600k_r50 for face_arcface_w600k_r50). It names the
   weights, not only the network, so that vectors from two sets of weights

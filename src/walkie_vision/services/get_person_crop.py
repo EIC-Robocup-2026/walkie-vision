@@ -15,10 +15,10 @@ from sensor_msgs.msg import CompressedImage
 from walkie_vision_msgs.msg import PersonDetectionArray
 from walkie_vision_msgs.srv import GetPersonCrop
 
-from ..convert import float32_array
 from ..crops import person
 from ..crops.colour import COLOR_NAMES
 from ..crops.person import CropStatus, PersonCrop
+from ..messages import float32_array
 
 MAX_CROP_TIMEOUT_S = 5.0
 """The longest timeout_s a GetPersonCrop request may ask for: the service answers one request at a time."""

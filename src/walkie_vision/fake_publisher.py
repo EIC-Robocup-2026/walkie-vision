@@ -47,7 +47,7 @@ from std_msgs.msg import Header
 from tf2_msgs.msg import TFMessage
 from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray
 
-from . import convert
+from . import messages
 from .boxes import pad_rect
 from .crops import colour, jpeg
 from .crops.colour import MIN_COLOR_PIXELS, PALETTE_RGB
@@ -62,8 +62,8 @@ _BACKGROUND_BGR = (60, 60, 60)
 _NO_COLOR_BGR = (128, 128, 128)
 _REFUSED_CLASS = "person"
 
-# The vision node's OUTPUT_QOS, repeated so that this module does not import the
-# node; tests/test_fake_publisher.py checks that the two are equal. RELIABLE
+# The vision node's OUTPUT_QOS (walkie_vision.messages.OUTPUT_QOS), repeated here;
+# tests/test_fake_publisher.py checks that the two are equal. RELIABLE
 # subscribers match it, and so do BEST_EFFORT ones such as walkie-database's.
 OBSERVATION_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
@@ -456,7 +456,7 @@ class FakeStream:
         self._crops_enabled = crops_enabled
         self._embedding_model = embedding_model
         self._embedding_dim = embedding_dim
-        self._stream_id = convert.new_stream_id() if stream_id is None else stream_id
+        self._stream_id = messages.new_stream_id() if stream_id is None else stream_id
         self._rendered = _render_phases(scene)
         self._frames = [i for i, phase in enumerate(scene.phases) for _ in range(phase.frames)]
         # Every distinct frame follows the contract, or nothing starts.
@@ -477,7 +477,7 @@ class FakeStream:
         """Return frame index of the endless sequence, stamped."""
         header = Header(stamp=stamp, frame_id=self._camera.frame_id)
         rendered = self._rendered[self._frames[index % len(self._frames)]]
-        return convert.to_object_detection_array(
+        return messages.to_object_detection_array(
             header,
             self._camera.camera_info(header),
             self._classes,
@@ -487,13 +487,13 @@ class FakeStream:
 
     def _detection(self, rendered: RenderedBox, header: Header) -> ObjectDetection:
         box = rendered.box
-        return convert.to_object_detection(
+        return messages.to_object_detection(
             Detection(box=rendered.bounds, label=box.label, score=box.score, track_id=box.track_id),
             embedding=hash_vector(box.name, self._embedding_dim) if self._embedding_model else None,
             embedding_model=self._embedding_model,
-            points=convert.to_point_cloud(header, rendered.points),
+            points=messages.to_point_cloud(header, rendered.points),
             crop=(
-                CompressedImage(header=header, format=convert.JPEG_FORMAT, data=rendered.crop_jpeg)
+                CompressedImage(header=header, format=messages.JPEG_FORMAT, data=rendered.crop_jpeg)
                 if self._crops_enabled
                 else None
             ),

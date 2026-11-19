@@ -11,9 +11,9 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Header
 from walkie_vision_msgs.srv import EmbedCrop
 
-from walkie_vision.convert import bbox_to_box, box_to_bbox
 from walkie_vision.fakes import FakeEmbedder
 from walkie_vision.geometry import frame_laplacian, view_quality
+from walkie_vision.messages import bbox_to_box, box_to_bbox
 from walkie_vision.providers import CLIP_VIT_B16
 from walkie_vision.services.embed_crop import (
     MAX_FUTURE_NS,

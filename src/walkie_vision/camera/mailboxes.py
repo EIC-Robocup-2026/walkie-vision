@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from sensor_msgs.msg import Image
 
-from ..convert import stamp_ns
+from ..messages import stamp_ns
 
 Bundle = tuple[Image, float, Image | None]
 """A colour image, the time it was received, and its depth or None."""

@@ -41,7 +41,6 @@ from walkie_vision import errors
 from walkie_vision import node as node_module
 from walkie_vision import pipeline as pipeline_module
 from walkie_vision.camera.mailboxes import NewestFrame, RgbdBuffer
-from walkie_vision.convert import bbox_to_box, box_to_bbox, check_object_detection_array
 from walkie_vision.crops import colour, objects, person
 from walkie_vision.fakes import (
     FakeEmbedder,
@@ -53,7 +52,8 @@ from walkie_vision.fakes import (
     figure_pose,
 )
 from walkie_vision.geometry import frame_laplacian, view_quality
-from walkie_vision.node import IMAGE_QOS, NODE_NAME, VisionConfig, VisionNode
+from walkie_vision.messages import IMAGE_QOS, bbox_to_box, box_to_bbox, check_object_detection_array
+from walkie_vision.node import NODE_NAME, VisionConfig, VisionNode
 from walkie_vision.pipeline import Providers, TrackIdBase
 from walkie_vision.providers import Detection, Face, PersonPose
 from walkie_vision.services import detect_objects, embed_crop, embed_text, jobs

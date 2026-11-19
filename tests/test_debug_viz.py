@@ -21,7 +21,6 @@ from std_msgs.msg import Header
 from visualization_msgs.msg import Marker, MarkerArray
 from walkie_vision_msgs.msg import ObjectDetectionArray
 
-from walkie_vision.convert import box_to_bbox, to_point_cloud
 from walkie_vision.debug_viz import (
     ARRAY_QOS,
     IMAGE_QOS,
@@ -37,6 +36,7 @@ from walkie_vision.debug_viz import (
     label_text,
     short_track,
 )
+from walkie_vision.messages import box_to_bbox, to_point_cloud
 from walkie_vision_msgs.msg import ObjectDetection
 
 STAMP = Time(sec=1_792_400_000, nanosec=250_000_000)

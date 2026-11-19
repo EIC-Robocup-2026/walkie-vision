@@ -2,7 +2,7 @@
 
 OSNetReIdentifier resizes each BGR person crop to the checkpoint's input,
 normalises it as in training, and embeds the crops in batches. The rows are
-not normalised: walkie_vision.convert does that.
+not normalised: walkie_vision.messages does that.
 """
 
 from __future__ import annotations

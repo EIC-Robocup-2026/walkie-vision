@@ -111,7 +111,6 @@ source_modules = [
 forbidden_modules = [
     "walkie_vision.boxes",
     "walkie_vision.camera",
-    "walkie_vision.convert",
     "walkie_vision.crops",
     "walkie_vision.debug_viz",
     "walkie_vision.embeddings",
@@ -119,6 +118,7 @@ forbidden_modules = [
     "walkie_vision.fake_publisher",
     "walkie_vision.fakes",
     "walkie_vision.geometry",
+    "walkie_vision.messages",
     "walkie_vision.node",
     "walkie_vision.pipeline",
     "walkie_vision.providers",
@@ -146,7 +146,6 @@ source_modules = [
 ]
 forbidden_modules = [
     "walkie_vision.camera",
-    "walkie_vision.convert",
     "walkie_vision.crops",
     "walkie_vision.debug_viz",
     "walkie_vision.embeddings",
@@ -154,6 +153,7 @@ forbidden_modules = [
     "walkie_vision.fake_publisher",
     "walkie_vision.fakes",
     "walkie_vision.geometry",
+    "walkie_vision.messages",
     "walkie_vision.node",
     "walkie_vision.pipeline",
     "walkie_vision.reid",

@@ -12,7 +12,7 @@ from collections.abc import Sequence
 import numpy as np
 from walkie_vision_msgs.srv import EmbedText
 
-from ..convert import float32_array, unit_vector
+from ..messages import float32_array, unit_vector
 from ..providers import Embedder
 from .jobs import bounded_message
 
