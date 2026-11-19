@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import numpy as np
 from sensor_msgs.msg import CameraInfo, Image
 
-from ..camera.image import calibration_problem, camera_info_problem
+from .image import calibration_problem, camera_info_problem
 
 _DEPTH_FORMATS = {"32FC1": "f4", "16UC1": "u2"}
 SUPPORTED_DEPTH_ENCODINGS = tuple(_DEPTH_FORMATS)

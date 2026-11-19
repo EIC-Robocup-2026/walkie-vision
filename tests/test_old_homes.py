@@ -99,11 +99,11 @@ REMOVED = re.compile(
             # package (camera.image, camera.depth and camera.mailboxes) and
             # walkie_vision.geometry, and stamp_ns for walkie_vision.convert. NewestFrame left
             # walkie_vision.node and CurrentImage left walkie_vision.requests for
-            # camera.mailboxes. The words image and depth are fine.
+            # camera.mailboxes. The words image and depth are fine. The relative
+            # spellings are left to the syntax-tree check, which resolves them by the
+            # file's package: inside camera/, `from .image import` is the new home.
             r"walkie_vision[./](image|depth)\b",
             r"from walkie_vision import [^\n]*\b(image|depth)\b",
-            r"from \.+(image|depth) import",
-            r"from \.+ import [^\n]*\b(image|depth)\b",
             r"\bnode(_module)?[.:]NewestFrame\b",
             r"from (walkie_vision\.|\.+)node import [^\n]*\bNewestFrame\b",
             r"\brequests(_module)?[.:]CurrentImage\b",
@@ -566,6 +566,11 @@ def test_embeddings_does_not_define_or_import_the_sampler_or_the_palette():
     # The CLIP code uses no box or crop helper, so embeddings imports neither.
     assert _imports_a_module_that_left(embeddings, "walkie_vision.crops") == []
     assert _imports_a_module_that_left(embeddings, "walkie_vision.boxes") == []
+    # Nor do the crops import the CLIP code back: they share a layer, so no contract
+    # checks this direction.
+    crops = sorted((PACKAGE_DIR / "crops").glob("*.py"))
+    assert PACKAGE_DIR / "crops" / "objects.py" in crops
+    assert [hit for file in crops for hit in _imports_a_module_that_left(file, EMBEDDINGS)] == []
 
 
 def test_the_tree_check_would_catch_a_module_imported_from_its_old_home(tmp_path, monkeypatch):
@@ -1169,9 +1174,6 @@ def test_the_sweep_would_catch_image_depth_and_the_mailboxes_at_their_old_homes(
         "from walkie_vision.depth import RegisteredDepth, lift_mask\n"
         "import walkie_vision.depth\n"
         "from walkie_vision import convert, depth, image\n"
-        "from .image import image_to_bgr\n"
-        "from ..depth import RegisteredDepth\n"
-        "from . import convert, depth, requests\n"
         "| `src/walkie_vision/depth.py` | Registered depth and the object geometry |\n"
         "The pairing is walkie_vision.depth.RgbdBuffer (ADR-0014).\n"
         "assert isinstance(h.node._mailbox, node_module.NewestFrame)\n"
@@ -1181,9 +1183,10 @@ def test_the_sweep_would_catch_image_depth_and_the_mailboxes_at_their_old_homes(
         "from walkie_vision.requests import CurrentImage, RequestJob\n"
         "from .requests import CurrentImage\n",
     )
-    assert len(_mentions([bad], REMOVED)) == 15
+    assert len(_mentions([bad], REMOVED)) == 12
     # The new homes, the names that stay in node and requests, longer names and the
-    # words image and depth are fine.
+    # words image and depth are fine. A relative import of image or depth is left to
+    # the tree check, because camera/ imports its own image and depth that way.
     good = _write(
         tmp_path / "good.py",
         "from walkie_vision.camera.image import camera_info_problem, image_to_bgr\n"
@@ -1192,6 +1195,8 @@ def test_the_sweep_would_catch_image_depth_and_the_mailboxes_at_their_old_homes(
         "from walkie_vision.geometry import depth_cover, lift_mask\n"
         "from .camera.image import image_to_bgr\n"
         "from ..camera.image import calibration_problem, camera_info_problem\n"
+        "from .image import calibration_problem, camera_info_problem\n"
+        "from . import depth, image\n"
         "from .camera.mailboxes import CurrentImage, NewestFrame, RgbdBuffer\n"
         "from . import convert, geometry, requests\n"
         "| `src/walkie_vision/camera/` | The camera input and its mailboxes |\n"
@@ -1221,6 +1226,19 @@ def test_the_tree_check_would_catch_image_depth_or_the_mailboxes_at_their_old_ho
         "get_depth.py:6: imports walkie_vision.depth",
     ]
     assert _imports_a_module_that_left(caller, IMAGE) == ["get_depth.py:5: imports from walkie_vision.image"]
+    # The same relative spellings at the package root name the old homes; inside
+    # camera/ they name its own image and depth, which is where they live now.
+    root = _write(
+        tmp_path / "src" / "walkie_vision" / "fake_camera.py",
+        "from .image import image_to_bgr\nfrom . import convert, depth\n",
+    )
+    assert _imports_a_module_that_left(root, IMAGE) == ["fake_camera.py:1: imports from walkie_vision.image"]
+    assert _imports_a_module_that_left(root, DEPTH) == ["fake_camera.py:2: imports walkie_vision.depth"]
+    sibling = _write(
+        tmp_path / "src" / "walkie_vision" / "camera" / "depth.py",
+        "from .image import calibration_problem, camera_info_problem\nfrom . import image\n",
+    )
+    assert _imports_a_module_that_left(sibling, IMAGE) == []
     # The depth maths, the mailboxes and stamp_ns, taken from camera.depth under any name.
     reader = _write(
         tmp_path / "src" / "walkie_vision" / "pipeline.py",
