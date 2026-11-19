@@ -166,6 +166,16 @@ REMOVED = re.compile(
             r"from walkie_vision\.reid import [^\n]*\bosnet\b",
             r"(?<!providers/)\breid/osnet\.py\b",
             r"\btest_face\.py\b",
+            # walkie_vision.yolo became providers.object_detection.yoloe, with the helpers
+            # both Ultralytics providers use in providers._ultralytics and the pose in
+            # providers.pose_estimation.yolo_pose. yoloe, yolo_pose, yolo26 and the
+            # weight file names are fine.
+            r"walkie_vision[./]yolo\b",
+            r"from walkie_vision import [^\n]*\byolo\b",
+            r"from \.+yolo import",
+            r"from \.+ import [^\n]*\byolo\b",
+            r"\byolo\.py\b",
+            r"\btest_yolo\.py\b",
         ]
     )
 )
@@ -320,6 +330,22 @@ VENDORED = {
     **{f"{FACE}.{name}": f"_vendor/insightface/{name}.py" for name in sorted(LEFT_FACE)},
     f"{REID}.osnet": "_vendor/torchreid/osnet.py",
 }
+# yolo.py became providers/object_detection/yoloe.py. The helpers both Ultralytics
+# providers use left it for providers/_ultralytics.py, the private ones made public,
+# and the pose for providers/pose_estimation/yolo_pose.py. yoloe.py imports the
+# helpers it uses from _ultralytics but defines none of them.
+YOLO = "walkie_vision.yolo"
+YOLOE = "walkie_vision.providers.object_detection.yoloe"
+YOLO_POSE = "walkie_vision.providers.pose_estimation.yolo_pose"
+ULTRALYTICS = "walkie_vision.providers._ultralytics"
+SHARED_HELPERS = frozenset(
+    {"TRACKER_NAMES", "validate_tracker", "clip_box", "check_rows", "require", "reset_trackers"}
+)
+# The names the helpers had in yolo.py: no module defines or serves them any more.
+PRIVATE_HELPERS = frozenset({"_clip_box", "_check_rows", "_require", "_reset_trackers"})
+LEFT_YOLOE = SHARED_HELPERS | PRIVATE_HELPERS | {"poses_from_arrays", "YoloPoseTracker"}
+# The ones yoloe.py no longer uses: it does not even import them.
+UNUSED_IN_YOLOE = LEFT_YOLOE - {"validate_tracker", "clip_box", "check_rows", "require", "reset_trackers"}
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -367,6 +393,8 @@ def _reads_a_name_that_left(file: Path, module: str, names: frozenset[str]) -> l
     module, or names it as a string next to the module in a call such as
     `monkeypatch.setattr(module, "name", ...)`, under any name the file gives the module.
     A wildcard import from `module` always counts, since it can bind any of the names.
+    A name bound to `pytest.importorskip("module")` or `importlib.import_module("module")`
+    is a name for the module too.
 
     It reads the syntax tree rather than lines, so an import in parentheses over several
     lines counts, and a docstring that names the old home does not.
@@ -379,6 +407,15 @@ def _reads_a_name_that_left(file: Path, module: str, names: frozenset[str]) -> l
             module_names |= {a.asname for a in node.names if a.name == module and a.asname}
         elif isinstance(node, ast.ImportFrom) and _imported_module(node, file) == parent:
             module_names |= {a.asname or a.name for a in node.names if a.name == child}
+        elif (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and ast.unparse(node.value.func).rpartition(".")[2] in {"importorskip", "import_module"}
+            and node.value.args
+            and isinstance(node.value.args[0], ast.Constant)
+            and node.value.args[0].value == module
+        ):
+            module_names |= {ast.unparse(target) for target in node.targets if isinstance(target, ast.Name)}
     found = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and _imported_module(node, file) == module:
@@ -602,7 +639,8 @@ def test_no_code_imports_the_model_file_table_from_models():
 def test_no_code_takes_the_box_helpers_from_crop_or_the_mask_resize_from_image():
     code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
     person, person_tests = PACKAGE_DIR / "crops" / "person.py", ROOT / "tests" / "test_crops_person.py"
-    assert {person, PACKAGE_DIR / "yolo.py", person_tests} <= set(code)
+    yoloe = PACKAGE_DIR / "providers" / "object_detection" / "yoloe.py"
+    assert {person, yoloe, person_tests} <= set(code)
     # crop.py is crops/person.py now: neither the old module nor its successor serves them.
     assert [hit for file in code for hit in _reads_a_name_that_left(file, CROP, LEFT_CROP)] == []
     assert [hit for file in code for hit in _reads_a_name_that_left(file, PERSON_CROP, LEFT_CROP)] == []
@@ -2144,3 +2182,195 @@ def test_the_tree_check_would_catch_the_vendored_files_at_their_old_homes(tmp_pa
         assert _reads_a_name_that_left(file, REID, LEFT_REID) == [], path
     assert _binds_one_of(tmp_path / "src" / "walkie_vision" / "face" / "__init__.py", LEFT_FACE) == []
     assert _binds_one_of(tmp_path / "src" / "walkie_vision" / "reid" / "__init__.py", LEFT_REID) == []
+
+
+def test_yolo_did_not_come_back_to_the_package_root():
+    providers = PACKAGE_DIR / "providers"
+    for path in ("_ultralytics.py", "object_detection/yoloe.py", "pose_estimation/yolo_pose.py"):
+        assert (providers / path).is_file()
+    assert _old_homes(SRC, YOLO) == []
+
+
+def test_no_code_imports_yolo():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "node.py",
+        ROOT / "checks" / "c11_providers.py",
+        ROOT / "tests" / "test_build_providers.py",
+        ROOT / "tests" / "test_providers_ultralytics.py",
+    } <= set(code)
+    assert [hit for file in code for hit in _imports_a_module_that_left(file, YOLO)] == []
+
+
+def test_no_code_takes_the_shared_helpers_or_the_pose_from_yoloe():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "node.py",
+        PACKAGE_DIR / "providers" / "pose_estimation" / "yolo_pose.py",
+        ROOT / "tests" / "test_build_providers.py",
+        ROOT / "tests" / "test_providers_ultralytics.py",
+    } <= set(code)
+    # yolo.py is yoloe.py now: it serves none of the names that left it, nor does the
+    # pose module serve the helpers, and the helpers' old private names are gone.
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, YOLOE, LEFT_YOLOE)] == []
+    shared = SHARED_HELPERS | PRIVATE_HELPERS
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, YOLO_POSE, shared)] == []
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, ULTRALYTICS, PRIVATE_HELPERS)] == []
+
+
+def test_yoloe_and_yolo_pose_do_not_define_the_shared_helpers_again():
+    providers = PACKAGE_DIR / "providers"
+    yoloe, yolo_pose = providers / "object_detection" / "yoloe.py", providers / "pose_estimation" / "yolo_pose.py"
+    # Both import the helpers they use from _ultralytics but define none of them, and
+    # yoloe.py imports neither the ones it no longer uses nor the pose.
+    assert _binds_one_of(yoloe, LEFT_YOLOE, imports=False) == []
+    assert _binds_one_of(yoloe, UNUSED_IN_YOLOE) == []
+    assert _binds_one_of(yolo_pose, SHARED_HELPERS | PRIVATE_HELPERS, imports=False) == []
+    assert _binds_one_of(yolo_pose, PRIVATE_HELPERS | {"TRACKER_NAMES"}) == []
+    # _ultralytics.py defines every shared helper, under its public name only.
+    ultralytics = _binds_one_of(providers / "_ultralytics.py", SHARED_HELPERS | PRIVATE_HELPERS)
+    assert {hit.rpartition(" ")[2] for hit in ultralytics} == SHARED_HELPERS
+
+
+def test_the_sweep_would_catch_yolo_at_its_old_home(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision.yolo import YoloeTracker, YoloPoseTracker\n"
+        "import walkie_vision.yolo\n"
+        'yolo = pytest.importorskip("walkie_vision.yolo")\n'
+        "from walkie_vision import errors, node, yolo\n"
+        "from walkie_vision import yolo as yolo_module\n"
+        "from . import boxes, yolo\n"
+        "from .yolo import MOBILECLIP_FILE\n"
+        "from ..yolo import TRACKER_NAMES\n"
+        "| `src/walkie_vision/yolo.py`         | YOLOE-26 and YOLO26 pose with their trackers |\n"
+        "one process for every model (ADR-0010). `yolo.py` and `face/heads.py` are\n"
+        "`c11` and the tracker tests in `tests/test_yolo.py` again after one.\n"
+        "# walkie_vision.yolo.TRACKER_NAMES, which this module does not import.\n"
+        "`YoloeDetector` in `walkie_vision/yolo` |\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 13
+    # The new homes, the sibling provider modules, the weight file names, the
+    # Ultralytics classes and environment variables, and the dotted parameter names
+    # of a later step are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from walkie_vision.providers.object_detection.yoloe import YoloeDetector, YoloeTracker\n"
+        "from walkie_vision.providers.pose_estimation.yolo_pose import YoloPoseTracker\n"
+        "from walkie_vision.providers import _ultralytics\n"
+        'yoloe = pytest.importorskip("walkie_vision.providers.object_detection.yoloe")\n'
+        "from .._ultralytics import check_rows, clip_box, require, reset_trackers, validate_tracker\n"
+        "from . import yoloe, yolo_pose\n"
+        "from .yolo_pose import poses_from_arrays\n"
+        "| `src/walkie_vision/providers/object_detection/yoloe.py` | YOLOE-26 with its tracker |\n"
+        "`c11` and the tracker tests in `tests/test_providers_ultralytics.py` again after one.\n"
+        'objects_weights: "yoloe-26s-seg.pt", pose_weights: "yolo26s-pose.pt"\n'
+        "from ultralytics import YOLO, YOLOE\n"
+        'os.environ.setdefault("YOLO_OFFLINE", "true")\n'
+        "| `object_detection.yoloe.weights` | `pose_estimation.yolo_pose.tracker` |\n",
+    )
+    assert _mentions([good], REMOVED) == []
+
+
+def test_the_tree_check_would_catch_yolo_or_its_names_at_their_old_homes(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    # The module that left: yolo, in any spelling of an import.
+    caller = _write(
+        tmp_path / "src" / "walkie_vision" / "node.py",
+        "from . import (\n"
+        "    errors,\n"
+        "    yolo,\n"
+        ")\n"
+        "from .yolo import MOBILECLIP_FILE\n"
+        "import walkie_vision.yolo as detectors\n"
+        "from walkie_vision import yolo as yolo_module\n"
+        "def build_providers():\n"
+        "    from walkie_vision.yolo import YoloeTracker\n"
+        "    return YoloeTracker\n",
+    )
+    assert _imports_a_module_that_left(caller, YOLO) == [
+        "node.py:1: imports walkie_vision.yolo",
+        "node.py:5: imports from walkie_vision.yolo",
+        "node.py:6: imports walkie_vision.yolo",
+        "node.py:7: imports walkie_vision.yolo",
+        "node.py:9: imports from walkie_vision.yolo",
+    ]
+    # The names that left yolo.py, taken from its successor yoloe under any name, and
+    # the helpers' old private names taken from their new home.
+    reader = _write(
+        tmp_path / "tests" / "test_build_providers.py",
+        "from walkie_vision.providers.object_detection import yoloe as detector\n"
+        "from walkie_vision.providers.object_detection.yoloe import (\n"
+        "    MOBILECLIP_FILE,\n"
+        "    TRACKER_NAMES,\n"
+        ")\n"
+        "assert node.TRACKER_FILES == detector.TRACKER_NAMES\n"
+        'monkeypatch.setattr(detector, "YoloPoseTracker", fake)\n'
+        "from walkie_vision.providers._ultralytics import _clip_box\n"
+        "from walkie_vision.providers import _ultralytics\n"
+        "_ultralytics._require(path)\n"
+        'yoloe = pytest.importorskip("walkie_vision.providers.object_detection.yoloe")\n'
+        "assert node.TRACKER_FILES == yoloe.TRACKER_NAMES\n"
+        'skipped = importlib.import_module("walkie_vision.providers.object_detection.yoloe")\n'
+        'monkeypatch.setattr(skipped, "_reset_trackers", fake)\n',
+    )
+    assert _reads_a_name_that_left(reader, YOLOE, LEFT_YOLOE) == [
+        "test_build_providers.py:12: reads yoloe.TRACKER_NAMES",
+        "test_build_providers.py:14: names _reset_trackers",
+        "test_build_providers.py:2: imports TRACKER_NAMES",
+        "test_build_providers.py:6: reads detector.TRACKER_NAMES",
+        "test_build_providers.py:7: names YoloPoseTracker",
+    ]
+    assert _reads_a_name_that_left(reader, ULTRALYTICS, PRIVATE_HELPERS) == [
+        "test_build_providers.py:10: reads _ultralytics._require",
+        "test_build_providers.py:8: imports _clip_box",
+    ]
+    # A yoloe that defines, re-exports or star-imports a helper or the pose puts it
+    # back at its old home.
+    copy = _write(
+        tmp_path / "yoloe.py",
+        "from .._ultralytics import check_rows, clip_box\n"
+        "from .._ultralytics import TRACKER_NAMES as TRACKER_NAMES\n"
+        "def _require(path):\n"
+        "    return path.is_file()\n"
+        "from ..pose_estimation.yolo_pose import YoloPoseTracker\n"
+        "from .._ultralytics import *\n",
+    )
+    assert _binds_one_of(copy, LEFT_YOLOE, imports=False) == [
+        "yoloe.py:2: binds TRACKER_NAMES",
+        "yoloe.py:3: binds _require",
+        "yoloe.py:6: binds *",
+    ]
+    assert _binds_one_of(copy, UNUSED_IN_YOLOE) == [
+        "yoloe.py:2: binds TRACKER_NAMES",
+        "yoloe.py:3: binds _require",
+        "yoloe.py:5: binds YoloPoseTracker",
+        "yoloe.py:6: binds *",
+    ]
+    # The new homes, a module named yolo inside a subpackage, modules that only import
+    # and use the helpers, and a docstring are fine.
+    good = {
+        "node.py": (
+            '"""TRACKER_FILES copies walkie_vision.yolo.TRACKER_NAMES."""\n'
+            "from .providers.object_detection.yoloe import MOBILECLIP_FILE\n"
+            "from walkie_vision.providers.pose_estimation.yolo_pose import YoloPoseTracker\n"
+        ),
+        "providers/object_detection/yoloe.py": (
+            "from ...boxes import resize_mask\n"
+            "from .._ultralytics import check_rows, clip_box, require, reset_trackers, validate_tracker\n"
+            "from .base import Detection\n"
+        ),
+        "providers/pose_estimation/yolo_pose.py": (
+            "from .._ultralytics import check_rows, clip_box, require, reset_trackers, validate_tracker\n"
+            "from .base import COCO_KEYPOINTS, PersonPose\n"
+        ),
+        "providers/object_detection/registry.py": "from . import yolo\nfrom .yolo import YoloeOptions\n",
+    }
+    for path, text in good.items():
+        file = _write(tmp_path / "src" / "walkie_vision" / path, text)
+        assert _imports_a_module_that_left(file, YOLO) == [], path
+        assert _reads_a_name_that_left(file, YOLOE, LEFT_YOLOE) == [], path
+        assert _reads_a_name_that_left(file, ULTRALYTICS, PRIVATE_HELPERS) == [], path
+    providers = tmp_path / "src" / "walkie_vision" / "providers"
+    assert _binds_one_of(providers / "object_detection" / "yoloe.py", LEFT_YOLOE, imports=False) == []
+    assert _binds_one_of(providers / "pose_estimation" / "yolo_pose.py", SHARED_HELPERS, imports=False) == []

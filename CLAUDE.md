@@ -30,9 +30,10 @@ build, because `scripts/activate.sh` sources the overlay on activation.
 - `src/walkie_vision/messages.py`: results to messages, with validation, and
   the QoS profiles.
 - `src/walkie_vision/node.py`, `pipeline.py`: the vision node,
-  one process for every model (ADR-0010). `yolo.py` and `face/heads.py` are
-  the detector, pose and head-crop face providers, including the second
-  detector behind `DetectObjects` (ADR-0009). Off by default.
+  one process for every model (ADR-0010). `providers/object_detection/yoloe.py`,
+  `providers/pose_estimation/yolo_pose.py` and `face/heads.py` are the
+  detector, pose and head-crop face providers, including the second detector
+  behind `DetectObjects` (ADR-0009). Off by default.
 - `src/walkie_vision/camera/`: the camera input. `camera/image.py` turns images
   into BGR arrays. `camera/depth.py` reads registered depth, and
   `camera/mailboxes.py` pairs colour with it, bounded by wall time (ADR-0014);

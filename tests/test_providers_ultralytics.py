@@ -1,4 +1,4 @@
-"""Tests of walkie_vision.yolo without a GPU or a model file.
+"""Tests of walkie_vision.providers._ultralytics, object_detection.yoloe and pose_estimation.yolo_pose without a GPU or a model file.
 
 The pure helpers are tested directly. The two tracker classes are tested with
 stand-ins for Ultralytics' YOLOE and YOLO classes, so no model is built. The
@@ -29,19 +29,17 @@ from ultralytics.engine.results import Boxes, Keypoints, Results  # noqa: E402
 from ultralytics.utils import ops  # noqa: E402
 
 from walkie_vision.providers import ObjectDetector, PoseEstimator  # noqa: E402
-from walkie_vision.yolo import (  # noqa: E402
+from walkie_vision.providers._ultralytics import TRACKER_NAMES, validate_tracker  # noqa: E402
+from walkie_vision.providers.object_detection.yoloe import (  # noqa: E402
     MOBILECLIP_FILE,
-    TRACKER_NAMES,
     YoloeDetector,
     YoloeTracker,
-    YoloPoseTracker,
     detections_from_arrays,
     mask_to_native,
-    poses_from_arrays,
     untracked_detections_from_arrays,
     validate_classes,
-    validate_tracker,
 )
+from walkie_vision.providers.pose_estimation.yolo_pose import YoloPoseTracker, poses_from_arrays  # noqa: E402
 
 SHAPE = (480, 640)  # height, width
 

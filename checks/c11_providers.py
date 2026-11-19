@@ -38,9 +38,10 @@ from common import assets_dir, expect, finish, gpu_mem_of, timed_ms
 from walkie_vision.node import VisionConfig
 from walkie_vision.pipeline import dedupe_poses
 from walkie_vision.providers import PersonPose
+from walkie_vision.providers.object_detection.yoloe import YoloeTracker
+from walkie_vision.providers.pose_estimation.yolo_pose import YoloPoseTracker
 from walkie_vision.reid.identifier import OSNetReIdentifier
 from walkie_vision.weights import BUFFALO_L_DIR, ULTRALYTICS_DIR, models_dir
-from walkie_vision.yolo import YoloeTracker, YoloPoseTracker
 
 # The two faces of zidane.jpg, as checks/c08_face.py expects them (InsightFace
 # 2.1 on the whole image).

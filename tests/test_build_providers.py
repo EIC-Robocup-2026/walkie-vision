@@ -12,7 +12,8 @@ from unittest import mock
 
 import pytest
 
-yolo = pytest.importorskip("walkie_vision.yolo")
+yoloe = pytest.importorskip("walkie_vision.providers.object_detection.yoloe")
+yolo_pose = pytest.importorskip("walkie_vision.providers.pose_estimation.yolo_pose")
 identifier = pytest.importorskip("walkie_vision.reid.identifier")
 face = pytest.importorskip("walkie_vision.face")
 
@@ -24,6 +25,7 @@ from huggingface_hub.errors import LocalEntryNotFoundError  # noqa: E402
 from walkie_vision import embeddings, errors, node  # noqa: E402
 from walkie_vision.node import VisionConfig, build_providers  # noqa: E402
 from walkie_vision.pipeline import Providers  # noqa: E402
+from walkie_vision.providers import _ultralytics  # noqa: E402
 from walkie_vision.weights import BUFFALO_L_DIR, ULTRALYTICS_DIR  # noqa: E402
 
 CLASSES = ("chair", "sofa")
@@ -40,7 +42,7 @@ def _touch(path: Path) -> Path:
 def models(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("WALKIE_VISION_MODELS", str(tmp_path))
     config = VisionConfig(classes=CLASSES)
-    for name in (config.objects_weights, yolo.MOBILECLIP_FILE, config.pose_weights):
+    for name in (config.objects_weights, yoloe.MOBILECLIP_FILE, config.pose_weights):
         _touch(tmp_path / ULTRALYTICS_DIR / name)
     for name in node._FACE_FILES:
         _touch(tmp_path / BUFFALO_L_DIR / name)
@@ -52,9 +54,9 @@ def manager(monkeypatch):
     """One mock that records the calls to every provider class, in order."""
     manager = mock.Mock()
     for module, name in (
-        (yolo, "YoloeTracker"),
-        (yolo, "YoloeDetector"),
-        (yolo, "YoloPoseTracker"),
+        (yoloe, "YoloeTracker"),
+        (yoloe, "YoloeDetector"),
+        (yolo_pose, "YoloPoseTracker"),
         (identifier, "OSNetReIdentifier"),
         (face, "FaceAnalyzer"),
         (face, "HeadFaceRecognizer"),
@@ -78,7 +80,7 @@ def _model_calls(manager) -> list:
 
 
 def test_the_tracker_names_match_the_providers():
-    assert node.TRACKER_FILES == yolo.TRACKER_NAMES
+    assert node.TRACKER_FILES == _ultralytics.TRACKER_NAMES
 
 
 def test_every_provider_is_built_from_the_config_in_order(models, manager):
@@ -241,7 +243,7 @@ def test_missing_clip_weights_fail_before_any_model_loads(models, manager, monke
 
 def test_the_parameters_reach_the_providers(models, manager, tmp_path):
     weights = _touch(tmp_path / "elsewhere" / "custom-seg.pt")
-    _touch(weights.parent / yolo.MOBILECLIP_FILE)
+    _touch(weights.parent / yoloe.MOBILECLIP_FILE)
     config = VisionConfig(
         classes=CLASSES,
         device="cpu",
@@ -293,7 +295,7 @@ def test_a_missing_text_encoder_next_to_absolute_weights_fails_first(models, man
     with pytest.raises(FileNotFoundError) as caught:
         build_providers(config, manager.logger)
     message = str(caught.value)
-    assert str(weights.parent / yolo.MOBILECLIP_FILE) in message
+    assert str(weights.parent / yoloe.MOBILECLIP_FILE) in message
     assert "pixi run fetch-models" in message
     assert _model_calls(manager) == []
 
@@ -303,7 +305,7 @@ def test_every_missing_file_is_named(tmp_path, monkeypatch, manager):
     with pytest.raises(FileNotFoundError) as caught:
         build_providers(VisionConfig(classes=CLASSES), manager.logger)
     message = str(caught.value)
-    for name in ("yoloe-26s-seg.pt", yolo.MOBILECLIP_FILE, "yolo26s-pose.pt", *node._FACE_FILES):
+    for name in ("yoloe-26s-seg.pt", yoloe.MOBILECLIP_FILE, "yolo26s-pose.pt", *node._FACE_FILES):
         assert name in message
     assert _model_calls(manager) == []
 

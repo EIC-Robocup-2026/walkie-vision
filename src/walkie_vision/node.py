@@ -127,7 +127,8 @@ MAX_PAIR_WINDOW_S = 0.1
 _BACKWARD_JUMP = JumpThreshold(min_forward=None, min_backward=Duration(nanoseconds=-1), on_clock_change=True)
 
 # Ultralytics' own tracker files, by name. The same names as
-# walkie_vision.yolo.TRACKER_NAMES, which this module does not import.
+# walkie_vision.providers._ultralytics.TRACKER_NAMES, which this module does
+# not import.
 TRACKER_FILES = ("bytetrack.yaml", "botsort.yaml")
 _DEVICE = re.compile(r"^(cpu|cuda(:\d+)?)$")
 # The files build_providers() needs in models/buffalo_l, as named in
@@ -449,8 +450,8 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
     """
     started = time.perf_counter()
     from .embeddings import ClipEmbedder, clip_checkpoint
+    from .providers.object_detection.yoloe import MOBILECLIP_FILE
     from .weights import BUFFALO_L_DIR, HUB_MODELS, OSNET_CHECKPOINT, ULTRALYTICS_DIR, models_dir
-    from .yolo import MOBILECLIP_FILE
 
     root = models_dir()
     ultralytics_dir = (root / ULTRALYTICS_DIR).absolute()
@@ -483,7 +484,8 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
             ) from e
     clip_path = clip_checkpoint() if config.object_embeddings_enabled else None
 
-    from walkie_vision.yolo import YoloeDetector, YoloeTracker, YoloPoseTracker
+    from walkie_vision.providers.object_detection.yoloe import YoloeDetector, YoloeTracker
+    from walkie_vision.providers.pose_estimation.yolo_pose import YoloPoseTracker
 
     # Asked for only when geometry or sampling reads them: copying masks to
     # the CPU costs time.

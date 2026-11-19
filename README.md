@@ -82,7 +82,8 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `src/walkie_vision/messages.py`     | Model results to messages, with checks, and the QoS profiles     |
 | `src/walkie_vision/crops/`          | One person's crop, mask and colour shares for `GetPersonCrop`; the object sampler, padded crops and colour shares |
 | `src/walkie_vision/fakes.py`        | Fake models for tests                                            |
-| `src/walkie_vision/yolo.py`         | YOLOE-26 and YOLO26 pose with their trackers, and YOLOE-26 with no tracker for `DetectObjects` |
+| `src/walkie_vision/providers/object_detection/yoloe.py` | YOLOE-26 with its tracker, and YOLOE-26 with no tracker for `DetectObjects` |
+| `src/walkie_vision/providers/pose_estimation/yolo_pose.py` | YOLO26 pose with its tracker                            |
 | `src/walkie_vision/face/`           | SCRFD and ArcFace on ONNX Runtime                                |
 | `src/walkie_vision/face/heads.py`   | Faces from crops around each person's head                       |
 | `src/walkie_vision/reid/`           | OSNet re-identification and its weights                          |

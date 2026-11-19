@@ -51,7 +51,6 @@ source_modules = [
     "walkie_vision.providers",
     "walkie_vision.reid",
     "walkie_vision.weights",
-    "walkie_vision.yolo",
 ]
 forbidden_modules = [
     "rclpy",
@@ -121,7 +120,6 @@ forbidden_modules = [
     "walkie_vision.reid",
     "walkie_vision.services",
     "walkie_vision.weights",
-    "walkie_vision.yolo",
 ]
 
 # The provider interfaces, the box maths, the model file table and the
@@ -152,7 +150,6 @@ forbidden_modules = [
     "walkie_vision.pipeline",
     "walkie_vision.reid",
     "walkie_vision.services",
-    "walkie_vision.yolo",
 ]
 
 # walkie_vision.providers re-exports the names of its modules for callers

@@ -1239,7 +1239,8 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.fakes`       | A fake for each interface, with deterministic vectors, for tests without a GPU (`FakePersonFaceRecognizer` among them), and painted figures for the crop tests (`figure_pose`, `paint_figure`) |
 | `walkie_vision.fake_publisher` | Synthetic object arrays from a scene file, with no model, for consumers' tests ([The fake publisher](../guides/vision-node.md#fake-publisher)) |
 | `walkie_vision.messages`    | Model results to messages, with the checks the message comments state, and the QoS profiles of the camera input and the two arrays |
-| `walkie_vision.yolo`        | YOLOE-26 and YOLO26 pose with their trackers (`YoloeTracker`, `YoloPoseTracker`)  |
+| `walkie_vision.providers.object_detection.yoloe` | YOLOE-26 with its tracker (`YoloeTracker`)                   |
+| `walkie_vision.providers.pose_estimation.yolo_pose` | YOLO26 pose with its tracker (`YoloPoseTracker`)          |
 | `walkie_vision.face`        | SCRFD and ArcFace on ONNX Runtime (`FaceAnalyzer`, a `FaceRecognizer`)            |
 | `walkie_vision.face.heads`  | Faces from crops around each person's head (`HeadFaceRecognizer`, a `PersonFaceRecognizer`) |
 | `walkie_vision.reid`        | OSNet x1.0 and its weights (`load_osnet`)                                         |
@@ -1424,7 +1425,7 @@ too much:
 | Cost                         | Why                                                                               |
 | ---------------------------- | --------------------------------------------------------------------------------- |
 | About 1.5 s per new list     | `set_classes()` with 5 names took 1.5 s on the RTX 2060 ([Measured on the RTX 2060](../setup/01-vision-environment.md#measured-on-the-rtx-2060)). In the installed Ultralytics 8.4.182, it loads the text encoder again on every call that changes the list. |
-| Track ids may reset          | `ObjectDetector` in `walkie_vision.providers` allows it. In Ultralytics 8.4.182, `set_classes()` drops the predictor, and the trackers live on the predictor (read in the code; `tests/test_yolo.py` only stubs it). |
+| Track ids may reset          | `ObjectDetector` in `walkie_vision.providers` allows it. In Ultralytics 8.4.182, `set_classes()` drops the predictor, and the trackers live on the predictor (read in the code; `tests/test_providers_ultralytics.py` only stubs it). |
 | The `classes` field changes  | A class in `classes` without a detection was not seen (`ObjectDetectionArray.msg`). While the caller's nouns replace the task's list, walkie-database would read every task class as "not seen" when it was only "not looked for". |
 | Restoring the list costs again | Setting the old list back pays the 1.5 s again and resets the tracks again. Two callers at once would fight over one list. |
 
@@ -1554,7 +1555,7 @@ bodies, so the node finds no people there.
 | Its entry in `rosidl_generate_interfaces`                | `ros2_ws/src/walkie_vision_msgs/CMakeLists.txt`             | Done   |
 | Field pins for its request and response                  | `test_message_fields` in `tests/test_messages.py`           | Done   |
 | Filling the response                                     | `walkie_vision.pipeline`. `detect_on_demand` fills `objects`, and `services.detect_objects.detect_objects_failure` fills a failure. | Done |
-| The `DetectObjects` server, with its own YOLOE instance and no tracker | The vision node (`walkie_vision.node`), and `YoloeDetector` in `walkie_vision.yolo` | Done on fakes. Not run with a real model. |
+| The `DetectObjects` server, with its own YOLOE instance and no tracker | The vision node (`walkie_vision.node`), and `YoloeDetector` in `walkie_vision.providers.object_detection.yoloe` | Done on fakes. Not run with a real model. |
 | The `EmbedText` server                                   | The vision node (`walkie_vision.node`)                      | Done ([Bounded services](#bounded-services)). No change to its type. |
 | `hash_vector`                                            | `walkie_vision.fakes`                                       | Unchanged. walkie-agent-ros copies it. |
 
@@ -1662,7 +1663,8 @@ bodies, so the node finds no people there.
   start. If the clock steps back further than the time between two starts,
   the second run can reuse ids of the first.
 - **An Ultralytics upgrade** could change how the trackers give ids. Run
-  `c11` and the tracker tests in `tests/test_yolo.py` again after one.
+  `c11` and the tracker tests in `tests/test_providers_ultralytics.py` again
+  after one.
 - **Room vectors.** Which node embeds whole images for walkie-database's
   room table is not decided.
 - **Captions.** Florence-2 runs, but there is no message or service for

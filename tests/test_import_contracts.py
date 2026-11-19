@@ -65,7 +65,6 @@ LAYER_OF = {
     "walkie_vision.reid": 4,
     "walkie_vision.services": 2,
     "walkie_vision.weights": 5,
-    "walkie_vision.yolo": 4,
 }
 NOT_LAYERED = {"_vendor"}
 
