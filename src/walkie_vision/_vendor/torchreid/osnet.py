@@ -30,6 +30,7 @@
 #   Google Drive), the `warnings` import it used and the `pretrained`
 #   argument are removed. walkie_vision.reid.load_osnet() loads the re-ID
 #   weights instead, from the kaiyangzhou/osnet repository on Hugging Face.
+# - Moved to walkie_vision/_vendor/torchreid/.
 """OSNet x1.0 person re-identification network (512-value appearance embeddings)."""
 
 from __future__ import division, absolute_import

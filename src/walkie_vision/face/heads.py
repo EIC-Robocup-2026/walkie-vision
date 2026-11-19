@@ -21,8 +21,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .._vendor.insightface import face_align
 from ..providers import ARCFACE_W600K_R50, Face, PersonPose
-from . import face_align
 from .analysis import FaceAnalyzer
 
 HEAD_KEYPOINTS = (0, 1, 2, 3, 4)  # nose, eyes, ears (COCO order)

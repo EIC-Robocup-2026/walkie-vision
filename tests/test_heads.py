@@ -1,13 +1,17 @@
-"""Tests of walkie_vision.face.heads with a stub analyzer: no ONNX model is loaded."""
+"""Tests of walkie_vision.face.heads with a stub analyzer, and of FaceAnalyzer on buffalo_l when present."""
 
 from __future__ import annotations
 
+import importlib.util
 from dataclasses import dataclass
+from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
-from walkie_vision.face import HeadCropConfig, HeadFaceRecognizer, face_align
+from walkie_vision._vendor.insightface import face_align
+from walkie_vision.face import HeadCropConfig, HeadFaceRecognizer
 from walkie_vision.face.heads import box_iou, clip_faces, head_crop, input_size_for, pick_face
 from walkie_vision.fakes import hash_vector
 from walkie_vision.providers import ARCFACE_W600K_R50, PersonFaceRecognizer, PersonPose
@@ -422,3 +426,37 @@ def test_head_face_recognizer_is_a_person_face_recognizer():
     assert rec.analyzer is stub
     assert rec.model_name == ARCFACE_W600K_R50 and rec.dim == 512
     assert rec.config == HeadCropConfig()
+
+
+def _models_dir() -> Path | None:
+    from walkie_vision.weights import BUFFALO_L_DIR, models_dir
+
+    try:
+        path = models_dir() / BUFFALO_L_DIR
+    except RuntimeError:
+        return None
+    return path if (path / "det_10g.onnx").is_file() else None
+
+
+@pytest.mark.skipif(_models_dir() is None, reason="buffalo_l is missing; run `pixi run fetch-models`")
+def test_face_analyzer_on_zidane_cpu():
+    from walkie_vision.face import FaceAnalyzer
+    from walkie_vision.providers import ARCFACE_W600K_R50, FaceRecognizer
+
+    assets = Path(importlib.util.find_spec("ultralytics").origin).parent / "assets"
+    img = cv2.imread(str(assets / "zidane.jpg"))
+    analyzer = FaceAnalyzer(_models_dir(), providers=["CPUExecutionProvider"])
+    assert isinstance(analyzer, FaceRecognizer)
+    assert analyzer.model_name == ARCFACE_W600K_R50
+    faces = sorted(analyzer.recognize(img), key=lambda f: -f.det_score)
+    # InsightFace 2.1's FaceAnalysis finds the same two faces in this image:
+    # [913, 96, 1057, 276] (score 0.871) and [545, 230, 664, 451] (0.682).
+    assert len(faces) == 2
+    np.testing.assert_allclose(faces[0].bbox, [913, 96, 1057, 276], atol=2)
+    np.testing.assert_allclose(faces[1].bbox, [545, 230, 664, 451], atol=2)
+    for f in faces:
+        assert f.kps.shape == (5, 2)
+        assert f.normed_embedding.shape == (512,)
+        assert np.isclose(np.linalg.norm(f.normed_embedding), 1.0)
+    # Two different people.
+    assert float(faces[0].normed_embedding @ faces[1].normed_embedding) < 0.3

@@ -28,8 +28,10 @@
 # - Only arcface_dst, estimate_norm and norm_crop are kept.
 # - skimage.transform.SimilarityTransform is replaced by _similarity_transform
 #   below, so that scikit-image is not needed. Both implement Umeyama's
-#   least-squares method; tests/test_face.py compares them.
+#   least-squares method; tests/test_vendor_insightface_face_align.py compares
+#   them.
 # - The unused `mode` argument is removed.
+# - Moved to walkie_vision/_vendor/insightface/.
 """ArcFace face alignment: warp a face to the 112x112 template from 5 landmarks."""
 
 from __future__ import annotations

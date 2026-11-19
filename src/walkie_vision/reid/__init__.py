@@ -1,6 +1,7 @@
 """Person re-identification: OSNet x1.0, vendored from deep-person-reid (MIT).
 
-load_osnet() returns the network with Kaiyang Zhou's MSMT17 re-ID weights.
+The network code lives in walkie_vision._vendor.torchreid.osnet. load_osnet()
+returns the network with Kaiyang Zhou's MSMT17 re-ID weights.
 It maps a person crop to a 512-value appearance embedding; compare two
 embeddings by cosine similarity. walkie_vision.reid.identifier wraps it as a
 walkie_vision.providers.ReIdentifier (OSNetReIdentifier). It is not imported
@@ -11,8 +12,8 @@ from __future__ import annotations
 
 import torch
 
+from .._vendor.torchreid.osnet import osnet_x1_0
 from ..weights import HUB_MODELS, OSNET_CHECKPOINT
-from .osnet import osnet_x1_0
 
 # The input the checkpoint was trained with: RGB crops resized to 256x128
 # (height x width), scaled to [0, 1] and normalised with these values.

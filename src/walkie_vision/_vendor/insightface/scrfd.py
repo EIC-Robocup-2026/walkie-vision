@@ -38,6 +38,7 @@
 # - Unused imports, commented-out code, softmax(), get_scrfd(),
 #   scrfd_2p5gkps() and the __main__ demo are removed. The detection code
 #   itself is unchanged.
+# - Moved to walkie_vision/_vendor/insightface/.
 """SCRFD face detector (det_10g.onnx in buffalo_l) on an ONNX Runtime session."""
 
 from __future__ import division

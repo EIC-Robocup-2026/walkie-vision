@@ -83,10 +83,11 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `src/walkie_vision/crops/`          | One person's crop, mask and colour shares for `GetPersonCrop`; the object sampler, padded crops and colour shares |
 | `src/walkie_vision/fakes.py`        | Fake models for tests                                            |
 | `src/walkie_vision/yolo.py`         | YOLOE-26 and YOLO26 pose with their trackers, and YOLOE-26 with no tracker for `DetectObjects` |
-| `src/walkie_vision/face/`           | SCRFD and ArcFace on ONNX Runtime (vendored InsightFace code, MIT) |
+| `src/walkie_vision/face/`           | SCRFD and ArcFace on ONNX Runtime                                |
 | `src/walkie_vision/face/heads.py`   | Faces from crops around each person's head                       |
-| `src/walkie_vision/reid/`           | OSNet re-identification (vendored deep-person-reid code, MIT)    |
+| `src/walkie_vision/reid/`           | OSNet re-identification and its weights                          |
 | `src/walkie_vision/reid/identifier.py` | OSNet on person crops, batched                                |
+| `src/walkie_vision/_vendor/`        | Vendored code, MIT: SCRFD, ArcFace and the alignment from InsightFace, OSNet from deep-person-reid |
 | `src/walkie_vision/embeddings.py`   | The interim CLIP provider                                        |
 | `src/walkie_vision/services/`       | Bounded service work: the job, its one slot, and each service's request checks and responses |
 | `src/walkie_vision/weights.py`      | Every model file and Hugging Face commit, with checksums. `fetch-models` runs it. |
@@ -104,7 +105,7 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 
 Everything in this repository, code and documentation, is licensed under the
 GNU Affero General Public License, version 3 only (`AGPL-3.0-only`): see
-[LICENSE](LICENSE). The vendored files in `src/walkie_vision/face/` and
-`src/walkie_vision/reid/` keep their MIT licence. AGPL-3.0 matches
+[LICENSE](LICENSE). The vendored files in `src/walkie_vision/_vendor/` keep
+their MIT licence. AGPL-3.0 matches
 Ultralytics, which the vision node depends on. The models it downloads keep
 their own licences: see [Licences](https://eic-robocup-2026.github.io/walkie-vision/setup/01-vision-environment/#licences).

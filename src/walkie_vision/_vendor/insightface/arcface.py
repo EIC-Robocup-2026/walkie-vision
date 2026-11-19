@@ -35,6 +35,7 @@
 # - prepare() is removed (it only switched the session to the CPU provider).
 # - Commented-out code is removed, and a comment on the normalisation check is
 #   added.
+# - Moved to walkie_vision/_vendor/insightface/.
 """ArcFace face embeddings (w600k_r50.onnx in buffalo_l) on an ONNX Runtime session."""
 
 from __future__ import division

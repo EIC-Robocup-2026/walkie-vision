@@ -152,6 +152,20 @@ REMOVED = re.compile(
             r"\btest_convert\.py\b",
             r"\bnode(_module)?[.:](IMAGE_QOS|CAMERA_INFO_QOS|OUTPUT_QOS)\b",
             r"from (walkie_vision\.|\.+)node import [^\n]*\b(IMAGE_QOS|CAMERA_INFO_QOS|OUTPUT_QOS)\b",
+            # The vendored InsightFace files left walkie_vision.face for
+            # walkie_vision._vendor.insightface, and the vendored OSNet network left
+            # walkie_vision.reid for walkie_vision._vendor.torchreid; face and reid wrap
+            # them. The relative spellings are left to the syntax-tree check, which
+            # resolves them by the file's package: inside _vendor/insightface/,
+            # `from . import face_align` is the new home. insightface/scrfd.py,
+            # torchreid/osnet.py and the provider providers/reid/osnet.py are fine.
+            r"walkie_vision[./]face[./](scrfd|arcface|face_align)\b",
+            r"from walkie_vision\.face import [^\n]*\b(scrfd|arcface|face_align)\b",
+            r"\bface/(scrfd|arcface|face_align)\.py\b",
+            r"walkie_vision[./]reid[./]osnet\b",
+            r"from walkie_vision\.reid import [^\n]*\bosnet\b",
+            r"(?<!providers/)\breid/osnet\.py\b",
+            r"\btest_face\.py\b",
         ]
     )
 )
@@ -295,6 +309,17 @@ LEFT_CONVERT_PERSON_CROP = frozenset({"fill_person_crop_response"})
 # it subscribes and publishes with them, but defines none.
 MESSAGES = "walkie_vision.messages"
 LEFT_NODE_QOS = frozenset({"IMAGE_QOS", "CAMERA_INFO_QOS", "OUTPUT_QOS"})
+# The vendored files left face/ and reid/ for _vendor/insightface/ and
+# _vendor/torchreid/. face and reid import them from there, and neither package's
+# __init__ binds them under their old names.
+FACE = "walkie_vision.face"
+LEFT_FACE = frozenset({"scrfd", "arcface", "face_align"})
+REID = "walkie_vision.reid"
+LEFT_REID = frozenset({"osnet"})
+VENDORED = {
+    **{f"{FACE}.{name}": f"_vendor/insightface/{name}.py" for name in sorted(LEFT_FACE)},
+    f"{REID}.osnet": "_vendor/torchreid/osnet.py",
+}
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -1967,3 +1992,155 @@ def test_the_tree_check_would_catch_convert_or_the_qos_profiles_at_their_old_hom
     assert _reads_a_name_that_left(good, NODE, LEFT_NODE_QOS) == []
     assert _reads_a_name_that_left(good, MESSAGES, left_convert) == []
     assert _binds_one_of(good, LEFT_NODE_QOS, imports=False) == []
+
+
+def test_the_vendored_files_did_not_come_back_to_face_or_reid():
+    for old, new in VENDORED.items():
+        assert (PACKAGE_DIR / new).is_file()
+        assert _old_homes(SRC, old) == []
+
+
+def test_no_code_imports_the_vendored_files_from_face_or_reid():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "face" / "analysis.py",
+        PACKAGE_DIR / "face" / "heads.py",
+        PACKAGE_DIR / "reid" / "__init__.py",
+        PACKAGE_DIR / "_vendor" / "insightface" / "arcface.py",
+        ROOT / "tests" / "test_heads.py",
+        ROOT / "tests" / "test_vendor_insightface_face_align.py",
+    } <= set(code)
+    assert [hit for file in code for old in VENDORED for hit in _imports_a_module_that_left(file, old)] == []
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, FACE, LEFT_FACE)] == []
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, REID, LEFT_REID)] == []
+
+
+def test_face_and_reid_do_not_bind_the_vendored_modules_again():
+    # face/heads.py binds face_align, which it calls through the module; the face
+    # package's __init__ binds none of the vendored modules, and reid's binds osnet_x1_0
+    # only.
+    assert _binds_one_of(PACKAGE_DIR / "face" / "__init__.py", LEFT_FACE) == []
+    assert _binds_one_of(PACKAGE_DIR / "reid" / "__init__.py", LEFT_REID) == []
+
+
+def test_the_sweep_would_catch_the_vendored_files_at_their_old_homes(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision.face.face_align import _similarity_transform, arcface_dst\n"
+        "import walkie_vision.face.scrfd\n"
+        "from walkie_vision.face import HeadCropConfig, HeadFaceRecognizer, face_align\n"
+        "from walkie_vision.face import arcface as vendored\n"
+        "monkeypatch.setattr(walkie_vision.face.face_align, 'norm_crop', norm_crop)\n"
+        '"walkie_vision.face.arcface",\n'
+        "| `src/walkie_vision/face/scrfd.py` | SCRFD (vendored) |\n"
+        "#   least-squares method; tests/test_face.py compares them.\n"
+        "from walkie_vision.reid.osnet import osnet_x1_0\n"
+        "from walkie_vision.reid import load_osnet, osnet\n"
+        "The network is in `src/walkie_vision/reid/osnet.py`, under the MIT licence.\n"
+        "reid/osnet.py keeps its header\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 12
+    # The new homes, the wrappers that stay in face and reid, the provider osnet.py,
+    # the vendored files by their new paths, the vector model names and prose are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from walkie_vision._vendor.insightface.face_align import _similarity_transform, arcface_dst\n"
+        "from walkie_vision._vendor.insightface import face_align\n"
+        "from walkie_vision.face import HeadCropConfig, HeadFaceRecognizer\n"
+        "from walkie_vision.face.heads import box_iou, clip_faces\n"
+        "from walkie_vision.reid import INPUT_SIZE, MEAN, STD, load_osnet\n"
+        "from walkie_vision.reid.identifier import OSNetReIdentifier, osnet_input\n"
+        "from .._vendor.torchreid.osnet import osnet_x1_0\n"
+        "| `src/walkie_vision/_vendor/insightface/scrfd.py` | SCRFD (vendored) |\n"
+        "`_vendor/torchreid/osnet.py` keeps its header\n"
+        "provider = PACKAGE_DIR / 'providers' / 'reid' / 'osnet.py'\n"
+        "`src/walkie_vision/providers/reid/osnet.py` wraps the network\n"
+        "| `src/walkie_vision/face/` | SCRFD and ArcFace on ONNX Runtime |\n"
+        'ARCFACE_W600K_R50 = "arcface_w600k_r50"\n'
+        "tests/test_vendor_insightface_face_align.py compares them, and test_faces.py others.\n",
+    )
+    assert _mentions([good], REMOVED) == []
+
+
+def test_the_tree_check_would_catch_the_vendored_files_at_their_old_homes(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    # The modules that left, in any spelling of an import, absolute or relative.
+    heads = _write(
+        tmp_path / "src" / "walkie_vision" / "face" / "heads.py",
+        "from . import (\n"
+        "    analysis,\n"
+        "    face_align,\n"
+        ")\n"
+        "from .arcface import ArcFaceONNX\n"
+        "from walkie_vision.face import scrfd as detector\n"
+        "import walkie_vision.face.face_align\n"
+        "def recognise():\n"
+        "    from .scrfd import SCRFD\n"
+        "    return SCRFD\n",
+    )
+    found = [hit for old in VENDORED for hit in _imports_a_module_that_left(heads, old)]
+    assert sorted(found) == [
+        "heads.py:1: imports walkie_vision.face.face_align",
+        "heads.py:5: imports from walkie_vision.face.arcface",
+        "heads.py:6: imports walkie_vision.face.scrfd",
+        "heads.py:7: imports walkie_vision.face.face_align",
+        "heads.py:9: imports from walkie_vision.face.scrfd",
+    ]
+    loader = _write(
+        tmp_path / "src" / "walkie_vision" / "reid" / "__init__.py",
+        "from .osnet import osnet_x1_0\nfrom . import osnet\nimport walkie_vision.reid.osnet as net\n",
+    )
+    assert _imports_a_module_that_left(loader, f"{REID}.osnet") == [
+        "__init__.py:1: imports from walkie_vision.reid.osnet",
+        "__init__.py:2: imports walkie_vision.reid.osnet",
+        "__init__.py:3: imports walkie_vision.reid.osnet",
+    ]
+    # The modules read as attributes of the package they left, under any name.
+    reader = _write(
+        tmp_path / "tests" / "test_heads.py",
+        "from walkie_vision import face, reid as reidentification\n"
+        "real = face.face_align.norm_crop\n"
+        'monkeypatch.setattr(face, "arcface", fake)\n'
+        "net = reidentification.osnet.osnet_x1_0()\n",
+    )
+    assert _reads_a_name_that_left(reader, FACE, LEFT_FACE) + _reads_a_name_that_left(reader, REID, LEFT_REID) == [
+        "test_heads.py:2: reads face.face_align",
+        "test_heads.py:3: names arcface",
+        "test_heads.py:4: reads reidentification.osnet",
+    ]
+    # A face or reid __init__ that binds a vendored module puts it back at its old home.
+    init = _write(
+        tmp_path / "face_init.py",
+        "from .._vendor.insightface import face_align\n"
+        "from .._vendor.insightface import scrfd as scrfd\n"
+        "from .._vendor.insightface.arcface import *\n",
+    )
+    assert _binds_one_of(init, LEFT_FACE) == [
+        "face_init.py:1: binds face_align",
+        "face_init.py:2: binds scrfd",
+        "face_init.py:3: binds *",
+    ]
+    # The new homes, a sibling import inside the vendored package, the provider
+    # osnet.py of a later step and a docstring are fine.
+    good = {
+        "_vendor/insightface/arcface.py": "from . import face_align\n",
+        "face/analysis.py": (
+            '"""Wraps what was walkie_vision.face.scrfd."""\n'
+            "from .._vendor.insightface.arcface import ArcFaceONNX\n"
+            "from .._vendor.insightface.scrfd import SCRFD\n"
+        ),
+        "face/__init__.py": "from .analysis import Face, FaceAnalyzer\nfrom .heads import HeadFaceRecognizer\n",
+        "reid/__init__.py": "from .._vendor.torchreid.osnet import osnet_x1_0\nfrom ..weights import HUB_MODELS\n",
+        "providers/reid/osnet.py": (
+            "from . import base\n"
+            "from ..._vendor.torchreid import osnet\n"
+            "from ..._vendor.torchreid.osnet import osnet_x1_0\n"
+        ),
+    }
+    for path, text in good.items():
+        file = _write(tmp_path / "src" / "walkie_vision" / path, text)
+        assert [hit for old in VENDORED for hit in _imports_a_module_that_left(file, old)] == [], path
+        assert _reads_a_name_that_left(file, FACE, LEFT_FACE) == [], path
+        assert _reads_a_name_that_left(file, REID, LEFT_REID) == [], path
+    assert _binds_one_of(tmp_path / "src" / "walkie_vision" / "face" / "__init__.py", LEFT_FACE) == []
+    assert _binds_one_of(tmp_path / "src" / "walkie_vision" / "reid" / "__init__.py", LEFT_REID) == []

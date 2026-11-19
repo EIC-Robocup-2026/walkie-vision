@@ -15,9 +15,9 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 
+from .._vendor.insightface.arcface import ArcFaceONNX
+from .._vendor.insightface.scrfd import SCRFD
 from ..providers import ARCFACE_W600K_R50, Face
-from .arcface import ArcFaceONNX
-from .scrfd import SCRFD
 
 DETECTOR_FILE = "det_10g.onnx"
 RECOGNIZER_FILE = "w600k_r50.onnx"

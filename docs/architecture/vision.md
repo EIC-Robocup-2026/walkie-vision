@@ -1244,6 +1244,7 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.face.heads`  | Faces from crops around each person's head (`HeadFaceRecognizer`, a `PersonFaceRecognizer`) |
 | `walkie_vision.reid`        | OSNet x1.0 and its weights (`load_osnet`)                                         |
 | `walkie_vision.reid.identifier` | OSNet on person crops (`OSNetReIdentifier`, a `ReIdentifier`)                 |
+| `walkie_vision._vendor`     | Vendored MIT code, each file's header naming its upstream commit and changes: SCRFD, ArcFace and the alignment from InsightFace (`_vendor.insightface`), wrapped by `face`, and the OSNet network from deep-person-reid (`_vendor.torchreid`), wrapped by `reid` |
 | `walkie_vision.weights`     | Every model file and Hugging Face commit, with its checksum and licence           |
 | `walkie_vision.camera`      | `sensor_msgs/Image` to a BGR array and the `camera_info` size check (`camera.image`), registered depth (`camera.depth`), and the newest image and the colour and depth pairing (`camera.mailboxes`) |
 | `walkie_vision.geometry`    | Object points and view quality from registered depth (`lift_mask`, `view_quality`) |

@@ -77,7 +77,7 @@ onnxruntime-gpu = { version = ">=1.26.0,<1.27", extras = ["cuda", "cudnn"] }
 # The InsightFace package is not used: it requires the CPU-only onnxruntime
 # package, which installs the same `onnxruntime` module and can replace the
 # CUDA provider, and pixi 0.80 treats the lock file as out of date when that
-# requirement is removed with a dependency override. walkie_vision.face
+# requirement is removed with a dependency override. walkie_vision._vendor.insightface
 # vendors the three parts that are needed (SCRFD, ArcFace and the alignment).
 # onnx reads the ArcFace graph to pick its input normalisation, as InsightFace
 # does, and builds the test graph in checks/c04_ort.py.

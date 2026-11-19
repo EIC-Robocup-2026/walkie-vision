@@ -39,18 +39,17 @@ PACKAGE = "walkie_vision"
 HEAVY = ("torch", "torchvision", "ultralytics", "onnxruntime", "open_clip", "transformers", "timm", "insightface")
 
 # The face package's __init__ imports face.analysis, which loads onnxruntime,
-# so every module under face/ loads it. The reid package loads torch.
+# so every module under face/ loads it. The reid package and the vendored OSNet
+# network load torch. The vendored InsightFace files load only cv2, numpy and
+# onnx, so they are light.
 HEAVY_AT_IMPORT = frozenset(
     {
+        "walkie_vision._vendor.torchreid.osnet",
         "walkie_vision.face",
         "walkie_vision.face.analysis",
-        "walkie_vision.face.arcface",
-        "walkie_vision.face.face_align",
         "walkie_vision.face.heads",
-        "walkie_vision.face.scrfd",
         "walkie_vision.reid",
         "walkie_vision.reid.identifier",
-        "walkie_vision.reid.osnet",
     }
 )
 
