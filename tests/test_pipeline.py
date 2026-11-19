@@ -13,9 +13,9 @@ from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import Header
 
 from walkie_vision import pipeline as pipeline_module
+from walkie_vision.camera.depth import RegisteredDepth
 from walkie_vision.crops import colour as colour_module
 from walkie_vision.crops import objects as objects_module
-from walkie_vision.depth import RegisteredDepth, frame_laplacian, view_quality
 from walkie_vision.fakes import (
     FakeEmbedder,
     FakeObjectDetector,
@@ -24,6 +24,7 @@ from walkie_vision.fakes import (
     FakeReIdentifier,
     box_mask,
 )
+from walkie_vision.geometry import frame_laplacian, view_quality
 from walkie_vision.node import LatencyLog
 from walkie_vision.pipeline import Providers, TrackIdBase, VisionPipeline, dedupe_poses
 from walkie_vision.providers import Detection, Face, PersonPose

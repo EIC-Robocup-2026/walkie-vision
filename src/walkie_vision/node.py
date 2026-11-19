@@ -24,9 +24,9 @@ Threads:
   stay in the node's default callback group, so they still run one at a
   time.
 - With geometry_enabled, a depth callback joins them, and the mailbox is a
-  walkie_vision.depth.RgbdBuffer that pairs each image with its depth. Its
-  wait is bounded by wall time (ADR-0014). Without it, the node does not
-  subscribe to depth at all.
+  walkie_vision.camera.mailboxes.RgbdBuffer that pairs each image with its
+  depth. Its wait is bounded by wall time (ADR-0014). Without it, the node
+  does not subscribe to depth at all.
 - The GetPersonCrop callback has its own callback group. It leaves the
   request in a one-slot mailbox and waits for the worker's answer, while
   another of the executor's threads runs the callbacks above.
@@ -86,11 +86,13 @@ from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
 
 from . import convert, requests
+from .camera.depth import DepthRefused, RegisteredDepth, read_registered_depth
+from .camera.image import camera_info_problem, image_to_bgr
+from .camera.mailboxes import CurrentImage, NewestFrame, RgbdBuffer
+from .convert import stamp_ns
 from .crops import person
 from .crops.person import CropStatus
-from .depth import DepthRefused, RegisteredDepth, RgbdBuffer, read_registered_depth, stamp_ns
 from .errors import StartupError
-from .image import camera_info_problem, image_to_bgr
 from .pipeline import ON_DEMAND_MAX_OBJECTS, Providers, StageTimes, TrackIdBase, VisionPipeline
 
 NODE_NAME = "walkie_vision"
@@ -333,57 +335,6 @@ class VisionConfig:
                 value = tuple(value)
             values[f.name] = value
         return cls(**values)
-
-
-class NewestFrame:
-    """A one-slot mailbox: a new item replaces the one that waits."""
-
-    def __init__(self) -> None:
-        self._cond = threading.Condition()
-        self._item: tuple[Image, float] | None = None
-        self._closed = False
-        self._woken = False
-        self.replaced = 0
-        """How many waiting items a newer one replaced."""
-
-    def put(self, item: tuple[Image, float]) -> None:
-        with self._cond:
-            if self._closed:
-                return
-            if self._item is not None:
-                self.replaced += 1
-            self._item = item
-            self._cond.notify()
-
-    def take(self, timeout: float) -> tuple[Image, float] | None:
-        """Return the waiting item, waiting up to timeout seconds; None when there is none."""
-        with self._cond:
-            if self._item is None and not self._closed and not self._woken and timeout > 0:
-                self._cond.wait(timeout)
-            self._woken = False
-            item, self._item = self._item, None
-            return item
-
-    def clear(self) -> None:
-        """Drop the waiting item, as after a sim restart. An item that take() already returned goes on."""
-        with self._cond:
-            self._item = None
-
-    def wake(self) -> None:
-        """End the current or the next take() early, so the worker can look at a service job."""
-        with self._cond:
-            self._woken = True
-            self._cond.notify_all()
-
-    def close(self) -> None:
-        with self._cond:
-            self._closed = True
-            self._item = None
-            self._cond.notify_all()
-
-    @property
-    def closed(self) -> bool:
-        return self._closed
 
 
 def _crop_answer(status: CropStatus, message: str) -> GetPersonCrop.Response:
@@ -826,7 +777,7 @@ class VisionNode(Node):
         # Only what EmbedCrop and DetectObjects can answer from. Off, no image
         # outlives its processing. It pairs by the mailbox's gap and wait.
         self._current = (
-            requests.CurrentImage(round(cfg.max_pair_gap_s * 1e9), cfg.pair_wait_s)
+            CurrentImage(round(cfg.max_pair_gap_s * 1e9), cfg.pair_wait_s)
             if cfg.object_embeddings_enabled or cfg.on_demand_enabled
             else None
         )
@@ -1327,7 +1278,7 @@ class VisionNode(Node):
     def _current_depth(self, msg: Image, depth_msg: Image | None) -> RegisteredDepth | None:
         """Return the checked depth of an image, or None. A service job counts nothing here.
 
-        depth_msg must come from a pair of requests.CurrentImage, which already
+        depth_msg must come from a pair of CurrentImage, which already
         bounds the stamps and the arrivals. This checks only the calibration.
         """
         cfg = self.config

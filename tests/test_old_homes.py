@@ -95,6 +95,19 @@ REMOVED = re.compile(
             r"from (walkie_vision\.|\.+)embeddings import [^\n]*\b(SAMPLE_PERIOD|SAMPLE_MAX_OBJECTS"
             r"|SAMPLE_MIN_SIDE_PX|_short_side|select_samples|usable_samples|CROP_PADDING|CROP_MAX_SIDE|padded_crop"
             r"|encode_crop|MIN_COLOR_PIXELS|PALETTE_RGB|_PALETTE_LAB|nearest_palette_indices|mask_color_shares)\b",
+            # walkie_vision.image and walkie_vision.depth left for the walkie_vision.camera
+            # package (camera.image, camera.depth and camera.mailboxes) and
+            # walkie_vision.geometry, and stamp_ns for walkie_vision.convert. NewestFrame left
+            # walkie_vision.node and CurrentImage left walkie_vision.requests for
+            # camera.mailboxes. The words image and depth are fine.
+            r"walkie_vision[./](image|depth)\b",
+            r"from walkie_vision import [^\n]*\b(image|depth)\b",
+            r"from \.+(image|depth) import",
+            r"from \.+ import [^\n]*\b(image|depth)\b",
+            r"\bnode(_module)?[.:]NewestFrame\b",
+            r"from (walkie_vision\.|\.+)node import [^\n]*\bNewestFrame\b",
+            r"\brequests(_module)?[.:]CurrentImage\b",
+            r"from (walkie_vision\.|\.+)requests import [^\n]*\bCurrentImage\b",
         ]
     )
 )
@@ -168,6 +181,43 @@ LEFT_EMBEDDINGS = frozenset(
         "mask_color_shares",
     }
 )
+# image.py became camera/image.py. depth.py became camera/depth.py, which keeps the
+# raster reading and its checks: the depth maths left it for geometry.py, the mailboxes
+# for camera/mailboxes.py and stamp_ns for convert.py. camera/depth.py uses none of
+# them, so it does not even import them.
+CAMERA_IMAGE = "walkie_vision.camera.image"
+DEPTH = "walkie_vision.depth"
+CAMERA_DEPTH = "walkie_vision.camera.depth"
+LEFT_DEPTH = frozenset(
+    {
+        "_EROSION_SHARE",
+        "_MIN_EROSION_PX",
+        "_MAX_EROSION_PX",
+        "_MAD_TO_SIGMA",
+        "_MAD_WINDOW_SIGMAS",
+        "_MIN_DEPTH_WINDOW_M",
+        "_FULL_AREA_SHARE",
+        "_FULL_SHARPNESS_VARIANCE",
+        "_MIN_SHARPNESS_PIXELS",
+        "erosion_radius",
+        "_erode",
+        "_in_range",
+        "_surviving_pixels",
+        "lift_mask",
+        "depth_cover",
+        "frame_laplacian",
+        "view_quality",
+        "Bundle",
+        "_WaitingColour",
+        "RgbdBuffer",
+        "stamp_ns",
+    }
+)
+# The node's mailbox and the services' newest input left for camera/mailboxes.py.
+# node.py imports NewestFrame to build its mailbox; requests.py uses CurrentImage no more.
+LEFT_NODE_MAILBOX = frozenset({"NewestFrame"})
+REQUESTS = "walkie_vision.requests"
+LEFT_REQUESTS = frozenset({"CurrentImage"})
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -454,17 +504,19 @@ def test_no_code_takes_the_box_helpers_from_crop_or_the_mask_resize_from_image()
     # crop.py is crops/person.py now: neither the old module nor its successor serves them.
     assert [hit for file in code for hit in _reads_a_name_that_left(file, CROP, LEFT_CROP)] == []
     assert [hit for file in code for hit in _reads_a_name_that_left(file, PERSON_CROP, LEFT_CROP)] == []
+    # image.py is camera/image.py now: neither the old module nor its successor serves it.
     assert [hit for file in code for hit in _reads_a_name_that_left(file, IMAGE, LEFT_IMAGE)] == []
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, CAMERA_IMAGE, LEFT_IMAGE)] == []
 
 
 def test_crop_and_image_do_not_define_the_box_helpers_or_the_mask_resize_again():
     assert (PACKAGE_DIR / "boxes.py").is_file()
     # crops/person.py (crop.py until the crops package) imports the helpers it still
     # uses from boxes, but defines none of them, and does not import the ones it no
-    # longer uses. image.py uses none.
+    # longer uses. camera/image.py (image.py until the camera package) uses none.
     assert _binds_one_of(PACKAGE_DIR / "crops" / "person.py", LEFT_CROP, imports=False) == []
     assert _binds_one_of(PACKAGE_DIR / "crops" / "person.py", UNUSED_IN_CROP) == []
-    assert _binds_one_of(PACKAGE_DIR / "image.py", LEFT_IMAGE) == []
+    assert _binds_one_of(PACKAGE_DIR / "camera" / "image.py", LEFT_IMAGE) == []
 
 
 def test_the_person_crop_did_not_come_back_to_crop():
@@ -778,15 +830,16 @@ def test_the_sweep_would_catch_the_box_helpers_and_the_mask_resize_at_their_old_
         "walkie_vision.image:resize_mask keeps the mask at an equal size\n",
     )
     assert len(_mentions([bad], REMOVED)) == 12
-    # The new home, the names that stay with the person crop and in image, longer
-    # names and prose are fine.
+    # The new home, the names that stay with the person crop and in image (at its own
+    # new home, camera.image), longer names and prose are fine.
     good = _write(
         tmp_path / "good.py",
         "from walkie_vision.boxes import Rect, box_area, pad_rect, resize_mask\n"
         "from .boxes import box_cover, box_iou, intersect_rects, outer_rect, subtract_rect\n"
-        "from walkie_vision import boxes, crops, image\n"
+        "from walkie_vision import boxes, crops\n"
+        "from walkie_vision.camera import image\n"
         "from walkie_vision.crops.person import MASK_GREY, CropStatus, crop_person\n"
-        "from .image import calibration_problem, camera_info_problem\n"
+        "from .camera.image import calibration_problem, camera_info_problem\n"
         "x1, y1, x2, y2 = boxes.pad_rect(box, CROP_PADDING, width, height)\n"
         "assert boxes.box_cover(behind.box, person.torso_box(guest)) == pytest.approx(0.4)\n"
         "reduced, _, _ = jpeg.scale_down(pixels, CROP_MAX_SIDE)\n"
@@ -1058,3 +1111,190 @@ def test_the_tree_check_would_catch_the_sampler_or_the_palette_at_their_old_home
     )
     assert _binds_one_of(clean, LEFT_EMBEDDINGS) == []
     assert _imports_a_module_that_left(clean, "walkie_vision.crops") == []
+
+
+def test_image_and_depth_did_not_come_back_to_the_package_root():
+    for module in ("__init__", "image", "depth", "mailboxes"):
+        assert (PACKAGE_DIR / "camera" / f"{module}.py").is_file()
+    assert (PACKAGE_DIR / "geometry.py").is_file()
+    assert _old_homes(SRC, IMAGE) == []
+    assert _old_homes(SRC, DEPTH) == []
+
+
+def test_no_code_imports_image_or_depth_from_the_package_root():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "node.py",
+        PACKAGE_DIR / "pipeline.py",
+        PACKAGE_DIR / "debug_viz.py",
+        ROOT / "checks" / "c12_memory.py",
+        ROOT / "tests" / "test_node.py",
+    } <= set(code)
+    assert [hit for file in code for hit in _imports_a_module_that_left(file, IMAGE)] == []
+    assert [hit for file in code for hit in _imports_a_module_that_left(file, DEPTH)] == []
+
+
+def test_no_code_takes_the_depth_maths_the_mailboxes_or_stamp_ns_from_camera_depth():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {PACKAGE_DIR / "pipeline.py", PACKAGE_DIR / "requests.py", ROOT / "tests" / "test_geometry.py"} <= set(code)
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, CAMERA_DEPTH, LEFT_DEPTH)] == []
+
+
+def test_camera_depth_does_not_define_or_import_the_depth_maths_the_mailboxes_or_stamp_ns():
+    depth = PACKAGE_DIR / "camera" / "depth.py"
+    assert _binds_one_of(depth, LEFT_DEPTH) == []
+    # The raster reading needs no mailbox and no message conversion.
+    assert _imports_a_module_that_left(depth, "walkie_vision.camera.mailboxes") == []
+    assert _imports_a_module_that_left(depth, "walkie_vision.convert") == []
+
+
+def test_no_code_takes_the_mailbox_from_the_node_or_the_current_image_from_requests():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {PACKAGE_DIR / "node.py", ROOT / "tests" / "test_node.py", ROOT / "tests" / "test_requests.py"} <= set(code)
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, NODE, LEFT_NODE_MAILBOX)] == []
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, REQUESTS, LEFT_REQUESTS)] == []
+
+
+def test_the_node_and_requests_do_not_define_the_mailboxes_again():
+    # node.py imports NewestFrame to build its mailbox, but does not define it.
+    # requests.py does not use CurrentImage, so it does not even import it.
+    assert _binds_one_of(PACKAGE_DIR / "node.py", LEFT_NODE_MAILBOX, imports=False) == []
+    assert _binds_one_of(PACKAGE_DIR / "requests.py", LEFT_REQUESTS) == []
+
+
+def test_the_sweep_would_catch_image_depth_and_the_mailboxes_at_their_old_homes(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision.image import camera_info_problem, image_to_bgr\n"
+        "from walkie_vision.depth import RegisteredDepth, lift_mask\n"
+        "import walkie_vision.depth\n"
+        "from walkie_vision import convert, depth, image\n"
+        "from .image import image_to_bgr\n"
+        "from ..depth import RegisteredDepth\n"
+        "from . import convert, depth, requests\n"
+        "| `src/walkie_vision/depth.py` | Registered depth and the object geometry |\n"
+        "The pairing is walkie_vision.depth.RgbdBuffer (ADR-0014).\n"
+        "assert isinstance(h.node._mailbox, node_module.NewestFrame)\n"
+        "from walkie_vision.node import NewestFrame, VisionConfig\n"
+        "from .node import NewestFrame\n"
+        "current = requests.CurrentImage(stamp_ns, max_age_s=1.0)\n"
+        "from walkie_vision.requests import CurrentImage, RequestJob\n"
+        "from .requests import CurrentImage\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 15
+    # The new homes, the names that stay in node and requests, longer names and the
+    # words image and depth are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from walkie_vision.camera.image import camera_info_problem, image_to_bgr\n"
+        "from walkie_vision.camera.depth import RegisteredDepth, read_registered_depth\n"
+        "from walkie_vision.camera import depth, image, mailboxes\n"
+        "from walkie_vision.geometry import depth_cover, lift_mask\n"
+        "from .camera.image import image_to_bgr\n"
+        "from ..camera.image import calibration_problem, camera_info_problem\n"
+        "from .camera.mailboxes import CurrentImage, NewestFrame, RgbdBuffer\n"
+        "from . import convert, geometry, requests\n"
+        "| `src/walkie_vision/camera/` | The camera input and its mailboxes |\n"
+        "The pairing is walkie_vision.camera.mailboxes.RgbdBuffer (ADR-0014).\n"
+        "assert isinstance(h.node._mailbox, NewestFrame)\n"
+        "from walkie_vision.node import VisionConfig, build_providers\n"
+        "job = requests.RequestJob(), requests.CurrentImages\n"
+        "image.shape[:2], depth.metres, walkie_vision.depth_tools\n",
+    )
+    assert _mentions([good], REMOVED) == []
+
+
+def test_the_tree_check_would_catch_image_depth_or_the_mailboxes_at_their_old_homes(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    # The modules that left: image and depth, in any spelling of an import.
+    caller = _write(
+        tmp_path / "src" / "walkie_vision" / "services" / "get_depth.py",
+        "from .. import (\n"
+        "    convert,\n"
+        "    depth,\n"
+        ")\n"
+        "from ..image import image_to_bgr\n"
+        "import walkie_vision.depth as registered\n",
+    )
+    assert _imports_a_module_that_left(caller, DEPTH) == [
+        "get_depth.py:1: imports walkie_vision.depth",
+        "get_depth.py:6: imports walkie_vision.depth",
+    ]
+    assert _imports_a_module_that_left(caller, IMAGE) == ["get_depth.py:5: imports from walkie_vision.image"]
+    # The depth maths, the mailboxes and stamp_ns, taken from camera.depth under any name.
+    reader = _write(
+        tmp_path / "src" / "walkie_vision" / "pipeline.py",
+        "from .camera import depth\n"
+        "from walkie_vision.camera import depth as registered\n"
+        "from .camera.depth import (\n"
+        "    RegisteredDepth,\n"
+        "    lift_mask,\n"
+        ")\n"
+        "a = depth.view_quality(laplacian, 0.5)\n"
+        "b = registered.stamp_ns(header)\n"
+        'monkeypatch.setattr(depth, "frame_laplacian", fake)\n',
+    )
+    assert _reads_a_name_that_left(reader, CAMERA_DEPTH, LEFT_DEPTH) == [
+        "pipeline.py:3: imports lift_mask",
+        "pipeline.py:7: reads depth.view_quality",
+        "pipeline.py:8: reads registered.stamp_ns",
+        "pipeline.py:9: names frame_laplacian",
+    ]
+    # NewestFrame taken from the node, and CurrentImage from requests.
+    mailbox = _write(
+        tmp_path / "src" / "walkie_vision" / "debug_viz.py",
+        "from . import node, requests\n"
+        "from .node import NewestFrame\n"
+        "from walkie_vision.requests import (\n"
+        "    CurrentImage,\n"
+        ")\n"
+        "a = node.NewestFrame()\n"
+        "b = requests.CurrentImage(1, 2.0)\n",
+    )
+    assert _reads_a_name_that_left(mailbox, NODE, LEFT_NODE_MAILBOX) == [
+        "debug_viz.py:2: imports NewestFrame",
+        "debug_viz.py:6: reads node.NewestFrame",
+    ]
+    assert _reads_a_name_that_left(mailbox, REQUESTS, LEFT_REQUESTS) == [
+        "debug_viz.py:3: imports CurrentImage",
+        "debug_viz.py:7: reads requests.CurrentImage",
+    ]
+    # A camera depth that imports, re-exports or copies a name that left, a node that
+    # defines the mailbox again and a requests that imports the current image put them
+    # back at their old homes.
+    copy = _write(
+        tmp_path / "depth.py",
+        "from ..geometry import lift_mask\n"
+        "from ..convert import stamp_ns as stamp_ns\n"
+        "from .mailboxes import *\n"
+        "def view_quality(laplacian, area_share): ...\n",
+    )
+    assert _binds_one_of(copy, LEFT_DEPTH) == [
+        "depth.py:1: binds lift_mask",
+        "depth.py:2: binds stamp_ns",
+        "depth.py:3: binds *",
+        "depth.py:4: binds view_quality",
+    ]
+    node = _write(tmp_path / "node.py", "from .camera.mailboxes import RgbdBuffer\nclass NewestFrame: ...\n")
+    assert _binds_one_of(node, LEFT_NODE_MAILBOX, imports=False) == ["node.py:2: binds NewestFrame"]
+    requests = _write(tmp_path / "requests.py", "from .camera.mailboxes import CurrentImage\n")
+    assert _binds_one_of(requests, LEFT_REQUESTS) == ["requests.py:1: binds CurrentImage"]
+    # The new homes and the names that stay are fine.
+    good = _write(
+        tmp_path / "src" / "walkie_vision" / "node.py",
+        "from . import convert, geometry, requests\n"
+        "from .camera import depth, image\n"
+        "from .camera.depth import RegisteredDepth, read_registered_depth\n"
+        "from .camera.image import image_to_bgr\n"
+        "from .camera.mailboxes import CurrentImage, NewestFrame\n"
+        "from .convert import stamp_ns\n"
+        "a = depth.depth_to_metres(raster, encoding)\n"
+        "b = geometry.view_quality(laplacian, 0.5)\n"
+        "c = requests.RequestJob()\n"
+        'monkeypatch.setattr(depth, "read_registered_depth", fake)\n',
+    )
+    assert _imports_a_module_that_left(good, IMAGE) == []
+    assert _imports_a_module_that_left(good, DEPTH) == []
+    assert _reads_a_name_that_left(good, CAMERA_DEPTH, LEFT_DEPTH) == []
+    assert _reads_a_name_that_left(good, REQUESTS, LEFT_REQUESTS) == []
+    assert _binds_one_of(good, LEFT_NODE_MAILBOX, imports=False) == []

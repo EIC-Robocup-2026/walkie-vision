@@ -124,6 +124,11 @@ def new_stream_id() -> str:
     return str(uuid.uuid4())
 
 
+def stamp_ns(header: Header) -> int:
+    """Return a header's stamp in nanoseconds."""
+    return int(header.stamp.sec) * 1_000_000_000 + int(header.stamp.nanosec)
+
+
 def empty_cloud(header: Header) -> PointCloud2:
     """Return the cloud of an object with no points: the contract's layout and header, and no data."""
     return _cloud(header, array.array("B"), 0)

@@ -40,6 +40,7 @@ from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, Embed
 from walkie_vision import errors, requests
 from walkie_vision import node as node_module
 from walkie_vision import pipeline as pipeline_module
+from walkie_vision.camera.mailboxes import NewestFrame, RgbdBuffer
 from walkie_vision.convert import (
     MAX_MESSAGE_CHARS,
     bbox_to_box,
@@ -49,7 +50,6 @@ from walkie_vision.convert import (
     vectors_from_response,
 )
 from walkie_vision.crops import colour, objects, person
-from walkie_vision.depth import RgbdBuffer, frame_laplacian, view_quality
 from walkie_vision.fakes import (
     FakeEmbedder,
     FakeObjectDetector,
@@ -59,6 +59,7 @@ from walkie_vision.fakes import (
     box_mask,
     figure_pose,
 )
+from walkie_vision.geometry import frame_laplacian, view_quality
 from walkie_vision.node import IMAGE_QOS, NODE_NAME, CropJob, CropMailbox, VisionConfig, VisionNode
 from walkie_vision.pipeline import Providers, TrackIdBase
 from walkie_vision.providers import Detection, Face, PersonPose
@@ -1202,7 +1203,7 @@ def test_the_default_config_adds_no_depth_subscription_or_buffer(harness):
     h = harness()
     assert h.node.config.geometry_enabled is False
     assert _subscribed(h) == sorted([h.topics["image_topic"], h.topics["camera_info_topic"]])
-    assert isinstance(h.node._mailbox, node_module.NewestFrame)
+    assert isinstance(h.node._mailbox, NewestFrame)
     h.wait_matched()
     assert h.depth_pub.get_subscription_count() == 0
     h.publish_frame(1)

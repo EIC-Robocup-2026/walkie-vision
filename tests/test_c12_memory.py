@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from sensor_msgs.msg import CameraInfo
 
-from walkie_vision.depth import RegisteredDepth
+from walkie_vision.camera.depth import RegisteredDepth
 from walkie_vision.fakes import (
     FakeEmbedder,
     FakeObjectDetector,

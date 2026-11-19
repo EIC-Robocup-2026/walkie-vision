@@ -3,7 +3,8 @@
 image_to_bgr() turns a sensor_msgs/Image into the BGR array every provider
 takes (walkie_vision.providers). camera_info_problem() says whether a
 CameraInfo belongs to an image of that size. calibration_problem() is the
-stricter check for geometry: walkie_vision.depth lifts pixels with it.
+stricter check for geometry: walkie_vision.camera.depth checks a depth raster
+with it before walkie_vision.geometry lifts its pixels.
 """
 
 from __future__ import annotations

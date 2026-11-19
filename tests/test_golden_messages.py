@@ -30,6 +30,7 @@ from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import Header
 from walkie_vision_msgs.srv import DetectObjects, EmbedText, GetPersonCrop
 
+from walkie_vision.camera.depth import RegisteredDepth
 from walkie_vision.convert import (
     check_object_detection_array,
     detect_objects_failure,
@@ -41,7 +42,6 @@ from walkie_vision.convert import (
     vectors_from_response,
 )
 from walkie_vision.crops.person import CropStatus, crop_person
-from walkie_vision.depth import RegisteredDepth
 from walkie_vision.fake_publisher import DEFAULT_SCENE, FakeStream, load_scene
 from walkie_vision.fakes import (
     FakeEmbedder,

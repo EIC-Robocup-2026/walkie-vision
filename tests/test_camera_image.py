@@ -1,10 +1,10 @@
-"""Image messages to BGR arrays, and the camera_info check."""
+"""walkie_vision.camera.image: image messages to BGR arrays, and the camera_info check."""
 
 import numpy as np
 import pytest
 from sensor_msgs.msg import CameraInfo, Image
 
-from walkie_vision.image import SUPPORTED_ENCODINGS, camera_info_problem, image_to_bgr
+from walkie_vision.camera.image import SUPPORTED_ENCODINGS, camera_info_problem, image_to_bgr
 
 HEIGHT, WIDTH = 4, 5
 

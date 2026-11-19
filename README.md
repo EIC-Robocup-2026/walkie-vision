@@ -76,8 +76,8 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `ros2_ws/src/walkie_vision_msgs/`   | The messages and the services, built with colcon                 |
 | `src/walkie_vision/node.py`         | The vision node: parameters, threads, publishing and health checks |
 | `src/walkie_vision/pipeline.py`     | One image through every model to the two arrays, without ROS     |
-| `src/walkie_vision/image.py`        | Camera images to BGR arrays, and the `camera_info` checks        |
-| `src/walkie_vision/depth.py`        | Colour and registered depth, paired within bounds; object points and view quality. Off by default |
+| `src/walkie_vision/camera/`         | Camera images to BGR arrays, the `camera_info` checks, registered depth, and colour and depth paired within bounds |
+| `src/walkie_vision/geometry.py`     | Object points and view quality from registered depth. Off by default |
 | `src/walkie_vision/providers.py`    | The interfaces every model implements, and their result types    |
 | `src/walkie_vision/convert.py`      | Model results to messages, with checks                           |
 | `src/walkie_vision/crops/`          | One person's crop, mask and colour shares for `GetPersonCrop`; the object sampler, padded crops and colour shares |
@@ -88,7 +88,7 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `src/walkie_vision/reid/`           | OSNet re-identification (vendored deep-person-reid code, MIT)    |
 | `src/walkie_vision/reid/identifier.py` | OSNet on person crops, batched                                |
 | `src/walkie_vision/embeddings.py`   | The interim CLIP provider                                        |
-| `src/walkie_vision/requests.py`     | Bounded service work: the job, its one slot, the current image and the request checks |
+| `src/walkie_vision/requests.py`     | Bounded service work: the job, its one slot and the request checks |
 | `src/walkie_vision/weights.py`      | Every model file and Hugging Face commit, with checksums. `fetch-models` runs it. |
 | `config/`                           | The vision node's parameters, and one file per task with its classes |
 | `launch/`                           | The launch file that runs the vision node and restarts it        |

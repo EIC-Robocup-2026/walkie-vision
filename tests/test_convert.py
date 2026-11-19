@@ -6,8 +6,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 from ament_index_python.packages import get_package_share_directory
+from builtin_interfaces.msg import Time
 from rclpy.serialization import deserialize_message, serialize_message
-from sensor_msgs.msg import CameraInfo, CompressedImage, PointCloud2, PointField
+from sensor_msgs.msg import CameraInfo, CompressedImage, Image, PointCloud2, PointField
 from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray, PersonDetection, PersonDetectionArray
 from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
@@ -24,6 +25,7 @@ from walkie_vision.convert import (
     fill_person_crop_response,
     new_stream_id,
     pose_from_person_detection,
+    stamp_ns,
     to_object_detection,
     to_object_detection_array,
     to_person_detection,
@@ -621,6 +623,21 @@ def test_evenly_spaced_indices():
     np.testing.assert_array_equal(evenly_spaced_indices(5, 5), [0, 1, 2, 3, 4])
     np.testing.assert_array_equal(evenly_spaced_indices(10, 4), [0, 2, 5, 7])
     assert len(evenly_spaced_indices(0, 5)) == 0
+
+
+FRAME = "zed_head_left_camera_frame_optical"
+
+
+def _stamped(ms: float, frame: str = FRAME) -> Image:
+    msg = Image()
+    ns = round(ms * 1_000_000)
+    msg.header.stamp = Time(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
+    msg.header.frame_id = frame
+    return msg
+
+
+def test_stamp_ns():
+    assert stamp_ns(_stamped(1500.5).header) == 1_500_500_000
 
 
 def test_the_cap_picks_evenly_spaced_points_in_input_order():

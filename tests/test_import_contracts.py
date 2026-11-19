@@ -47,16 +47,16 @@ ROS_PACKAGE = re.compile(
 # out (the protected contracts cover it).
 LAYER_OF = {
     "walkie_vision.boxes": 5,
+    "walkie_vision.camera": 3,
     "walkie_vision.convert": 3,
     "walkie_vision.crops": 3,
     "walkie_vision.debug_viz": 0,
-    "walkie_vision.depth": 3,
     "walkie_vision.embeddings": 3,
     "walkie_vision.errors": 5,
     "walkie_vision.face": 4,
     "walkie_vision.fake_publisher": 1,
     "walkie_vision.fakes": 2,
-    "walkie_vision.image": 3,
+    "walkie_vision.geometry": 3,
     "walkie_vision.node": 0,
     "walkie_vision.pipeline": 2,
     "walkie_vision.providers": 4,

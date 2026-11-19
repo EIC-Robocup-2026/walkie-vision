@@ -1,15 +1,13 @@
-"""The pure parts of the bounded services: the job, the slot, the newest input, the checks and the wake.
+"""The pure parts of the bounded services: the job, the slot, the class gate and the checks.
 
-The services themselves are tested through the node in tests/test_node.py.
+The newest input and the wake are tested in tests/test_camera_mailboxes.py,
+and the services themselves through the node in tests/test_node.py.
 """
 
 from __future__ import annotations
 
-import gc
 import math
-import threading
 import time
-import weakref
 
 import numpy as np
 import pytest
@@ -20,9 +18,8 @@ from walkie_vision_msgs.srv import DetectObjects, EmbedCrop, EmbedText
 
 from walkie_vision import convert, requests
 from walkie_vision.convert import box_to_bbox
-from walkie_vision.depth import RgbdBuffer, frame_laplacian, view_quality
 from walkie_vision.fakes import FakeEmbedder
-from walkie_vision.node import NewestFrame
+from walkie_vision.geometry import frame_laplacian, view_quality
 from walkie_vision.providers import CLIP_VIT_B16
 
 FRAME = "camera_optical"
@@ -187,163 +184,7 @@ def test_closing_the_slot_after_the_deadline_leaves_its_caller_the_timeout():
     assert not slot.admit(_job())
 
 
-# --- the newest input ------------------------------------------------------
-
-
-class _Msg:
-    """Unlike a generated message, this can have a weak reference."""
-
-
-def test_the_current_image_keeps_only_the_newest_of_each():
-    current = requests.CurrentImage()
-    assert current.read() == (None, None)
-    old_colour, old_depth = _Msg(), _Msg()
-    old_refs = weakref.ref(old_colour), weakref.ref(old_depth)
-    current.put_colour(old_colour)
-    current.put_depth(old_depth)
-    assert current.read() == (old_colour, old_depth)
-    new_colour, new_depth = _Msg(), _Msg()
-    current.put_colour(new_colour)
-    current.put_depth(new_depth)
-    assert current.read() == (new_colour, new_depth)
-    del old_colour, old_depth
-    gc.collect()
-    assert all(ref() is None for ref in old_refs), "an older image is still held"
-
-
-def test_the_current_image_keeps_the_newest_pair_with_matching_stamps():
-    # A still clock: every image arrives within the wait, so only the stamps decide.
-    current = requests.CurrentImage(max_pair_gap_ns=5_000_000, pair_wait_s=0.02, clock=lambda: 0.0)
-    assert current.read_pair() is None
-    colour_1, depth_1 = _image(1_000_000_000), _image(1_002_000_000)
-    current.put_colour(colour_1)
-    assert current.read_pair() is None
-    current.put_depth(depth_1)
-    assert current.read_pair() == (colour_1, depth_1)
-    # The next colour came first: the newest of each no longer match, and the
-    # last pair stays whole.
-    colour_2 = _image(1_100_000_000)
-    current.put_colour(colour_2)
-    assert current.read() == (colour_2, depth_1)
-    assert current.read_pair() == (colour_1, depth_1)
-    depth_2 = _image(1_100_000_000)
-    current.put_depth(depth_2)
-    assert current.read_pair() == (colour_2, depth_2)
-
-
-def test_the_current_image_keeps_no_pair_without_a_gap():
-    current = requests.CurrentImage()
-    current.put_colour(_image(STAMP_NS))
-    current.put_depth(_image(STAMP_NS))
-    assert current.read_pair() is None
-
-
-PAIR_GAP_NS = 5_000_000
-PAIR_WAIT_S = 0.0625
-"""Exact in binary, so two arrivals can be exactly this far apart."""
-
-
-def _pairing(now: list[float]) -> requests.CurrentImage:
-    return requests.CurrentImage(max_pair_gap_ns=PAIR_GAP_NS, pair_wait_s=PAIR_WAIT_S, clock=lambda: now[0])
-
-
-def _assert_same(got, want) -> None:
-    """Assert identity, not equality: two images with equal fields can still be two captures."""
-    if want is None:
-        assert got is None
-    else:
-        assert got is not None and len(got) == len(want) and all(g is w for g, w in zip(got, want))
-
-
-def test_the_current_image_pairs_no_depth_from_before_a_clock_reset():
-    now = [100.0]
-    current = _pairing(now)
-    # The last depth of the previous episode, at 10 s, then a colour image at 11 s.
-    current.put_depth(_image(10 * 1_000_000_000))
-    current.put_colour(_image(11 * 1_000_000_000))
-    assert current.read_pair() is None
-    # /clock goes back, and a new colour image has the old depth's stamp. No new depth came.
-    now[0] += 0.5
-    new_colour = _image(10 * 1_000_000_000)
-    current.put_colour(new_colour)
-    assert current.read_pair() is None
-    _assert_same(current.read_current(), (new_colour, None))
-
-
-def test_the_current_image_forgets_every_image_and_the_pair_on_clear():
-    now = [100.0]
-    current = _pairing(now)
-    current.put_depth(_image(10 * 1_000_000_000))
-    current.put_colour(_image(10 * 1_000_000_000))
-    assert current.read_pair() is not None
-    current.clear()
-    assert current.read() == (None, None)
-    assert current.read_current() == (None, None)
-    assert current.read_pair() is None
-    # Within the wait, by the arrival clock, a new image with the old stamps pairs with nothing from before.
-    new_colour = _image(10 * 1_000_000_000)
-    current.put_colour(new_colour)
-    assert current.read_pair() is None
-    _assert_same(current.read_current(), (new_colour, None))
-    new_depth = _image(10 * 1_000_000_000)
-    current.put_depth(new_depth)
-    _assert_same(current.read_pair(), (new_colour, new_depth))
-
-
-@pytest.mark.parametrize("depth_first", [True, False])
-@pytest.mark.parametrize(("apart_s", "pairs"), [(0.0, True), (PAIR_WAIT_S, True), (PAIR_WAIT_S + 0.001, False)])
-def test_the_current_image_pairs_only_images_that_arrived_within_the_wait(depth_first, apart_s, pairs):
-    now = [100.0]
-    current = _pairing(now)
-    colour, depth = _image(), _image()
-    puts = [(current.put_colour, colour), (current.put_depth, depth)]
-    if depth_first:
-        puts.reverse()
-    (put_first, first), (put_second, second) = puts
-    put_first(first)
-    now[0] += apart_s
-    put_second(second)
-    _assert_same(current.read_pair(), (colour, depth) if pairs else None)
-    _assert_same(current.read_current(), (colour, depth if pairs else None))
-
-
-@pytest.mark.parametrize(("colour_ns", "depth_ns"), [(0, 0), (0, 1_000_000), (1_000_000, 0)])
-def test_the_current_image_never_pairs_a_zero_stamp(colour_ns, depth_ns):
-    current = _pairing([100.0])
-    current.put_colour(_image(colour_ns))
-    current.put_depth(_image(depth_ns))
-    assert current.read_pair() is None
-
-
-def test_the_current_image_gives_a_depth_only_with_a_pair_of_the_newest_of_each():
-    now = [100.0]
-    current = _pairing(now)
-    colour_1, depth_1 = _image(STAMP_NS), _image(STAMP_NS)
-    current.put_colour(colour_1)
-    current.put_depth(depth_1)
-    _assert_same(current.read_current(), (colour_1, depth_1))
-    # The next depth came before its colour image. The pair stays for
-    # DetectObjects, but it no longer holds the newest depth.
-    depth_2 = _image(STAMP_NS + 100_000_000)
-    current.put_depth(depth_2)
-    _assert_same(current.read_current(), (colour_1, None))
-    _assert_same(current.read_pair(), (colour_1, depth_1))
-    # Its colour image came too late to pair with it, so it gets no depth either.
-    now[0] += 1.0
-    colour_2 = _image(STAMP_NS + 100_000_000)
-    current.put_colour(colour_2)
-    _assert_same(current.read_current(), (colour_2, None))
-    _assert_same(current.read_pair(), (colour_1, depth_1))
-    # A depth for colour_2 within the wait pairs, and the newest of each are the pair again.
-    depth_3 = _image(STAMP_NS + 100_000_000)
-    current.put_depth(depth_3)
-    _assert_same(current.read_current(), (colour_2, depth_3))
-
-
-@pytest.mark.parametrize(("gap_ns", "wait_s"), [(5_000_000, None), (None, 0.02)])
-def test_the_current_image_needs_both_pairing_bounds_or_neither(gap_ns, wait_s):
-    with pytest.raises(ValueError, match="both"):
-        requests.CurrentImage(max_pair_gap_ns=gap_ns, pair_wait_s=wait_s)
+# --- the class gate --------------------------------------------------------
 
 
 def test_the_class_gate_runs_from_the_end_of_a_preparation():
@@ -567,53 +408,6 @@ def test_the_current_image_answers_a_request_within_every_bound():
 )
 def test_the_current_image_refuses_a_request_past_any_bound(request_ns, image, now_ns, reason):
     assert reason in requests.crop_image_problem(_crop_request(request_ns), image, now_ns)
-
-
-# --- the wake --------------------------------------------------------------
-
-
-@pytest.mark.parametrize("make", [NewestFrame, lambda: RgbdBuffer(0.005, 0.020)], ids=["newest", "rgbd"])
-def test_a_wake_ends_a_wait_with_no_image(make):
-    mailbox = make()
-    taken = []
-    thread = threading.Thread(target=lambda: taken.append(mailbox.take(LONG_S)), daemon=True)
-    thread.start()
-    time.sleep(0.05)
-    mailbox.wake()
-    thread.join(timeout=5.0)
-    assert not thread.is_alive(), "the wake did not end the wait"
-    assert taken == [None]
-
-
-@pytest.mark.parametrize("make", [NewestFrame, lambda: RgbdBuffer(0.005, 0.020)], ids=["newest", "rgbd"])
-def test_a_wake_before_the_wait_is_not_lost_and_is_used_once(make):
-    mailbox = make()
-    mailbox.wake()
-    started = time.monotonic()
-    assert mailbox.take(LONG_S) is None
-    assert time.monotonic() - started < 5.0
-    # Used up: the next short wait runs its whole length.
-    started = time.monotonic()
-    assert mailbox.take(0.05) is None
-    assert time.monotonic() - started >= 0.04
-
-
-def test_clear_drops_the_waiting_image():
-    mailbox = NewestFrame()
-    mailbox.put((Image(), 0.0))
-    mailbox.clear()
-    assert mailbox.take(0.0) is None and mailbox.replaced == 0
-    item = (Image(), 1.0)
-    mailbox.put(item)
-    assert mailbox.take(0.0) is item
-
-
-def test_a_wake_leaves_a_waiting_image_in_place():
-    mailbox = NewestFrame()
-    item = (Image(), 0.0)
-    mailbox.put(item)
-    mailbox.wake()
-    assert mailbox.take(0.0) is item
 
 
 # --- the answers -----------------------------------------------------------

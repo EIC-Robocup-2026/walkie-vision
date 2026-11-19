@@ -27,17 +27,20 @@ build, because `scripts/activate.sh` sources the overlay on activation.
 - `ros2_ws/src/walkie_vision_msgs/`: the messages and the services only.
 - `src/walkie_vision/providers.py`: model interfaces and result types.
 - `src/walkie_vision/convert.py`: results to messages, with validation.
-- `src/walkie_vision/node.py`, `pipeline.py`, `image.py`: the vision node,
+- `src/walkie_vision/node.py`, `pipeline.py`: the vision node,
   one process for every model (ADR-0010). `yolo.py` and `face/heads.py` are
   the detector, pose and head-crop face providers, including the second
   detector behind `DetectObjects` (ADR-0009). Off by default.
-- `src/walkie_vision/depth.py`: pairs colour with registered depth, bounded by
-  wall time (ADR-0014), lifts masks to points and scores views. Off by default.
+- `src/walkie_vision/camera/`: the camera input. `camera/image.py` turns images
+  into BGR arrays, `camera/depth.py` reads registered depth and
+  `camera/mailboxes.py` pairs colour with it, bounded by wall time (ADR-0014).
+  `src/walkie_vision/geometry.py` lifts masks to points and scores views.
+  Off by default.
 - `src/walkie_vision/crops/objects.py`, `crops/colour.py`: the object sampler,
   padded crops and colour shares. `src/walkie_vision/embeddings.py`: the
   interim CLIP provider. Off by default.
 - `src/walkie_vision/requests.py`: bounded service work on the one model worker
-  (ADR-0015): the job, its slot, the current image and the request checks.
+  (ADR-0015): the job, its slot and the request checks.
 - `config/`: the node's parameters (`vision.yaml`, `sim.yaml`) and each task's
   classes and flags (`tasks/hri.yaml`, `tasks/memory.yaml`).
   `launch/vision.launch.py` starts the node and restarts it when it exits.

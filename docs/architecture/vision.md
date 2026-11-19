@@ -280,8 +280,8 @@ far away or partly hidden too.
 
 ### Depth pairing {#depth-pairing}
 
-With `geometry_enabled`, `walkie_vision.depth.RgbdBuffer` pairs each colour
-image with one depth image
+With `geometry_enabled`, `walkie_vision.camera.mailboxes.RgbdBuffer` pairs each
+colour image with one depth image
 ([ADR-0014](decisions/0014-bounded-rgbd-and-service-work.md)). It holds the
 newest colour image, the newest depth image and one finished bundle. The HRI
 default leaves it off, so the node does not subscribe to depth at all.
@@ -647,7 +647,7 @@ walkie-database can cite each item by its link.
 ### Object points and view quality {#contract-object-geometry}
 
 With `geometry_enabled`, an object that has a mask gets its points and its
-`view_quality`, from `walkie_vision.depth`. With it off, no mask is copied to
+`view_quality`, from `walkie_vision.geometry`. With it off, no mask is copied to
 the CPU and no grey image, Laplacian or lift runs. Every cloud then stays empty
 and every `view_quality` stays 0. The input is depth that passed the
 [pairing checks](#depth-pairing).
@@ -1243,9 +1243,10 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.reid`        | OSNet x1.0 and its weights (`load_osnet`)                                         |
 | `walkie_vision.reid.identifier` | OSNet on person crops (`OSNetReIdentifier`, a `ReIdentifier`)                 |
 | `walkie_vision.weights`     | Every model file and Hugging Face commit, with its checksum and licence           |
-| `walkie_vision.image`       | `sensor_msgs/Image` to a BGR array, and the `camera_info` size check              |
+| `walkie_vision.camera`      | `sensor_msgs/Image` to a BGR array and the `camera_info` size check (`camera.image`), registered depth (`camera.depth`), and the newest image and the colour and depth pairing (`camera.mailboxes`) |
+| `walkie_vision.geometry`    | Object points and view quality from registered depth (`lift_mask`, `view_quality`) |
 | `walkie_vision.embeddings`  | The interim CLIP provider (`ClipEmbedder`, an `Embedder`)                        |
-| `walkie_vision.requests`    | Bounded service work: the job, its one slot, the current image and the request checks ([Bounded services](#bounded-services)) |
+| `walkie_vision.requests`    | Bounded service work: the job, its one slot and the request checks ([Bounded services](#bounded-services)) |
 | `walkie_vision.pipeline`    | One image through every provider to the two arrays, with the score floors, the person dedupe (`dedupe_poses`) and the track id base. No ROS node |
 | `walkie_vision.crops`       | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. The object sampler and padded crops (`crops.objects`), and colour recipe v1 (`crops.colour`). No ROS node and no model |
 | `walkie_vision.node`        | The vision node: parameters, threads, publishing, health checks and `build_providers` |

@@ -6,8 +6,8 @@ services together, so a second request gets BUSY at once and nothing queues.
 Deadlines use monotonic time. Image age uses ROS time. A paused /clock can make
 an image look young, and it cannot make a request hang.
 
-This module holds the job, the slot, the newest input and the checks. The node
-holds the threads and the ROS objects.
+This module holds the job, the slot and the checks. The newest input is in
+walkie_vision.camera.mailboxes. The node holds the threads and the ROS objects.
 """
 
 from __future__ import annotations
@@ -25,8 +25,10 @@ from walkie_vision_msgs.srv import DetectObjects, EmbedCrop
 
 from . import boxes, convert
 from .boxes import resize_mask
+from .camera.depth import RegisteredDepth
+from .convert import stamp_ns
 from .crops import objects
-from .depth import RegisteredDepth, depth_cover, frame_laplacian, stamp_ns, view_quality
+from .geometry import depth_cover, frame_laplacian, view_quality
 from .providers import Embedder
 
 INVALID = "INVALID"
@@ -173,94 +175,6 @@ class JobSlot:
             job = self._job
         if job is not None:
             job.finish(job.fail(MODEL_UNAVAILABLE, "the node is shutting down"))
-
-
-class CurrentImage:
-    """The newest colour image and the newest depth image, each replaced by the next.
-
-    EmbedCrop answers from these. Nothing older is kept, so a request cannot
-    reach a past image.
-
-    With max_pair_gap_ns and pair_wait_s it also keeps the newest colour and
-    depth that paired, and the services take depth only from that pair. They
-    pair by the bounds of walkie_vision.depth.RgbdBuffer: their stamps differ by
-    at most max_pair_gap_ns, neither stamp is zero, and the clock, monotonic
-    wall time by default, saw them arrive within pair_wait_s of each other. One
-    image arrives before the other, so at any moment the newest of each can
-    belong to different captures. That pair is the only older input kept.
-
-    clear() forgets all of it. The node calls it when the sim clock goes back,
-    as after a restart, because the stamps and the arrival times of the next
-    run can match those of the previous one. It does not reach images that a
-    read already returned.
-    """
-
-    def __init__(
-        self,
-        max_pair_gap_ns: int | None = None,
-        pair_wait_s: float | None = None,
-        *,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        if (max_pair_gap_ns is None) != (pair_wait_s is None):
-            raise ValueError("pairing needs both max_pair_gap_ns and pair_wait_s, or neither")
-        self._lock = threading.Lock()
-        self._clock = clock
-        self._colour: Image | None = None
-        self._colour_at = 0.0
-        self._depth: Image | None = None
-        self._depth_at = 0.0
-        self._max_pair_gap_ns = max_pair_gap_ns
-        self._pair_wait_s = pair_wait_s
-        self._pair: tuple[Image, Image] | None = None
-
-    def put_colour(self, msg: Image) -> None:
-        with self._lock:
-            self._colour, self._colour_at = msg, self._clock()
-            self._match()
-
-    def put_depth(self, msg: Image) -> None:
-        with self._lock:
-            self._depth, self._depth_at = msg, self._clock()
-            self._match()
-
-    def _match(self) -> None:
-        if self._max_pair_gap_ns is None or self._colour is None or self._depth is None:
-            return
-        colour_ns, depth_ns = stamp_ns(self._colour.header), stamp_ns(self._depth.header)
-        if colour_ns == 0 or depth_ns == 0 or abs(colour_ns - depth_ns) > self._max_pair_gap_ns:
-            return
-        if abs(self._colour_at - self._depth_at) <= self._pair_wait_s:
-            self._pair = (self._colour, self._depth)
-
-    def clear(self) -> None:
-        """Forget every image and the pair, so no read after this call returns, or pairs, one put before it."""
-        with self._lock:
-            self._colour = self._depth = None
-            self._colour_at = self._depth_at = 0.0
-            self._pair = None
-
-    def read(self) -> tuple[Image | None, Image | None]:
-        """Return the newest of each. They can belong to different captures, so take depth from a pair."""
-        with self._lock:
-            return self._colour, self._depth
-
-    def read_current(self) -> tuple[Image | None, Image | None]:
-        """Return the newest colour image, and the newest depth only when the pair holds these very two.
-
-        Otherwise the depth is None, also when the pair holds this colour image
-        but a newer depth has come since, as EmbedCrop takes only the newest of
-        each (ADR-0015).
-        """
-        with self._lock:
-            if self._pair is not None and self._pair[0] is self._colour and self._pair[1] is self._depth:
-                return self._pair
-            return self._colour, None
-
-    def read_pair(self) -> tuple[Image, Image] | None:
-        """Return the newest colour and depth that paired, or None when none has."""
-        with self._lock:
-            return self._pair
 
 
 class ClassPrepareGate:

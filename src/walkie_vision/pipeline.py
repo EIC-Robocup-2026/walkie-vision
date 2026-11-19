@@ -7,7 +7,7 @@ with the image's header and a copy of its camera_info. It has no ROS node
 and imports no model library, so the tests run it with the fakes.
 
 With geometry_enabled, a detection with a mask also gets its points and its
-view quality (walkie_vision.depth). Without it, masks are ignored and no
+view quality (walkie_vision.geometry). Without it, masks are ignored and no
 geometry work runs.
 
 With object_crops_enabled or object_embeddings_enabled, up to three detections
@@ -49,9 +49,10 @@ from walkie_vision_msgs.msg import ObjectDetection, ObjectDetectionArray, Person
 
 from . import convert
 from .boxes import resize_mask
+from .camera.depth import RegisteredDepth
 from .crops import colour
 from .crops import objects as object_crops
-from .depth import RegisteredDepth, depth_cover, frame_laplacian, lift_mask, view_quality
+from .geometry import depth_cover, frame_laplacian, lift_mask, view_quality
 from .providers import (
     FAKE_MODEL_PREFIX,
     Detection,

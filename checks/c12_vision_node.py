@@ -37,7 +37,7 @@ from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 
 from c12_memory import load_memory_fixture, memory_config, p50_p95, run_memory
 from common import assets_dir, expect, finish, gpu_mem_of
-from walkie_vision.image import image_to_bgr
+from walkie_vision.camera.image import image_to_bgr
 from walkie_vision.node import VisionConfig, build_providers
 from walkie_vision.pipeline import FrameResult, TrackIdBase, VisionPipeline
 
