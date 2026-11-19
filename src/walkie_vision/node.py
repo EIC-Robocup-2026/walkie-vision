@@ -12,8 +12,8 @@ DetectObjects answers its caller only, and publishes nothing. It runs a separate
 detector on the newest image after its classes are ready. It returns at most
 pipeline.ON_DEMAND_MAX_OBJECTS detections, those with the highest scores, each
 with track id 0. New classes are prepared at most once every
-requests.CLASS_PREPARE_PERIOD_S, and a preparation stops the stream for about
-1.5 s, because one worker runs every model (ADR-0009).
+services.detect_objects.CLASS_PREPARE_PERIOD_S, and a preparation stops the
+stream for about 1.5 s, because one worker runs every model (ADR-0009).
 
 Threads:
 
@@ -32,7 +32,7 @@ Threads:
   another of the executor's threads runs the callbacks above.
 - The EmbedText, EmbedCrop, DescribeCrop and DetectObjects callbacks share a
   reentrant group. Each checks its request and tries to leave one job in the slot of
-  walkie_vision.requests. One that gets the slot waits for the worker, up to
+  walkie_vision.services.jobs. One that gets the slot waits for the worker, up to
   a deadline in wall time. Another gets BUSY at once, on another thread.
 - One worker thread takes the newest image, runs walkie_vision.pipeline on
   it and publishes the two arrays. It is the only thread that touches a
@@ -85,7 +85,7 @@ from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 from walkie_vision_msgs.srv import DescribeCrop, DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
 
-from . import convert, requests
+from . import convert
 from .camera.depth import DepthRefused, RegisteredDepth, read_registered_depth
 from .camera.image import camera_info_problem, image_to_bgr
 from .camera.mailboxes import CurrentImage, NewestFrame, RgbdBuffer
@@ -94,6 +94,8 @@ from .crops import person
 from .crops.person import CropStatus
 from .errors import StartupError
 from .pipeline import ON_DEMAND_MAX_OBJECTS, Providers, StageTimes, TrackIdBase, VisionPipeline
+from .services import detect_objects, embed_crop, jobs
+from .services import embed_text as embed_text_service
 
 NODE_NAME = "walkie_vision"
 
@@ -773,7 +775,7 @@ class VisionNode(Node):
         )
         self._crops = CropMailbox()
         self._embedder = providers.embedder
-        self._jobs = requests.JobSlot(self._mailbox.wake)
+        self._jobs = jobs.JobSlot(self._mailbox.wake)
         # Only what EmbedCrop and DetectObjects can answer from. Off, no image
         # outlives its processing. It pairs by the mailbox's gap and wait.
         self._current = (
@@ -783,7 +785,7 @@ class VisionNode(Node):
         )
         # Registered before the subscriptions, so no image arrives unwatched.
         self._clock_jump = self.get_clock().create_jump_callback(_BACKWARD_JUMP, post_callback=self._on_clock_jump)
-        self._class_gate = requests.ClassPrepareGate()
+        self._class_gate = detect_objects.ClassPrepareGate()
         self._rate_replaced = 0
         self._camera_info: CameraInfo | None = None
         self._depth_camera_info: CameraInfo | None = None
@@ -851,7 +853,7 @@ class VisionNode(Node):
         if cfg.on_demand_enabled:
             self.get_logger().info(
                 f"serving {cfg.detect_objects_service} with a second detector: at most {ON_DEMAND_MAX_OBJECTS} objects; "
-                f"new classes at most once every {requests.CLASS_PREPARE_PERIOD_S:g} s, and they stop the stream"
+                f"new classes at most once every {detect_objects.CLASS_PREPARE_PERIOD_S:g} s, and they stop the stream"
             )
 
     # --- counters and state --------------------------------------------
@@ -938,7 +940,7 @@ class VisionNode(Node):
         if not clock.ros_time_is_active:
             return True
         lead_ns = stamp_ns(msg.header) - clock.now().nanoseconds
-        if lead_ns <= round(requests.MAX_REQUEST_IMAGE_AGE_S * 1e9):
+        if lead_ns <= round(detect_objects.MAX_REQUEST_IMAGE_AGE_S * 1e9):
             return True
         with self._counts_lock:
             self.ahead_of_clock += 1
@@ -1003,47 +1005,47 @@ class VisionNode(Node):
 
     def _on_embed_text(self, request: EmbedText.Request, response: EmbedText.Response) -> EmbedText.Response:
         if not self.config.object_embeddings_enabled:
-            return convert.embed_text_failure(requests.DISABLED, "object_embeddings_enabled is off")
-        problem = requests.embed_text_problem(request.texts)
+            return embed_text_service.embed_text_failure(jobs.DISABLED, "object_embeddings_enabled is off")
+        problem = embed_text_service.embed_text_problem(request.texts)
         if problem is not None:
-            return convert.embed_text_failure(requests.INVALID, problem)
-        return self._serve(request, requests.EMBED_TEXT_DEADLINE_S, convert.embed_text_failure)
+            return embed_text_service.embed_text_failure(jobs.INVALID, problem)
+        return self._serve(request, embed_text_service.EMBED_TEXT_DEADLINE_S, embed_text_service.embed_text_failure)
 
     def _on_embed_crop(self, request: EmbedCrop.Request, response: EmbedCrop.Response) -> EmbedCrop.Response:
         if not self.config.object_embeddings_enabled:
-            return convert.embed_crop_failure(requests.DISABLED, "object_embeddings_enabled is off")
-        problem = requests.embed_crop_problem(request)
+            return embed_crop.embed_crop_failure(jobs.DISABLED, "object_embeddings_enabled is off")
+        problem = embed_crop.embed_crop_problem(request)
         if problem is not None:
-            return convert.embed_crop_failure(requests.INVALID, problem)
-        return self._serve(request, float(request.timeout_s), convert.embed_crop_failure)
+            return embed_crop.embed_crop_failure(jobs.INVALID, problem)
+        return self._serve(request, float(request.timeout_s), embed_crop.embed_crop_failure)
 
     def _on_describe_crop(self, request: DescribeCrop.Request, response: DescribeCrop.Response) -> DescribeCrop.Response:
         return DescribeCrop.Response(
-            success=False, error_code=requests.DISABLED, message="this build has no caption model"
+            success=False, error_code=jobs.DISABLED, message="this build has no caption model"
         )
 
     def _on_detect_objects(self, request: DetectObjects.Request, response: DetectObjects.Response) -> DetectObjects.Response:
         if not self.config.on_demand_enabled:
-            return convert.detect_objects_failure(requests.DISABLED, "on_demand_enabled is off")
-        problem = requests.detect_objects_problem(request)
+            return detect_objects.detect_objects_failure(jobs.DISABLED, "on_demand_enabled is off")
+        problem = detect_objects.detect_objects_problem(request)
         if problem is not None:
-            return convert.detect_objects_failure(requests.INVALID, problem)
-        return self._serve(request, float(request.timeout_s), convert.detect_objects_failure)
+            return detect_objects.detect_objects_failure(jobs.INVALID, problem)
+        return self._serve(request, float(request.timeout_s), detect_objects.detect_objects_failure)
 
     def _serve(self, request: Any, deadline_s: float, fail: Callable[[str, str], Any]) -> Any:
         """Leave one job for the worker and wait for its answer, up to deadline_s of wall time."""
-        job = requests.ServiceJob(request, time.monotonic() + deadline_s, fail)
+        job = jobs.ServiceJob(request, time.monotonic() + deadline_s, fail)
         if not self._jobs.admit(job):
             if self._jobs.closed:
-                return fail(requests.MODEL_UNAVAILABLE, "the node is shutting down")
+                return fail(jobs.MODEL_UNAVAILABLE, "the node is shutting down")
             with self._counts_lock:
                 self.service_busy += 1
-            return fail(requests.BUSY, "another service job holds the worker")
+            return fail(jobs.BUSY, "another service job holds the worker")
         answer = job.wait()
         if answer is not None:
             return answer
         self._jobs.withdraw(job)
-        return fail(requests.TIMEOUT, f"no answer in {deadline_s:g} s")
+        return fail(jobs.TIMEOUT, f"no answer in {deadline_s:g} s")
 
     def _latency_counts(self) -> dict[str, int]:
         """Return the running totals of the latency line. An addition that is off adds none."""
@@ -1137,7 +1139,7 @@ class VisionNode(Node):
             self.get_logger().fatal(f"the worker stopped:\n{traceback.format_exc()}")
             self.fatal = f"the worker stopped: {type(e).__name__}: {e}"
 
-    def _run_job(self, job: requests.ServiceJob) -> None:
+    def _run_job(self, job: jobs.ServiceJob) -> None:
         """Run one service job. A failure answers it, and leaves the stream and its counters as they are."""
         if job.given_up or job.remaining() <= 0:
             return  # its callback answers TIMEOUT
@@ -1146,17 +1148,17 @@ class VisionNode(Node):
         started = self._busy_since = time.monotonic()
         try:
             if isinstance(job.request, EmbedText.Request):
-                response = convert.fill_embed_text_response(EmbedText.Response(), self._embedder, job.request.texts)
+                response = embed_text_service.fill_embed_text_response(EmbedText.Response(), self._embedder, job.request.texts)
                 if not response.success:
                     self._warn_throttled("service job", f"a service job failed: {response.message}")
-                    response = job.fail(requests.INFERENCE_FAILED, response.message)
+                    response = job.fail(jobs.INFERENCE_FAILED, response.message)
             elif isinstance(job.request, DetectObjects.Request):
                 response = self._detect_objects(job)
             else:
                 response = self._embed_crop(job.request)
         except Exception as e:
             self._warn_throttled("service job", f"a service job failed: {type(e).__name__}: {e}")
-            response = job.fail(requests.INFERENCE_FAILED, f"{type(e).__name__}: {e}")
+            response = job.fail(jobs.INFERENCE_FAILED, f"{type(e).__name__}: {e}")
         finally:
             self._busy_since = None
         held_s = time.monotonic() - started
@@ -1171,7 +1173,7 @@ class VisionNode(Node):
                 f"{held_s:.2f} s",
             )
 
-    def _detect_objects(self, job: requests.ServiceJob) -> DetectObjects.Response:
+    def _detect_objects(self, job: jobs.ServiceJob) -> DetectObjects.Response:
         """Answer a DetectObjects job from the newest image after its classes are ready.
 
         The image is chosen only after the classes are prepared, so a slow
@@ -1179,20 +1181,20 @@ class VisionNode(Node):
         checked again before success, so an old image is never labelled current.
         """
         request = job.request
-        fail = convert.detect_objects_failure
+        fail = detect_objects.detect_objects_failure
         cfg = self.config
         classes = list(request.classes)
         if self.pipeline.on_demand_classes != classes:
             if not self._class_gate.open():
                 with self._counts_lock:
                     self.service_busy += 1
-                return fail(requests.BUSY, f"new classes are prepared at most once every {self._class_gate.period_s:g} s")
+                return fail(jobs.BUSY, f"new classes are prepared at most once every {self._class_gate.period_s:g} s")
             started = time.perf_counter()
             try:
                 self.pipeline.prepare_on_demand(classes)
             except Exception as e:
                 self._warn_throttled("service job", f"preparing on-demand classes failed: {type(e).__name__}: {e}")
-                return fail(requests.MODEL_UNAVAILABLE, f"the classes could not be prepared: {type(e).__name__}: {e}")
+                return fail(jobs.MODEL_UNAVAILABLE, f"the classes could not be prepared: {type(e).__name__}: {e}")
             finally:
                 self._class_gate.mark()
                 prepare_ms = (time.perf_counter() - started) * 1000.0
@@ -1202,36 +1204,36 @@ class VisionNode(Node):
             # The stream had this gap too: no array stands in for it.
             self.get_logger().info(f"prepared {len(classes)} on-demand classes in {prepare_ms:.0f} ms")
         if job.given_up or job.remaining() <= 0:
-            return fail(requests.TIMEOUT, "the deadline passed while the classes were prepared")
+            return fail(jobs.TIMEOUT, "the deadline passed while the classes were prepared")
 
         max_age_s = float(request.max_image_age_s)
         msg, depth_msg = self._newest_bundle(max_age_s)
         if msg is None:
-            return fail(requests.NO_IMAGE, f"no image has arrived on {cfg.image_topic}")
-        problem = requests.image_age_problem(msg, self.get_clock().now().nanoseconds, max_age_s)
+            return fail(jobs.NO_IMAGE, f"no image has arrived on {cfg.image_topic}")
+        problem = detect_objects.image_age_problem(msg, self.get_clock().now().nanoseconds, max_age_s)
         if problem is not None:
-            return fail(requests.STALE_IMAGE, problem)
+            return fail(jobs.STALE_IMAGE, problem)
         with self._camera_info_lock:
             info = self._camera_info
         problem = camera_info_problem(info, int(msg.width), int(msg.height))
         if problem is not None:
-            return fail(requests.NO_IMAGE, f"{problem} on {cfg.camera_info_topic}")
+            return fail(jobs.NO_IMAGE, f"{problem} on {cfg.camera_info_topic}")
         depth = self._current_depth(msg, depth_msg)
         if depth is None and cfg.require_depth:
-            return fail(requests.NO_IMAGE, f"the newest image has no usable depth from {cfg.depth_topic}")
+            return fail(jobs.NO_IMAGE, f"the newest image has no usable depth from {cfg.depth_topic}")
         try:
             image = image_to_bgr(msg)
         except ValueError as e:
-            return fail(requests.NO_IMAGE, f"the newest image cannot be read: {e}")
+            return fail(jobs.NO_IMAGE, f"the newest image cannot be read: {e}")
 
         header = Header(stamp=msg.header.stamp, frame_id=msg.header.frame_id)
         result = self.pipeline.detect_on_demand(image, header, info, depth)
         with self._counts_lock:
             self.dropped.update(result.dropped)
             self.sampled += result.sampled
-        problem = requests.image_age_problem(msg, self.get_clock().now().nanoseconds, max_age_s)
+        problem = detect_objects.image_age_problem(msg, self.get_clock().now().nanoseconds, max_age_s)
         if problem is not None:
-            return fail(requests.STALE_IMAGE, f"after detection, {problem}")
+            return fail(jobs.STALE_IMAGE, f"after detection, {problem}")
         return DetectObjects.Response(success=True, objects=result.objects)
 
     def _newest_bundle(self, max_age_s: float) -> tuple[Image | None, Image | None]:
@@ -1249,7 +1251,7 @@ class VisionNode(Node):
         if self.config.geometry_enabled:
             pair = self._current.read_pair()
             now_ns = self.get_clock().now().nanoseconds
-            if pair is not None and requests.image_age_problem(pair[0], now_ns, max_age_s) is None:
+            if pair is not None and detect_objects.image_age_problem(pair[0], now_ns, max_age_s) is None:
                 return pair
         return colour, None
 
@@ -1261,11 +1263,11 @@ class VisionNode(Node):
         cfg = self.config
         msg, depth_msg = self._current.read_current()
         if msg is None:
-            return convert.embed_crop_failure(requests.NO_IMAGE, f"no image has arrived on {cfg.image_topic}")
-        problem = requests.crop_image_problem(request, msg, self.get_clock().now().nanoseconds)
+            return embed_crop.embed_crop_failure(jobs.NO_IMAGE, f"no image has arrived on {cfg.image_topic}")
+        problem = embed_crop.crop_image_problem(request, msg, self.get_clock().now().nanoseconds)
         if problem is not None:
-            return convert.embed_crop_failure(requests.STALE_IMAGE, problem)
-        return requests.embed_crop_answer(
+            return embed_crop.embed_crop_failure(jobs.STALE_IMAGE, problem)
+        return embed_crop.embed_crop_answer(
             self._embedder,
             image_to_bgr(msg),
             Header(stamp=msg.header.stamp, frame_id=msg.header.frame_id),

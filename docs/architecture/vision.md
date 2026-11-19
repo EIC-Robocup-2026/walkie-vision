@@ -1246,7 +1246,7 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.camera`      | `sensor_msgs/Image` to a BGR array and the `camera_info` size check (`camera.image`), registered depth (`camera.depth`), and the newest image and the colour and depth pairing (`camera.mailboxes`) |
 | `walkie_vision.geometry`    | Object points and view quality from registered depth (`lift_mask`, `view_quality`) |
 | `walkie_vision.embeddings`  | The interim CLIP provider (`ClipEmbedder`, an `Embedder`)                        |
-| `walkie_vision.requests`    | Bounded service work: the job, its one slot and the request checks ([Bounded services](#bounded-services)) |
+| `walkie_vision.services`    | Bounded service work: the job and its one slot (`services.jobs`), and each service's request checks and responses (`services.embed_text`, `services.embed_crop`, `services.detect_objects`) ([Bounded services](#bounded-services)) |
 | `walkie_vision.pipeline`    | One image through every provider to the two arrays, with the score floors, the person dedupe (`dedupe_poses`) and the track id base. No ROS node |
 | `walkie_vision.crops`       | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. The object sampler and padded crops (`crops.objects`), and colour recipe v1 (`crops.colour`). No ROS node and no model |
 | `walkie_vision.node`        | The vision node: parameters, threads, publishing, health checks and `build_providers` |
@@ -1550,7 +1550,7 @@ bodies, so the node finds no people there.
 | The `DetectObjects` service type                         | `ros2_ws/src/walkie_vision_msgs/srv/DetectObjects.srv`      | Done   |
 | Its entry in `rosidl_generate_interfaces`                | `ros2_ws/src/walkie_vision_msgs/CMakeLists.txt`             | Done   |
 | Field pins for its request and response                  | `test_message_fields` in `tests/test_convert.py`            | Done   |
-| Filling the response                                     | `walkie_vision.pipeline`. `detect_on_demand` fills `objects`, and `convert.detect_objects_failure` fills a failure. | Done |
+| Filling the response                                     | `walkie_vision.pipeline`. `detect_on_demand` fills `objects`, and `services.detect_objects.detect_objects_failure` fills a failure. | Done |
 | The `DetectObjects` server, with its own YOLOE instance and no tracker | The vision node (`walkie_vision.node`), and `YoloeDetector` in `walkie_vision.yolo` | Done on fakes. Not run with a real model. |
 | The `EmbedText` server                                   | The vision node (`walkie_vision.node`)                      | Done ([Bounded services](#bounded-services)). No change to its type. |
 | `hash_vector`                                            | `walkie_vision.fakes`                                       | Unchanged. walkie-agent-ros copies it. |

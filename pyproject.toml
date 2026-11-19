@@ -122,7 +122,7 @@ forbidden_modules = [
     "walkie_vision.node",
     "walkie_vision.pipeline",
     "walkie_vision.providers",
-    "walkie_vision.requests",
+    "walkie_vision.services",
     "walkie_vision.weights",
     "walkie_vision.yolo",
     "walkie_vision.face.analysis",
@@ -157,7 +157,7 @@ forbidden_modules = [
     "walkie_vision.node",
     "walkie_vision.pipeline",
     "walkie_vision.reid",
-    "walkie_vision.requests",
+    "walkie_vision.services",
     "walkie_vision.yolo",
 ]
 

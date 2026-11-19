@@ -33,12 +33,11 @@ from walkie_vision_msgs.msg import (
     PersonDetection,
     PersonDetectionArray,
 )
-from walkie_vision_msgs.srv import DetectObjects, EmbedCrop, EmbedText, GetPersonCrop
+from walkie_vision_msgs.srv import GetPersonCrop
 
 from .crops.colour import COLOR_NAMES
 from .crops.person import CropStatus, PersonCrop
-from .providers import Detection, Embedder, Face, PersonPose
-from .providers.image_embed.base import check_model_dim
+from .providers import Detection, Face, PersonPose
 from .providers.vector_tables import EMBEDDING_DIMS
 
 MAX_CLOUD_POINTS = 2000
@@ -49,8 +48,6 @@ POINT_STEP = 12
 """The bytes of one point: x, y and z as float32."""
 JPEG_FORMAT = "jpeg"
 """The value of CompressedImage.format for every object crop."""
-MAX_MESSAGE_CHARS = 256
-"""The longest failure message of a service response."""
 
 _CLOUD_FIELDS = (("x", 0), ("y", 4), ("z", 8))
 _JPEG_START = b"\xff\xd8"
@@ -96,7 +93,7 @@ def unit_vector(vector: Sequence[float] | np.ndarray) -> np.ndarray:
     return (v / norm).astype(np.float32)
 
 
-def _float32_array(values: np.ndarray) -> array.array:
+def float32_array(values: np.ndarray) -> array.array:
     out = array.array("f")
     out.frombytes(np.ascontiguousarray(values, dtype=np.float32).tobytes())
     return out
@@ -110,7 +107,7 @@ def _embedding(vector: np.ndarray | None, model: str, field: str) -> tuple[str, 
         return "", array.array("f")
     if not model:
         raise ValueError(f"{field}: an embedding was given without its model name")
-    return model, _float32_array(unit_vector(vector))
+    return model, float32_array(unit_vector(vector))
 
 
 def _track_id(track_id: int) -> int:
@@ -199,7 +196,7 @@ def _color_shares(shares: Sequence[float] | np.ndarray | None) -> array.array:
     problem = _color_shares_problem(values)
     if problem is not None:
         raise ValueError(problem)
-    return _float32_array(values)
+    return float32_array(values)
 
 
 def _color_shares_problem(values: np.ndarray) -> str | None:
@@ -467,100 +464,13 @@ def fill_person_crop_response(
     if found.status != CropStatus.OK:
         return response
     response.crop = CompressedImage(header=people.header, format="jpeg", data=found.jpeg)
-    response.crop_keypoints = _float32_array(np.asarray(found.keypoints).reshape(-1))
-    response.masked_boxes = _float32_array(np.asarray(found.masked).reshape(-1))
+    response.crop_keypoints = float32_array(np.asarray(found.keypoints).reshape(-1))
+    response.masked_boxes = float32_array(np.asarray(found.masked).reshape(-1))
     response.color_names = list(COLOR_NAMES)
     if found.top_shares is not None:
-        response.top_shares = _float32_array(found.top_shares)
+        response.top_shares = float32_array(found.top_shares)
         response.top_left = float(found.top_left)
     if found.bottom_shares is not None:
-        response.bottom_shares = _float32_array(found.bottom_shares)
+        response.bottom_shares = float32_array(found.bottom_shares)
         response.bottom_left = float(found.bottom_left)
     return response
-
-
-def fill_embed_text_response(
-    response: EmbedText.Response, embedder: Embedder, texts: Sequence[str]
-) -> EmbedText.Response:
-    """Embed texts with embedder and fill an EmbedText response.
-
-    A request without texts, or an embedder that raises or returns the wrong
-    shape, gives success=False and the reason in message, so that the
-    service answers instead of failing.
-    """
-    texts = list(texts)
-    if not texts:
-        response.success = False
-        response.message = "texts is empty"
-        return response
-    try:
-        vectors = np.asarray(embedder.embed_texts(texts))
-        if vectors.shape != (len(texts), embedder.dim):
-            raise ValueError(f"expected shape {(len(texts), embedder.dim)}, got {vectors.shape}")
-        rows = np.stack([unit_vector(v) for v in vectors])
-    except Exception as e:  # the reason goes back to the caller
-        response.success = False
-        response.message = bounded_message(f"{type(e).__name__}: {e}")
-        return response
-    response.success = True
-    response.message = ""
-    response.embedding_model = embedder.model_name
-    response.dim = embedder.dim
-    response.vectors = _float32_array(rows.reshape(-1))
-    return response
-
-
-def bounded_message(text: str) -> str:
-    """Cut a failure message down to MAX_MESSAGE_CHARS."""
-    return text if len(text) <= MAX_MESSAGE_CHARS else text[: MAX_MESSAGE_CHARS - 3] + "..."
-
-
-def embed_text_failure(code: str, message: str) -> EmbedText.Response:
-    """An EmbedText failure. The type has no error code field, so the code starts the message."""
-    return EmbedText.Response(success=False, message=bounded_message(f"{code}: {message}"))
-
-
-def detect_objects_failure(code: str, message: str) -> DetectObjects.Response:
-    """A DetectObjects failure, with the default empty array."""
-    return DetectObjects.Response(success=False, error_code=code, message=bounded_message(message))
-
-
-def embed_crop_failure(code: str, message: str) -> EmbedCrop.Response:
-    """An EmbedCrop failure, with every other field at its empty value."""
-    return EmbedCrop.Response(success=False, error_code=code, message=bounded_message(message))
-
-
-def fill_embed_crop_response(
-    response: EmbedCrop.Response, header: Header, jpeg: bytes, embedder: Embedder, vector: np.ndarray, quality: float
-) -> EmbedCrop.Response:
-    """Fill a successful EmbedCrop response from the source image's header.
-
-    Raises ValueError for a vector that is not a usable one of the model's
-    length, or a quality outside [0, 1].
-    """
-    check_model_dim(embedder)
-    unit = unit_vector(vector)
-    if unit.size != embedder.dim:
-        raise ValueError(f"expected {embedder.dim} dimensions, got {unit.size}")
-    quality = float(quality)
-    if not (math.isfinite(quality) and 0.0 <= quality <= 1.0):
-        raise ValueError(f"view_quality must be finite in [0, 1], not {quality}")
-    response.success = True
-    response.error_code = ""
-    response.message = ""
-    response.header = header
-    response.crop = to_jpeg_image(header, jpeg)
-    response.embedding_model = embedder.model_name
-    response.embedding = _float32_array(unit)
-    response.view_quality = quality
-    return response
-
-
-def vectors_from_response(response: EmbedText.Response) -> np.ndarray:
-    """Return an EmbedText response's vectors as a float32 array of shape (n, dim)."""
-    if not response.success:
-        raise ValueError(f"EmbedText failed: {response.message}")
-    vectors = np.asarray(response.vectors, dtype=np.float32)
-    if response.dim == 0 or vectors.size % response.dim:
-        raise ValueError(f"{vectors.size} values do not split into vectors of {response.dim}")
-    return vectors.reshape(-1, response.dim)

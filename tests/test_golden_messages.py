@@ -33,13 +33,8 @@ from walkie_vision_msgs.srv import DetectObjects, EmbedText, GetPersonCrop
 from walkie_vision.camera.depth import RegisteredDepth
 from walkie_vision.convert import (
     check_object_detection_array,
-    detect_objects_failure,
-    embed_crop_failure,
-    embed_text_failure,
-    fill_embed_text_response,
     fill_person_crop_response,
     pose_from_person_detection,
-    vectors_from_response,
 )
 from walkie_vision.crops.person import CropStatus, crop_person
 from walkie_vision.fake_publisher import DEFAULT_SCENE, FakeStream, load_scene
@@ -56,7 +51,10 @@ from walkie_vision.fakes import (
 from walkie_vision.node import _crop_answer
 from walkie_vision.pipeline import Providers, TrackIdBase, VisionPipeline
 from walkie_vision.providers import Detection, Face
-from walkie_vision.requests import (
+from walkie_vision.services.detect_objects import detect_objects_failure
+from walkie_vision.services.embed_crop import embed_crop_answer, embed_crop_failure
+from walkie_vision.services.embed_text import embed_text_failure, fill_embed_text_response, vectors_from_response
+from walkie_vision.services.jobs import (
     BUSY,
     DISABLED,
     INFERENCE_FAILED,
@@ -65,7 +63,6 @@ from walkie_vision.requests import (
     NO_IMAGE,
     STALE_IMAGE,
     TIMEOUT,
-    embed_crop_answer,
 )
 
 REPO = Path(__file__).resolve().parents[1]

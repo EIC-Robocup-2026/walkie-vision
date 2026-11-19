@@ -21,7 +21,6 @@ from walkie_vision.convert import (
     check_object_detection_array,
     empty_cloud,
     evenly_spaced_indices,
-    fill_embed_text_response,
     fill_person_crop_response,
     new_stream_id,
     pose_from_person_detection,
@@ -32,7 +31,6 @@ from walkie_vision.convert import (
     to_person_detection_array,
     to_point_cloud,
     unit_vector,
-    vectors_from_response,
 )
 from walkie_vision.crops import person
 from walkie_vision.crops.colour import COLOR_NAMES
@@ -922,44 +920,3 @@ def test_a_person_crop_without_a_crop(track_id, status, monkeypatch):
     assert response.person.track_id == (0 if status == GetPersonCrop.Response.NOT_IN_VIEW else 8)
     assert len(response.crop.data) == 0 and len(response.crop_keypoints) == 0
     assert len(response.color_names) == 0 and len(response.top_shares) == 0
-
-
-def test_embed_text_round_trip():
-    embedder = FakeEmbedder(model_name=CLIP_VIT_B16, dim=8)
-    texts = ["a red mug", "a chair"]
-    response = fill_embed_text_response(EmbedText.Response(), embedder, texts)
-    assert response.success and response.message == ""
-    assert (response.embedding_model, response.dim) == (CLIP_VIT_B16, 8)
-    back = deserialize_message(serialize_message(response), EmbedText.Response)
-    vectors = vectors_from_response(back)
-    assert vectors.shape == (2, 8)
-    np.testing.assert_allclose(vectors, embedder.embed_texts(texts), rtol=1e-6)
-
-
-class _BrokenEmbedder(FakeEmbedder):
-    def __init__(self, result=None, error=None):
-        super().__init__(dim=8)
-        self.result, self.error = result, error
-
-    def embed_texts(self, texts):
-        if self.error:
-            raise self.error
-        return self.result
-
-
-@pytest.mark.parametrize(
-    ("embedder", "texts", "reason"),
-    [
-        (FakeEmbedder(dim=8), [], "texts is empty"),
-        (_BrokenEmbedder(error=RuntimeError("CUDA out of memory")), ["mug"], "RuntimeError: CUDA out of memory"),
-        (_BrokenEmbedder(result=np.ones((2, 8))), ["mug"], "expected shape (1, 8)"),
-        (_BrokenEmbedder(result=np.zeros((1, 8))), ["mug"], "zero"),
-    ],
-)
-def test_embed_text_failures_answer_instead_of_raising(embedder, texts, reason):
-    response = fill_embed_text_response(EmbedText.Response(), embedder, texts)
-    assert not response.success
-    assert reason in response.message
-    assert response.embedding_model == "" and len(response.vectors) == 0
-    with pytest.raises(ValueError, match="EmbedText failed"):
-        vectors_from_response(response)

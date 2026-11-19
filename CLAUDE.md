@@ -41,8 +41,10 @@ build, because `scripts/activate.sh` sources the overlay on activation.
 - `src/walkie_vision/crops/objects.py`, `crops/colour.py`: the object sampler,
   padded crops and colour shares. `src/walkie_vision/embeddings.py`: the
   interim CLIP provider. Off by default.
-- `src/walkie_vision/requests.py`: bounded service work on the one model worker
-  (ADR-0015): the job, its slot and the request checks.
+- `src/walkie_vision/services/`: bounded service work on the one model worker
+  (ADR-0015): the job and its slot (`services/jobs.py`), and each service's
+  request checks and responses (`embed_text.py`, `embed_crop.py`,
+  `detect_objects.py`).
 - `config/`: the node's parameters (`vision.yaml`, `sim.yaml`) and each task's
   classes and flags (`tasks/hri.yaml`, `tasks/memory.yaml`).
   `launch/vision.launch.py` starts the node and restarts it when it exits.

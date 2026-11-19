@@ -116,6 +116,23 @@ REMOVED = re.compile(
             r"\bproviders\.py\b",
             r"\bconvert(_module)?[.:](EMBEDDING_DIMS|check_model_dim)\b",
             r"from (walkie_vision\.|\.+)convert import [^\n]*\b(EMBEDDING_DIMS|check_model_dim)\b",
+            # walkie_vision.requests became the walkie_vision.services package: the job,
+            # the slot and the codes in services.jobs, and each service's checks and
+            # responses in its own module, with the response builders and the message
+            # bound that left walkie_vision.convert. convert's _float32_array stays, as
+            # float32_array. The word requests is fine.
+            r"walkie_vision[./]requests\b",
+            r"from walkie_vision import [^\n]*\brequests\b",
+            r"from \.+requests import",
+            r"from \.+ import [^\n]*\brequests\b",
+            r"\brequests\.py\b",
+            r"\btest_requests\.py\b",
+            r"\bconvert(_module)?[.:](fill_embed_text_response|embed_text_failure|vectors_from_response"
+            r"|detect_objects_failure|embed_crop_failure|fill_embed_crop_response|bounded_message|MAX_MESSAGE_CHARS"
+            r"|_float32_array)\b",
+            r"from (walkie_vision\.|\.+)convert import [^\n]*\b(fill_embed_text_response|embed_text_failure"
+            r"|vectors_from_response|detect_objects_failure|embed_crop_failure|fill_embed_crop_response"
+            r"|bounded_message|MAX_MESSAGE_CHARS|_float32_array)\b",
         ]
     )
 )
@@ -227,9 +244,26 @@ LEFT_NODE_MAILBOX = frozenset({"NewestFrame"})
 REQUESTS = "walkie_vision.requests"
 LEFT_REQUESTS = frozenset({"CurrentImage"})
 # The vector lengths left convert.py for providers/vector_tables.py, and the length
-# check for providers/image_embed/base.py. convert.py imports both, which it still uses.
+# check for providers/image_embed/base.py. convert.py imports EMBEDDING_DIMS, which it
+# still uses; the length check's one caller left it for services/embed_crop.py.
 CONVERT = "walkie_vision.convert"
 LEFT_CONVERT = frozenset({"EMBEDDING_DIMS", "check_model_dim"})
+# requests.py became the services package. The response builders and the message bound
+# left convert.py for it, and _float32_array became convert's public float32_array.
+# convert.py uses none of them, so it does not even import them.
+LEFT_CONVERT_SERVICES = frozenset(
+    {
+        "fill_embed_text_response",
+        "embed_text_failure",
+        "vectors_from_response",
+        "detect_objects_failure",
+        "embed_crop_failure",
+        "fill_embed_crop_response",
+        "bounded_message",
+        "MAX_MESSAGE_CHARS",
+        "_float32_array",
+    }
+)
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -562,7 +596,7 @@ def test_no_code_takes_the_sampler_or_the_palette_from_embeddings():
     code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
     assert {
         PACKAGE_DIR / "pipeline.py",
-        PACKAGE_DIR / "requests.py",
+        PACKAGE_DIR / "services" / "embed_crop.py",
         PACKAGE_DIR / "fake_publisher.py",
         ROOT / "tests" / "test_pipeline.py",
         ROOT / "tests" / "test_node.py",
@@ -666,7 +700,7 @@ def test_the_sweep_would_catch_the_model_file_table_at_its_old_home(tmp_path):
         tmp_path / "good.py",
         "from walkie_vision.weights import ULTRALYTICS_DIR, models_dir\n"
         "from walkie_vision import embeddings, weights\n"
-        "from . import convert, crops, requests\n"
+        "from . import convert, crops, services\n"
         "from .. import models_dir\n"
         "from .weights import CLIP_WEIGHTS, HUB_MODELS\n"
         'cmd = "python -m walkie_vision.weights"\n'
@@ -947,7 +981,7 @@ def test_the_sweep_would_catch_the_person_crop_at_its_old_home(tmp_path):
         "from walkie_vision.crops.person import CropStatus, crop_person\n"
         "from walkie_vision.crops import colour, person\n"
         "from walkie_vision import boxes, crops\n"
-        "from . import convert, crops, requests\n"
+        "from . import convert, crops, services\n"
         "from .crops.jpeg import encode_jpeg\n"
         "from ..crops import colour\n"
         "| `src/walkie_vision/crops/` | One person's crop, mask and colour shares |\n"
@@ -1153,7 +1187,8 @@ def test_no_code_imports_image_or_depth_from_the_package_root():
 
 def test_no_code_takes_the_depth_maths_the_mailboxes_or_stamp_ns_from_camera_depth():
     code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
-    assert {PACKAGE_DIR / "pipeline.py", PACKAGE_DIR / "requests.py", ROOT / "tests" / "test_geometry.py"} <= set(code)
+    embed_crop = PACKAGE_DIR / "services" / "embed_crop.py"
+    assert {PACKAGE_DIR / "pipeline.py", embed_crop, ROOT / "tests" / "test_geometry.py"} <= set(code)
     assert [hit for file in code for hit in _reads_a_name_that_left(file, CAMERA_DEPTH, LEFT_DEPTH)] == []
 
 
@@ -1167,16 +1202,20 @@ def test_camera_depth_does_not_define_or_import_the_depth_maths_the_mailboxes_or
 
 def test_no_code_takes_the_mailbox_from_the_node_or_the_current_image_from_requests():
     code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
-    assert {PACKAGE_DIR / "node.py", ROOT / "tests" / "test_node.py", ROOT / "tests" / "test_requests.py"} <= set(code)
+    jobs_tests = ROOT / "tests" / "test_services_jobs.py"
+    assert {PACKAGE_DIR / "node.py", ROOT / "tests" / "test_node.py", jobs_tests} <= set(code)
     assert [hit for file in code for hit in _reads_a_name_that_left(file, NODE, LEFT_NODE_MAILBOX)] == []
     assert [hit for file in code for hit in _reads_a_name_that_left(file, REQUESTS, LEFT_REQUESTS)] == []
 
 
 def test_the_node_and_requests_do_not_define_the_mailboxes_again():
     # node.py imports NewestFrame to build its mailbox, but does not define it.
-    # requests.py does not use CurrentImage, so it does not even import it.
+    # The services (requests.py until the services package) do not use CurrentImage, so
+    # they do not even import it.
     assert _binds_one_of(PACKAGE_DIR / "node.py", LEFT_NODE_MAILBOX, imports=False) == []
-    assert _binds_one_of(PACKAGE_DIR / "requests.py", LEFT_REQUESTS) == []
+    services = sorted((PACKAGE_DIR / "services").glob("*.py"))
+    assert PACKAGE_DIR / "services" / "jobs.py" in services
+    assert [hit for file in services for hit in _binds_one_of(file, LEFT_REQUESTS)] == []
 
 
 def test_the_sweep_would_catch_image_depth_and_the_mailboxes_at_their_old_homes(tmp_path):
@@ -1210,7 +1249,7 @@ def test_the_sweep_would_catch_image_depth_and_the_mailboxes_at_their_old_homes(
         "from .image import calibration_problem, camera_info_problem\n"
         "from . import depth, image\n"
         "from .camera.mailboxes import CurrentImage, NewestFrame, RgbdBuffer\n"
-        "from . import convert, geometry, requests\n"
+        "from . import convert, geometry, services\n"
         "| `src/walkie_vision/camera/` | The camera input and its mailboxes |\n"
         "The pairing is walkie_vision.camera.mailboxes.RgbdBuffer (ADR-0014).\n"
         "assert isinstance(h.node._mailbox, NewestFrame)\n"
@@ -1346,9 +1385,11 @@ def test_no_code_takes_the_vector_lengths_or_the_dim_check_from_convert():
 
 
 def test_convert_does_not_define_the_vector_lengths_or_the_dim_check_again():
-    # convert.py imports EMBEDDING_DIMS and check_model_dim, which it still uses, but
-    # defines neither.
+    # convert.py imports EMBEDDING_DIMS, which it still uses, but defines neither. The
+    # dim check's one caller in it left for services/embed_crop.py, so it does not even
+    # import that.
     assert _binds_one_of(PACKAGE_DIR / "convert.py", LEFT_CONVERT, imports=False) == []
+    assert _binds_one_of(PACKAGE_DIR / "convert.py", frozenset({"check_model_dim"})) == []
 
 
 def test_the_sweep_would_catch_providers_py_or_the_vector_lengths_at_their_old_homes(tmp_path):
@@ -1375,8 +1416,8 @@ def test_the_sweep_would_catch_providers_py_or_the_vector_lengths_at_their_old_h
         "from .providers.image_embed.base import check_model_dim\n"
         "from ..vector_tables import EMBEDDING_DIMS\n"
         "checks/c11_providers.py and tests/test_build_providers.py\n"
-        "convert.to_point_cloud(header, points), convert.bounded_message(text)\n"
-        "from walkie_vision.convert import fill_embed_crop_response\n"
+        "convert.to_point_cloud(header, points), convert.unit_vector(vector)\n"
+        "from walkie_vision.convert import fill_person_crop_response\n"
         "check_model_dim(providers.embedder)\n",
     )
     assert _mentions([good], REMOVED) == []
@@ -1390,7 +1431,7 @@ def test_the_tree_check_would_catch_the_vector_lengths_or_the_dim_check_at_their
         "from walkie_vision import convert as convert_module\n"
         "from ..convert import (\n"
         "    EMBEDDING_DIMS,\n"
-        "    bounded_message,\n"
+        "    stamp_ns,\n"
         ")\n"
         "a = convert.check_model_dim(embedder)\n"
         'monkeypatch.setattr(convert_module, "EMBEDDING_DIMS", {})\n'
@@ -1434,3 +1475,151 @@ def test_the_tree_check_would_catch_the_vector_lengths_or_the_dim_check_at_their
         "expected = EMBEDDING_DIMS.get(name)\n",
     )
     assert _binds_one_of(clean, LEFT_CONVERT, imports=False) == []
+
+
+def test_requests_did_not_come_back_to_the_package_root():
+    for module in ("__init__", "jobs", "embed_text", "embed_crop", "detect_objects"):
+        assert (PACKAGE_DIR / "services" / f"{module}.py").is_file()
+    assert _old_homes(SRC, REQUESTS) == []
+
+
+def test_no_code_imports_requests():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "node.py",
+        ROOT / "tests" / "test_node.py",
+        ROOT / "tests" / "test_golden_messages.py",
+    } <= set(code)
+    assert [hit for file in code for hit in _imports_a_module_that_left(file, REQUESTS)] == []
+
+
+def test_no_code_takes_the_service_builders_or_the_message_bound_from_convert():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "node.py",
+        PACKAGE_DIR / "services" / "embed_crop.py",
+        ROOT / "tests" / "test_golden_messages.py",
+        ROOT / "tests" / "test_services_jobs.py",
+    } <= set(code)
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, CONVERT, LEFT_CONVERT_SERVICES)] == []
+
+
+def test_convert_does_not_define_or_import_the_service_builders_or_the_message_bound():
+    assert _binds_one_of(PACKAGE_DIR / "convert.py", LEFT_CONVERT_SERVICES) == []
+
+
+def test_the_sweep_would_catch_requests_or_the_service_builders_at_their_old_homes(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision import errors, requests\n"
+        "from walkie_vision.requests import BUSY, ServiceJob\n"
+        "import walkie_vision.requests\n"
+        "from . import convert, requests\n"
+        "from .requests import JobSlot\n"
+        "from ..requests import MAX_TIMEOUT_S\n"
+        "| `src/walkie_vision/requests.py` | Bounded service work |\n"
+        "The pure parts are tested in tests/test_requests.py.\n"
+        "return convert.embed_text_failure(jobs.DISABLED, reason)\n"
+        "fail = convert.detect_objects_failure\n"
+        "response.embedding = convert._float32_array(unit)\n"
+        "assert len(message) <= convert.MAX_MESSAGE_CHARS\n"
+        "from walkie_vision.convert import box_to_bbox, vectors_from_response\n"
+        "from .convert import bounded_message\n"
+        "`walkie_vision.convert:fill_embed_crop_response` fills a crop\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 15
+    # The new homes, the names that stay in convert, float32_array, the requests
+    # library and the word requests are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from walkie_vision.services import detect_objects, embed_crop, embed_text, jobs\n"
+        "from walkie_vision.services.jobs import BUSY, ServiceJob\n"
+        "from .services import embed_text as embed_text_service\n"
+        "from .jobs import MAX_TIMEOUT_S, bounded_message\n"
+        "from ..convert import float32_array, stamp_ns, unit_vector\n"
+        "from walkie_vision.convert import box_to_bbox, fill_person_crop_response\n"
+        "response.embedding = convert.float32_array(unit)\n"
+        "| `src/walkie_vision/services/` | Bounded service work |\n"
+        "The pure parts are tested in tests/test_services_jobs.py.\n"
+        "import requests\n"
+        "Each callback checks its request, so requests cannot stop the stream.\n"
+        "convert.fill_person_crop_response(response, people, found)\n",
+    )
+    assert _mentions([good], REMOVED) == []
+
+
+def test_the_tree_check_would_catch_requests_or_the_service_builders_at_their_old_homes(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    # The module that left: requests, in any spelling of an import.
+    caller = _write(
+        tmp_path / "src" / "walkie_vision" / "node.py",
+        "from . import (\n"
+        "    convert,\n"
+        "    requests,\n"
+        ")\n"
+        "from .requests import JobSlot\n"
+        "import walkie_vision.requests as jobs\n",
+    )
+    assert _imports_a_module_that_left(caller, REQUESTS) == [
+        "node.py:1: imports walkie_vision.requests",
+        "node.py:5: imports from walkie_vision.requests",
+        "node.py:6: imports walkie_vision.requests",
+    ]
+    # Inside services/, `from . import jobs` and `from .jobs import` name the new home.
+    sibling = _write(
+        tmp_path / "src" / "walkie_vision" / "services" / "embed_text.py",
+        "from . import jobs\nfrom .jobs import bounded_message\nfrom .. import convert\n",
+    )
+    assert _imports_a_module_that_left(sibling, REQUESTS) == []
+    # The builders and the message bound, taken from convert under any name.
+    reader = _write(
+        tmp_path / "src" / "walkie_vision" / "services" / "embed_crop.py",
+        "from .. import convert\n"
+        "from walkie_vision import convert as convert_module\n"
+        "from ..convert import (\n"
+        "    bounded_message,\n"
+        "    stamp_ns,\n"
+        ")\n"
+        "a = convert.fill_embed_crop_response(response, header, jpeg, embedder, vector, 0.5)\n"
+        "b = convert_module._float32_array(unit)\n"
+        'monkeypatch.setattr(convert, "MAX_MESSAGE_CHARS", 8)\n',
+    )
+    assert _reads_a_name_that_left(reader, CONVERT, LEFT_CONVERT_SERVICES) == [
+        "embed_crop.py:3: imports bounded_message",
+        "embed_crop.py:7: reads convert.fill_embed_crop_response",
+        "embed_crop.py:8: reads convert_module._float32_array",
+        "embed_crop.py:9: names MAX_MESSAGE_CHARS",
+    ]
+    # A convert that imports, re-exports or copies one of them puts it back at its old home.
+    copy = _write(
+        tmp_path / "convert.py",
+        "from .services.jobs import bounded_message\n"
+        "from .services.embed_text import vectors_from_response as vectors_from_response\n"
+        "MAX_MESSAGE_CHARS = 256\n"
+        "_float32_array = float32_array\n"
+        "def embed_crop_failure(code, message): ...\n",
+    )
+    assert _binds_one_of(copy, LEFT_CONVERT_SERVICES) == [
+        "convert.py:1: binds bounded_message",
+        "convert.py:2: binds vectors_from_response",
+        "convert.py:3: binds MAX_MESSAGE_CHARS",
+        "convert.py:4: binds _float32_array",
+        "convert.py:5: binds embed_crop_failure",
+    ]
+    # The new homes and the names that stay in convert are fine.
+    good = _write(
+        tmp_path / "src" / "walkie_vision" / "pipeline.py",
+        "from . import convert\n"
+        "from .services import embed_text, jobs\n"
+        "from .services.embed_crop import fill_embed_crop_response\n"
+        "a = convert.float32_array(values)\n"
+        "b = jobs.bounded_message(text)\n"
+        'monkeypatch.setattr(embed_text, "EMBED_TEXT_DEADLINE_S", 0.2)\n',
+    )
+    assert _reads_a_name_that_left(good, CONVERT, LEFT_CONVERT_SERVICES) == []
+    assert _imports_a_module_that_left(good, REQUESTS) == []
+    clean = _write(
+        tmp_path / "clean" / "convert.py",
+        "def float32_array(values): ...\nresponse.embedding = float32_array(unit)\n",
+    )
+    assert _binds_one_of(clean, LEFT_CONVERT_SERVICES) == []
