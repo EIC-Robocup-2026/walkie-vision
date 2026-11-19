@@ -30,7 +30,8 @@ build, because `scripts/activate.sh` sources the overlay on activation.
 - `src/walkie_vision/messages.py`: results to messages, with validation, and
   the QoS profiles.
 - `src/walkie_vision/node.py`, `pipeline.py`: the vision node,
-  one process for every model (ADR-0010). `providers/object_detection/yoloe.py`,
+  one process for every model (ADR-0010), with its parameters in `config.py`
+  and its model loading in `loading.py`. `providers/object_detection/yoloe.py`,
   `providers/pose_estimation/yolo_pose.py` and
   `providers/face_recognition/buffalo_l.py` are the detector, pose and
   head-crop face providers, including the second detector behind

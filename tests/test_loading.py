@@ -1,4 +1,4 @@
-"""build_providers() with every model class mocked.
+"""walkie_vision.loading: build_providers() with every model class mocked.
 
 No model loads: the provider classes are replaced by autospec mocks, so a
 call that does not fit a real signature fails here. The model files are
@@ -22,8 +22,10 @@ import onnxruntime  # noqa: E402
 import torch  # noqa: E402
 from huggingface_hub.errors import LocalEntryNotFoundError  # noqa: E402
 
-from walkie_vision import errors, node  # noqa: E402
-from walkie_vision.node import VisionConfig, build_providers  # noqa: E402
+from walkie_vision import config as config_module  # noqa: E402
+from walkie_vision import errors, loading  # noqa: E402
+from walkie_vision.config import VisionConfig  # noqa: E402
+from walkie_vision.loading import build_providers  # noqa: E402
 from walkie_vision.pipeline import Providers  # noqa: E402
 from walkie_vision.providers import _ultralytics  # noqa: E402
 from walkie_vision.providers.image_embed import clip as clip_module  # noqa: E402
@@ -45,7 +47,7 @@ def models(tmp_path, monkeypatch) -> Path:
     config = VisionConfig(classes=CLASSES)
     for name in (config.objects_weights, yoloe.MOBILECLIP_FILE, config.pose_weights):
         _touch(tmp_path / ULTRALYTICS_DIR / name)
-    for name in node._FACE_FILES:
+    for name in loading._FACE_FILES:
         _touch(tmp_path / BUFFALO_L_DIR / name)
     return tmp_path
 
@@ -81,7 +83,7 @@ def _model_calls(manager) -> list:
 
 
 def test_the_tracker_names_match_the_providers():
-    assert node.TRACKER_FILES == _ultralytics.TRACKER_NAMES
+    assert config_module.TRACKER_FILES == _ultralytics.TRACKER_NAMES
 
 
 def test_every_provider_is_built_from_the_config_in_order(models, manager):
@@ -306,7 +308,7 @@ def test_every_missing_file_is_named(tmp_path, monkeypatch, manager):
     with pytest.raises(FileNotFoundError) as caught:
         build_providers(VisionConfig(classes=CLASSES), manager.logger)
     message = str(caught.value)
-    for name in ("yoloe-26s-seg.pt", yoloe.MOBILECLIP_FILE, "yolo26s-pose.pt", *node._FACE_FILES):
+    for name in ("yoloe-26s-seg.pt", yoloe.MOBILECLIP_FILE, "yolo26s-pose.pt", *loading._FACE_FILES):
         assert name in message
     assert _model_calls(manager) == []
 

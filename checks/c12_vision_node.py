@@ -1,6 +1,6 @@
 """Check 12: the vision node's own start path and 20 HD2K frames in one process.
 
-build_providers() from walkie_vision.node loads every model the way the node
+build_providers() from walkie_vision.loading loads every model the way the node
 does, and VisionPipeline runs them in turn on each frame: YOLOE, pose, SCRFD
 and ArcFace on head crops, then OSNet. The input is zidane.jpg resized to the
 ZED's HD2K (2208 x 1242) as a bgra8 sensor_msgs/Image, read back with
@@ -38,7 +38,8 @@ from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 from c12_memory import load_memory_fixture, memory_config, p50_p95, run_memory
 from common import assets_dir, expect, finish, gpu_mem_of
 from walkie_vision.camera.image import image_to_bgr
-from walkie_vision.node import VisionConfig, build_providers
+from walkie_vision.config import VisionConfig
+from walkie_vision.loading import build_providers
 from walkie_vision.pipeline import FrameResult, TrackIdBase, VisionPipeline
 
 WIDTH, HEIGHT = 2208, 1242

@@ -99,12 +99,14 @@ source_modules = ["walkie_vision._vendor"]
 forbidden_modules = [
     "walkie_vision.boxes",
     "walkie_vision.camera",
+    "walkie_vision.config",
     "walkie_vision.crops",
     "walkie_vision.debug_viz",
     "walkie_vision.errors",
     "walkie_vision.fake_publisher",
     "walkie_vision.fakes",
     "walkie_vision.geometry",
+    "walkie_vision.loading",
     "walkie_vision.messages",
     "walkie_vision.node",
     "walkie_vision.pipeline",
@@ -129,11 +131,13 @@ source_modules = [
 ]
 forbidden_modules = [
     "walkie_vision.camera",
+    "walkie_vision.config",
     "walkie_vision.crops",
     "walkie_vision.debug_viz",
     "walkie_vision.fake_publisher",
     "walkie_vision.fakes",
     "walkie_vision.geometry",
+    "walkie_vision.loading",
     "walkie_vision.messages",
     "walkie_vision.node",
     "walkie_vision.pipeline",

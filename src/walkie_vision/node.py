@@ -48,39 +48,31 @@ Threads:
   failure before the worker starts, such as a missing model file or a bad
   parameter, exits with EXIT_STARTUP (2).
 
-torch, Ultralytics and ONNX Runtime are imported only in build_providers(),
-so the tests import this module and inject fakes.
+torch, Ultralytics and ONNX Runtime are imported only in build_providers()
+(walkie_vision.loading), so the tests import this module and inject fakes.
 """
 
 from __future__ import annotations
 
 import collections
 import logging
-import math
 import os
-import re
 import signal
 import sys
 import threading
 import time
 import traceback
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, fields
-from pathlib import Path
-from typing import Any, Protocol, TypeVar
+from typing import Any
 
 import numpy as np
 import rclpy
-from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.clock import Clock, ClockType, JumpThreshold, TimeJump
 from rclpy.duration import Duration
-from rclpy.exceptions import NameValidationException, ParameterException
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.logging import get_logger
 from rclpy.node import Node
-from rclpy.parameter import Parameter
-from rclpy.validate_full_topic_name import validate_full_topic_name
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Header
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
@@ -90,9 +82,11 @@ from . import messages
 from .camera.depth import DepthRefused, RegisteredDepth, read_registered_depth
 from .camera.image import camera_info_problem, image_to_bgr
 from .camera.mailboxes import CurrentImage, NewestFrame, RgbdBuffer
+from .config import VisionConfig
 from .crops import person
 from .crops.person import CropStatus
 from .errors import StartupError
+from .loading import build_providers
 from .messages import CAMERA_INFO_QOS, IMAGE_QOS, OUTPUT_QOS, stamp_ns
 from .pipeline import ON_DEMAND_MAX_OBJECTS, Providers, StageTimes, TrackIdBase, VisionPipeline
 from .services import detect_objects, embed_crop, jobs
@@ -107,8 +101,6 @@ from .services.get_person_crop import (
 
 NODE_NAME = "walkie_vision"
 
-_T = TypeVar("_T")
-
 TARGET_RATE_HZ = 5.0
 """The contract's lowest output rate."""
 EXIT_FATAL = 1
@@ -117,8 +109,6 @@ EXIT_STARTUP = 2
 """A failure before the worker started: a missing file, a bad parameter, a model that did not load."""
 EXECUTOR_THREADS = 4
 """One for the input callbacks, one for a waiting GetPersonCrop, one for a waiting service job, one for a BUSY answer."""
-MAX_PAIR_WINDOW_S = 0.1
-"""The largest max_pair_gap_s and pair_wait_s: the output must stay near 5 Hz, and a wider gap pairs other captures."""
 # Any jump back of the clock, however small, means that the sim restarted: the
 # next run repeats the stamps of the previous one, and walkie-database clears
 # its TF on the same jump. rcl reports a jump only when ROS time is set, which
@@ -126,206 +116,10 @@ MAX_PAIR_WINDOW_S = 0.1
 # is no jump. The wall clock reports none.
 _BACKWARD_JUMP = JumpThreshold(min_forward=None, min_backward=Duration(nanoseconds=-1), on_clock_change=True)
 
-# Ultralytics' own tracker files, by name. The same names as
-# walkie_vision.providers._ultralytics.TRACKER_NAMES, which this module does
-# not import.
-TRACKER_FILES = ("bytetrack.yaml", "botsort.yaml")
-_DEVICE = re.compile(r"^(cpu|cuda(:\d+)?)$")
-# The files build_providers() needs in models/buffalo_l, as named in
-# walkie_vision.weights (DETECTOR_FILE and RECOGNIZER_FILE).
-_FACE_FILES = ("det_10g.onnx", "w600k_r50.onnx")
 # How often a repeated warning is logged, in seconds.
 _WARN_PERIOD_S = 5.0
 _OTHER_PUBLISHER_WARN_PERIOD_S = 30.0
 _JOIN_TIMEOUT_S = 5.0
-
-
-class StartupLogger(Protocol):
-    """What build_providers() logs to: an rclpy logger or a logging.Logger."""
-
-    def info(self, message: str) -> object: ...
-
-    def warning(self, message: str) -> object: ...
-
-
-@dataclass(frozen=True)
-class VisionConfig:
-    """The node's parameters. The defaults equal config/vision.yaml.
-
-    Every field is a read-only ROS parameter of the same name. classes has
-    no default: it comes from the task's file in config/tasks/.
-    """
-
-    classes: tuple[str, ...]
-    image_topic: str = "/zed_head/zed_node/rgb/color/rect/image"
-    camera_info_topic: str = "/zed_head/zed_node/depth/camera_info"
-    people_topic: str = "/walkie_vision/people"
-    objects_topic: str = "/walkie_vision/objects"
-    person_crop_service: str = "/walkie_vision/get_person_crop"
-    embed_text_service: str = "/walkie_vision/embed_text"
-    embed_crop_service: str = "/walkie_vision/embed_crop"
-    describe_crop_service: str = "/walkie_vision/describe_crop"
-    detect_objects_service: str = "/walkie_vision/detect_objects"
-    device: str = "cuda:0"
-    objects_weights: str = "yoloe-26s-seg.pt"
-    objects_imgsz: int = 640
-    objects_conf: float = 0.1
-    objects_agnostic_nms: bool = True
-    objects_tracker: str = "bytetrack.yaml"
-    objects_min_score: float = 0.25
-    pose_weights: str = "yolo26s-pose.pt"
-    pose_imgsz: int = 640
-    pose_conf: float = 0.1
-    pose_tracker: str = "botsort.yaml"
-    people_min_score: float = 0.25
-    people_dedupe_iou: float = 0.5
-    face_det_thresh: float = 0.5
-    face_input_sizes: tuple[int, ...] = (160, 256, 384, 640)
-    face_max_people: int = 6
-    face_max_offset: float = 0.25
-    reid_min_crop_px: int = 16
-    reid_batch_size: int = 16
-    max_rate_hz: float = 10.0
-    max_consecutive_failures: int = 30
-    process_timeout_s: float = 60.0
-    latency_log_period_s: float = 10.0
-    stale_warn_s: float = 0.5
-    geometry_enabled: bool = False
-    depth_topic: str = "/zed_head/zed_node/depth/depth_registered"
-    depth_camera_info_topic: str = "/zed_head/zed_node/depth/camera_info"
-    max_pair_gap_s: float = 0.005
-    pair_wait_s: float = 0.020
-    require_depth: bool = False
-    depth_min_m: float = 0.2
-    depth_max_m: float = 3.0
-    object_crops_enabled: bool = False
-    object_embeddings_enabled: bool = False
-    on_demand_enabled: bool = False
-    captions_enabled: bool = False
-
-    def __post_init__(self) -> None:
-        # Lists become tuples, so the config stays hashable and immutable.
-        object.__setattr__(self, "classes", tuple(self.classes))
-        object.__setattr__(self, "face_input_sizes", tuple(int(s) for s in self.face_input_sizes))
-
-        if not self.classes:
-            raise ValueError("classes must not be empty")
-        for c in self.classes:
-            if not isinstance(c, str) or not c or c != c.strip():
-                raise ValueError(f"classes: every class must be a non-empty string without surrounding spaces, not {c!r}")
-        if len(set(self.classes)) != len(self.classes):
-            raise ValueError(f"classes has duplicates: {list(self.classes)}")
-
-        for name in (
-            "image_topic",
-            "camera_info_topic",
-            "people_topic",
-            "objects_topic",
-            "depth_topic",
-            "depth_camera_info_topic",
-        ):
-            topic = getattr(self, name)
-            try:
-                validate_full_topic_name(topic)
-            except NameValidationException as e:
-                raise ValueError(f"{name} must be an absolute, valid topic name, not {topic!r}: {e}") from e
-        for name in (
-            "person_crop_service",
-            "embed_text_service",
-            "embed_crop_service",
-            "describe_crop_service",
-            "detect_objects_service",
-        ):
-            service = getattr(self, name)
-            try:
-                validate_full_topic_name(service, is_service=True)
-            except NameValidationException as e:
-                raise ValueError(f"{name} must be an absolute, valid service name, not {service!r}: {e}") from e
-        if self.captions_enabled:
-            raise ValueError("captions_enabled must be false: this build has no caption model")
-
-        if not _DEVICE.match(self.device):
-            raise ValueError(f"device must be cpu, cuda or cuda:N, not {self.device!r}")
-        for name in ("objects_weights", "pose_weights"):
-            if not getattr(self, name):
-                raise ValueError(f"{name} must not be empty")
-        for name in ("objects_tracker", "pose_tracker"):
-            tracker = getattr(self, name)
-            if tracker not in TRACKER_FILES and not (Path(tracker).is_absolute() and tracker.endswith(".yaml")):
-                raise ValueError(
-                    f"{name} must be one of {', '.join(TRACKER_FILES)} or an absolute path to a .yaml file, "
-                    f"not {tracker!r}"
-                )
-
-        for name in ("objects_conf", "pose_conf", "objects_min_score", "people_min_score"):
-            value = getattr(self, name)
-            if not 0.0 <= value <= 1.0:
-                raise ValueError(f"{name} must be in [0, 1], not {value}")
-        for name in ("people_dedupe_iou", "face_det_thresh", "face_max_offset"):
-            value = getattr(self, name)
-            if not 0.0 < value <= 1.0:
-                raise ValueError(f"{name} must be in (0, 1], not {value}")
-
-        for name in ("objects_imgsz", "pose_imgsz"):
-            value = getattr(self, name)
-            if value <= 0 or value % 32:
-                raise ValueError(f"{name} must be a positive multiple of 32, not {value}")
-        if not self.face_input_sizes or any(s <= 0 or s % 32 for s in self.face_input_sizes):
-            raise ValueError(
-                f"face_input_sizes must be a non-empty list of positive multiples of 32, not {list(self.face_input_sizes)}"
-            )
-
-        for name, low in (
-            ("face_max_people", 0),
-            ("reid_min_crop_px", 1),
-            ("reid_batch_size", 1),
-            ("max_consecutive_failures", 1),
-        ):
-            value = getattr(self, name)
-            if value < low:
-                raise ValueError(f"{name} must be at least {low}, not {value}")
-        if self.max_rate_hz < 0:
-            raise ValueError(f"max_rate_hz must be 0 (no cap) or positive, not {self.max_rate_hz}")
-        for name in ("process_timeout_s", "latency_log_period_s", "stale_warn_s"):
-            value = getattr(self, name)
-            if not value > 0:
-                raise ValueError(f"{name} must be positive, not {value}")
-        if not 0.0 <= self.max_pair_gap_s <= MAX_PAIR_WINDOW_S:
-            raise ValueError(f"max_pair_gap_s must be in [0, {MAX_PAIR_WINDOW_S:g}], not {self.max_pair_gap_s}")
-        # Zero would drop every depth that arrives before its image.
-        if not 0.0 < self.pair_wait_s <= MAX_PAIR_WINDOW_S:
-            raise ValueError(f"pair_wait_s must be in (0, {MAX_PAIR_WINDOW_S:g}], not {self.pair_wait_s}")
-        if self.require_depth and not self.geometry_enabled:
-            raise ValueError("require_depth needs geometry_enabled: without it the node does not subscribe to depth")
-        if not 0.0 < self.depth_min_m < math.inf:
-            raise ValueError(f"depth_min_m must be positive and finite, not {self.depth_min_m}")
-        if not self.depth_min_m < self.depth_max_m < math.inf:
-            raise ValueError(f"depth_max_m must be finite and above depth_min_m, not {self.depth_max_m}")
-
-    @classmethod
-    def from_node(cls, node: Node) -> VisionConfig:
-        """Declare every parameter on node, read-only, and return their values.
-
-        Raises ValueError naming the parameter when one is missing, has the
-        wrong type or a bad value.
-        """
-        values: dict[str, Any] = {}
-        for f in fields(cls):
-            descriptor = ParameterDescriptor(read_only=True)
-            try:
-                if f.name == "classes":
-                    node.declare_parameter(f.name, Parameter.Type.STRING_ARRAY, descriptor)
-                else:
-                    default = list(f.default) if isinstance(f.default, tuple) else f.default
-                    node.declare_parameter(f.name, default, descriptor)
-                # get_parameter() raises for a typed parameter that was never set.
-                value = node.get_parameter(f.name).value
-            except (ParameterException, TypeError, NameValidationException) as e:
-                raise ValueError(f"parameter {f.name}: {e}") from e
-            if f.name in ("classes", "face_input_sizes"):
-                value = tuple(value)
-            values[f.name] = value
-        return cls(**values)
 
 
 class LatencyLog:
@@ -422,160 +216,6 @@ def _p50_p95(values: list[float]) -> str:
         return "-/-"
     p50, p95 = np.percentile(np.asarray(values, dtype=np.float64), [50, 95])
     return f"{p50:.0f}/{p95:.0f}"
-
-
-def _load(logger: StartupLogger, name: str, build: Callable[[], _T]) -> _T:
-    """Build one model, and name it in the log when it fails, before the error reaches main()."""
-    try:
-        return build()
-    except Exception as e:
-        logger.warning(f"the {name} model failed to load: {type(e).__name__}: {e}")
-        raise
-
-
-def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
-    """Load every model the node runs, after checking that their files are there.
-
-    The order makes a broken setup fail fast: the model files first, then
-    the OSNet checkpoint in the Hugging Face cache, both before torch or
-    Ultralytics is imported. Then the PyTorch models, then the ONNX Runtime
-    sessions. Raises FileNotFoundError naming every missing file, and
-    StartupError (a RuntimeError) when OSNet is not cached and cannot be
-    downloaded. A model that fails to load logs its name and raises its own
-    error.
-
-    CLIP is checked and loaded only with object_embeddings_enabled, and only
-    from the cache: it never downloads here. The second YOLOE is built only with
-    on_demand_enabled, and here at start, so a first request never loads a model.
-    """
-    started = time.perf_counter()
-    from .providers.image_embed.clip import ClipEmbedder, clip_checkpoint
-    from .providers.object_detection.yoloe import MOBILECLIP_FILE
-    from .weights import BUFFALO_L_DIR, HUB_MODELS, OSNET_CHECKPOINT, ULTRALYTICS_DIR, models_dir
-
-    root = models_dir()
-    ultralytics_dir = (root / ULTRALYTICS_DIR).absolute()
-    face_dir = (root / BUFFALO_L_DIR).absolute()
-
-    def weights(name: str) -> Path:
-        path = Path(name)
-        return path if path.is_absolute() else ultralytics_dir / path
-
-    objects_path = weights(config.objects_weights)
-    pose_path = weights(config.pose_weights)
-    # YOLOE loads its text encoder by file name from the folder of its weights.
-    needed = [objects_path, objects_path.parent / MOBILECLIP_FILE, pose_path, *(face_dir / f for f in _FACE_FILES)]
-    missing = [str(p) for p in needed if not p.is_file()]
-    if missing:
-        raise FileNotFoundError(f"model files are missing: {', '.join(missing)}; run `pixi run fetch-models`")
-
-    import huggingface_hub
-
-    hub = HUB_MODELS["osnet"]
-    cached = huggingface_hub.try_to_load_from_cache(hub.repo, OSNET_CHECKPOINT, revision=hub.revision)
-    if not isinstance(cached, str):
-        logger.warning("OSNet is not in the Hugging Face cache; downloading it now, which needs the internet once")
-        try:
-            huggingface_hub.hf_hub_download(hub.repo, OSNET_CHECKPOINT, revision=hub.revision)
-        except Exception as e:
-            raise StartupError(
-                f"OSNet is not in the Hugging Face cache and could not be downloaded: {e}. "
-                "Run once with internet access; see docs/guides/vision-node.md"
-            ) from e
-    clip_path = clip_checkpoint() if config.object_embeddings_enabled else None
-
-    from walkie_vision.providers.object_detection.yoloe import YoloeDetector, YoloeTracker
-    from walkie_vision.providers.pose_estimation.yolo_pose import YoloPoseTracker
-
-    # Asked for only when geometry or sampling reads them: copying masks to
-    # the CPU costs time.
-    keep_masks = (
-        {"keep_masks": True}
-        if config.geometry_enabled or config.object_crops_enabled or config.object_embeddings_enabled
-        else {}
-    )
-    objects = _load(
-        logger,
-        "objects",
-        lambda: YoloeTracker(
-            objects_path,
-            list(config.classes),
-            device=config.device,
-            imgsz=config.objects_imgsz,
-            conf=config.objects_conf,
-            agnostic_nms=config.objects_agnostic_nms,
-            tracker=config.objects_tracker,
-            **keep_masks,
-        ),
-    )
-    # With no tracker, nothing reads a box under the published floor.
-    on_demand = (
-        _load(
-            logger,
-            "on-demand",
-            lambda: YoloeDetector(
-                objects_path,
-                list(config.classes),
-                device=config.device,
-                imgsz=config.objects_imgsz,
-                conf=config.objects_min_score,
-                agnostic_nms=config.objects_agnostic_nms,
-                max_det=ON_DEMAND_MAX_OBJECTS,
-                **keep_masks,
-            ),
-        )
-        if config.on_demand_enabled
-        else None
-    )
-    pose = _load(
-        logger,
-        "pose",
-        lambda: YoloPoseTracker(
-            pose_path,
-            device=config.device,
-            imgsz=config.pose_imgsz,
-            conf=config.pose_conf,
-            tracker=config.pose_tracker,
-        ),
-    )
-
-    from walkie_vision.providers.reid.osnet import OSNetReIdentifier
-
-    reid = _load(logger, "OSNet", lambda: OSNetReIdentifier(device=config.device, batch_size=config.reid_batch_size))
-    embedder = None if clip_path is None else _load(logger, "CLIP", lambda: ClipEmbedder(clip_path, device=config.device))
-
-    import onnxruntime
-
-    from walkie_vision.providers.face_recognition.buffalo_l import FaceAnalyzer, HeadCropConfig, HeadFaceRecognizer
-
-    # ERROR and above only, for every session created from here on. SCRFD's
-    # file declares its output shapes for a 640 input and ArcFace's for a
-    # batch of 1, so ONNX Runtime would warn on every smaller crop and every
-    # batch of faces, burying the node's own warnings. A session takes the
-    # level when it is created, so this must come before FaceAnalyzer.
-    onnxruntime.set_default_logger_severity(3)
-    logger.info("warming up the face models; the first run on this GPU can take minutes")
-    faces = _load(
-        logger,
-        "face",
-        lambda: HeadFaceRecognizer(
-            FaceAnalyzer(face_dir, det_thresh=config.face_det_thresh),
-            HeadCropConfig(
-                input_sizes=tuple(config.face_input_sizes),
-                max_people=config.face_max_people,
-                max_face_offset=config.face_max_offset,
-            ),
-        ),
-    )
-
-    import torch
-
-    if torch.cuda.is_initialized():
-        # Return the blocks freed during the loads and warm-ups, such as the
-        # text encoder that set_classes() drops, so ONNX Runtime can use them.
-        torch.cuda.empty_cache()
-    logger.info(f"loaded the models in {time.perf_counter() - started:.1f} s")
-    return Providers(objects=objects, pose=pose, faces=faces, reid=reid, embedder=embedder, on_demand=on_demand)
 
 
 class VisionNode(Node):

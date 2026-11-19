@@ -74,7 +74,9 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | Path                                | What it holds                                                    |
 | ----------------------------------- | ---------------------------------------------------------------- |
 | `ros2_ws/src/walkie_vision_msgs/`   | The messages and the services, built with colcon                 |
-| `src/walkie_vision/node.py`         | The vision node: parameters, threads, publishing and health checks |
+| `src/walkie_vision/node.py`         | The vision node: threads, publishing and health checks           |
+| `src/walkie_vision/config.py`       | The vision node's parameters, with their checks                  |
+| `src/walkie_vision/loading.py`      | Loads every model the vision node runs, after checking their files |
 | `src/walkie_vision/pipeline.py`     | One image through every model to the two arrays, without ROS     |
 | `src/walkie_vision/camera/`         | Camera images to BGR arrays, the `camera_info` checks, registered depth, and colour and depth paired within bounds |
 | `src/walkie_vision/geometry.py`     | Object points and view quality from registered depth. Off by default |

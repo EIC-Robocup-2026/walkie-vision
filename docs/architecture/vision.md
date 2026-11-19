@@ -1251,7 +1251,9 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.services`    | Bounded service work: the job and its one slot (`services.jobs`), and each service's request checks and responses (`services.embed_text`, `services.embed_crop`, `services.detect_objects`, `services.get_person_crop`) ([Bounded services](#bounded-services)) |
 | `walkie_vision.pipeline`    | One image through every provider to the two arrays, with the score floors, the person dedupe (`dedupe_poses`) and the track id base. No ROS node |
 | `walkie_vision.crops`       | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. The object sampler and padded crops (`crops.objects`), and colour recipe v1 (`crops.colour`). No ROS node and no model |
-| `walkie_vision.node`        | The vision node: parameters, threads, publishing, health checks and `build_providers` |
+| `walkie_vision.config`      | The node's parameters, with the check of every value (`VisionConfig`)             |
+| `walkie_vision.loading`     | Every model the node runs, loaded after a check of their files (`build_providers`) |
+| `walkie_vision.node`        | The vision node: threads, publishing and health checks                            |
 
 The node holds one provider for each model, and `pipeline` uses `messages`
 to build what they return into messages. The tests run the same path with

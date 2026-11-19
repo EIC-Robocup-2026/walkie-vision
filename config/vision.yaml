@@ -1,7 +1,7 @@
 # Parameters of the vision node (walkie_vision.node). The values here equal
-# the defaults in VisionConfig. Every parameter is read-only: change it here
-# and restart the node. The detector's classes are not here; they come from
-# the task's file in config/tasks/.
+# the defaults in VisionConfig (walkie_vision.config). Every parameter is
+# read-only: change it here and restart the node. The detector's classes are
+# not here; they come from the task's file in config/tasks/.
 # Write every double with a decimal point (10.0, not 10): rclpy rejects an
 # integer for a double parameter.
 walkie_vision:

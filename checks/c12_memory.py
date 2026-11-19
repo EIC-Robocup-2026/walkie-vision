@@ -38,8 +38,8 @@ from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import Header
 
 from walkie_vision.camera.depth import RegisteredDepth
+from walkie_vision.config import VisionConfig
 from walkie_vision.messages import check_object_detection_array
-from walkie_vision.node import VisionConfig
 from walkie_vision.pipeline import OnDemandResult, Providers, TrackIdBase, VisionPipeline
 
 MEMORY_TASK = Path(__file__).resolve().parents[1] / "config" / "tasks" / "memory.yaml"

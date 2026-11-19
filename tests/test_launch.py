@@ -16,7 +16,7 @@ from launch.actions import DeclareLaunchArgument, RegisterEventHandler, Shutdown
 from launch.event_handlers import OnProcessStart
 from launch.utilities import perform_substitutions
 
-from walkie_vision.node import VisionConfig
+from walkie_vision.config import VisionConfig
 
 REPO = Path(__file__).resolve().parents[1]
 CONFIG = REPO / "config"

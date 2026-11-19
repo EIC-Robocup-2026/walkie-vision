@@ -35,7 +35,7 @@ import numpy as np
 import torch
 
 from common import assets_dir, expect, finish, gpu_mem_of, timed_ms
-from walkie_vision.node import VisionConfig
+from walkie_vision.config import VisionConfig
 from walkie_vision.pipeline import dedupe_poses
 from walkie_vision.providers import PersonPose
 from walkie_vision.providers.object_detection.yoloe import YoloeTracker

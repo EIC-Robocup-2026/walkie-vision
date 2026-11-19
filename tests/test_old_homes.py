@@ -12,6 +12,7 @@ re-export and no alias. Each move adds its rows here:
 - _reads_a_name_that_left reads the syntax tree of every Python file, so an import
   in parentheses over several lines, a wildcard import, an alias of the old module
   and a monkeypatch of the name at the old module count, and a docstring does not.
+  A name the old module imports and calls by its bare name may still be patched there.
 - _imports_a_module_that_left reads the syntax tree for imports of a module that moved
   as a whole, so `from . import x`, `from .. import x` and an import in parentheses
   over several lines count, and a docstring does not.
@@ -214,6 +215,19 @@ REMOVED = re.compile(
             r"\btest_embeddings\.py\b",
             r"\bembeddings(_module)?[.:](CLIP_ARCHITECTURE|CLIP_DIM|TEXT_TEMPLATE|clip_checkpoint|_build_open_clip"
             r"|ClipEmbedder)\b",
+            # VisionConfig and the constants only it checks left walkie_vision.node for
+            # walkie_vision.config, and build_providers with its logger protocol and its
+            # helpers for walkie_vision.loading. node.py imports VisionConfig and
+            # build_providers, so a test may patch build_providers on the node, which
+            # looks it up there, by the module or by its dotted path in quotes; reading
+            # or importing either from the node is a row (the tree check reads the
+            # attribute form of build_providers in code).
+            r"\bnode(_module)?[.:](VisionConfig|MAX_PAIR_WINDOW_S|TRACKER_FILES|_DEVICE"
+            r"|StartupLogger|_load|_FACE_FILES|_T)\b",
+            r"(?<![\w\"'])walkie_vision[./]node[.:]build_providers\b",
+            r"from (walkie_vision\.|\.+)node import [^\n]*\b(VisionConfig|MAX_PAIR_WINDOW_S|TRACKER_FILES|_DEVICE"
+            r"|build_providers|StartupLogger|_load|_FACE_FILES|_T)\b",
+            r"\btest_build_providers\.py\b",
         ]
     )
 )
@@ -403,6 +417,19 @@ CLIP_FILE = PACKAGE_DIR / "providers" / "image_embed" / "clip.py"
 LEFT_EMBEDDINGS_CLIP = frozenset(
     {"CLIP_ARCHITECTURE", "CLIP_DIM", "TEXT_TEMPLATE", "clip_checkpoint", "_build_open_clip", "ClipEmbedder"}
 )
+# The node's parameters left node.py for config.py: VisionConfig with the constants
+# only it checks. The model loading left it for loading.py: build_providers with its
+# logger protocol, its helper, the helper's type variable and the face file names.
+# node.py imports VisionConfig and build_providers, which it uses, and defines
+# neither; it uses none of the others, so it does not even import them. The node
+# looks build_providers up in its own namespace when it starts, so a test patches it
+# there.
+CONFIG_FILE = PACKAGE_DIR / "config.py"
+LOADING_FILE = PACKAGE_DIR / "loading.py"
+LEFT_NODE_CONFIG = frozenset({"MAX_PAIR_WINDOW_S", "TRACKER_FILES", "_DEVICE", "VisionConfig"})
+LEFT_NODE_LOADING = frozenset({"_T", "_FACE_FILES", "StartupLogger", "_load", "build_providers"})
+USED_BY_NODE = frozenset({"VisionConfig", "build_providers"})
+PATCHED_ON_NODE = frozenset({"build_providers"})
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -445,13 +472,19 @@ def _imported_module(node: ast.ImportFrom, file: Path) -> str | None:
     return ".".join([*package, node.module] if node.module else package)
 
 
-def _reads_a_name_that_left(file: Path, module: str, names: frozenset[str]) -> list[str]:
+def _reads_a_name_that_left(
+    file: Path, module: str, names: frozenset[str], *, patched: frozenset[str] = frozenset()
+) -> list[str]:
     """Where `file` imports one of `names` from `module`, reads it as an attribute of that
     module, or names it as a string next to the module in a call such as
     `monkeypatch.setattr(module, "name", ...)`, under any name the file gives the module.
     A wildcard import from `module` always counts, since it can bind any of the names.
     A name bound to `pytest.importorskip("module")` or `importlib.import_module("module")`
     is a name for the module too.
+
+    A name in `patched` may still be named as a string next to `module`: `module` imports
+    it and looks it up in its own namespace when it runs, so that is where a test patches
+    it. Importing or reading it from `module` still counts.
 
     It reads the syntax tree rather than lines, so an import in parentheses over several
     lines counts, and a docstring that names the old home does not.
@@ -489,6 +522,7 @@ def _reads_a_name_that_left(file: Path, module: str, names: frozenset[str]) -> l
             and ast.unparse(node.args[0]) in module_names
             and isinstance(node.args[1], ast.Constant)
             and node.args[1].value in names
+            and node.args[1].value not in patched
         ):
             found.append(f"{file.name}:{node.lineno}: names {node.args[1].value}")
     return sorted(found)
@@ -634,9 +668,9 @@ def test_the_sweep_would_catch_the_startup_error_at_its_old_home(tmp_path):
         "from .errors import StartupError\n"
         "from walkie_vision import errors, node\n"
         "with pytest.raises(errors.StartupError):\n"
-        "from walkie_vision.node import VisionConfig, build_providers\n"
-        "from .node import StartupLogger\n"
-        "node.StartupLogger, node.StartupErrors\n"
+        "from walkie_vision.node import NODE_NAME, VisionNode\n"
+        "from .node import LatencyLog\n"
+        "node.LatencyLog, node.StartupErrors\n"
         "StartupError (a RuntimeError) when OSNet is not cached\n"
         "raise StartupError(message)\n",
     )
@@ -933,11 +967,11 @@ def test_the_tree_check_would_catch_a_name_read_from_its_old_home(tmp_path, monk
         "from walkie_vision.errors import StartupError\n"
         "from .errors import StartupError as Failed\n"
         "from walkie_vision.node import (\n"
-        "    VisionConfig,\n"
-        "    build_providers,\n"
+        "    LatencyLog,\n"
+        "    VisionNode,\n"
         ")\n"
         "a = errors.StartupError\n"
-        "b = node.VisionConfig\n"
+        "b = node.VisionNode\n"
         "c = other.StartupError\n"
         'monkeypatch.setattr(errors, "StartupError", RuntimeError)\n'
         'monkeypatch.setattr(node, "build_providers", fake)\n'
@@ -1410,7 +1444,7 @@ def test_the_sweep_would_catch_image_depth_and_the_mailboxes_at_their_old_homes(
         "| `src/walkie_vision/camera/` | The camera input and its mailboxes |\n"
         "The pairing is walkie_vision.camera.mailboxes.RgbdBuffer (ADR-0014).\n"
         "assert isinstance(h.node._mailbox, NewestFrame)\n"
-        "from walkie_vision.node import VisionConfig, build_providers\n"
+        "from walkie_vision.node import NODE_NAME, VisionNode\n"
         "job = requests.RequestJob(), requests.CurrentImages\n"
         "image.shape[:2], depth.metres, walkie_vision.depth_tools\n",
     )
@@ -1574,7 +1608,7 @@ def test_the_sweep_would_catch_providers_py_or_the_vector_lengths_at_their_old_h
         "from walkie_vision.providers.vector_tables import EMBEDDING_DIMS\n"
         "from .providers.image_embed.base import check_model_dim\n"
         "from ..vector_tables import EMBEDDING_DIMS\n"
-        "checks/c11_providers.py and tests/test_build_providers.py\n"
+        "checks/c11_providers.py and tests/test_loading.py\n"
         "messages.to_point_cloud(header, points), messages.unit_vector(vector)\n"
         "from walkie_vision.messages import pose_from_person_detection\n"
         "check_model_dim(providers.embedder)\n",
@@ -1835,7 +1869,7 @@ def test_the_sweep_would_catch_the_person_crop_service_at_its_old_homes(tmp_path
         "from .get_person_crop import MAX_CROP_TIMEOUT_S\n"
         "from walkie_vision.services import get_person_crop\n"
         "mailbox = get_person_crop.CropMailbox()\n"
-        "from walkie_vision.node import EXECUTOR_THREADS, NODE_NAME, VisionConfig, VisionNode\n"
+        "from walkie_vision.node import EXECUTOR_THREADS, NODE_NAME, LatencyLog, VisionNode\n"
         "from walkie_vision.messages import pose_from_person_detection, to_person_detection_array\n"
         "messages.to_person_detection_array(header, info, people), node.CropJobs\n"
         "self._crops = CropMailbox()\n"
@@ -1988,7 +2022,7 @@ def test_the_sweep_would_catch_convert_or_the_qos_profiles_at_their_old_homes(tm
         'BASE_STAGES = ("wait", "convert", "objects")\n'
         "convert_ms = (time.perf_counter() - start) * 1000.0 - depth_ms\n"
         "from walkie_vision.converters import to_ros\n"
-        "from walkie_vision.node import EXECUTOR_THREADS, NODE_NAME, VisionConfig\n"
+        "from walkie_vision.node import EXECUTOR_THREADS, NODE_NAME, VisionNode\n"
         "assert OBSERVATION_QOS == messages.OUTPUT_QOS\n"
         "from walkie_vision.debug_viz import ARRAY_QOS, IMAGE_QOS, OUTPUT_QOS\n"
         "self.create_subscription(Image, cfg.image_topic, self._ring.add, debug_viz.IMAGE_QOS)\n"
@@ -2267,7 +2301,8 @@ def test_no_code_imports_yolo():
     assert {
         PACKAGE_DIR / "node.py",
         ROOT / "checks" / "c11_providers.py",
-        ROOT / "tests" / "test_build_providers.py",
+        PACKAGE_DIR / "loading.py",
+        ROOT / "tests" / "test_loading.py",
         ROOT / "tests" / "test_providers_ultralytics.py",
     } <= set(code)
     assert [hit for file in code for hit in _imports_a_module_that_left(file, YOLO)] == []
@@ -2278,7 +2313,8 @@ def test_no_code_takes_the_shared_helpers_or_the_pose_from_yoloe():
     assert {
         PACKAGE_DIR / "node.py",
         PACKAGE_DIR / "providers" / "pose_estimation" / "yolo_pose.py",
-        ROOT / "tests" / "test_build_providers.py",
+        PACKAGE_DIR / "loading.py",
+        ROOT / "tests" / "test_loading.py",
         ROOT / "tests" / "test_providers_ultralytics.py",
     } <= set(code)
     # yolo.py is yoloe.py now: it serves none of the names that left it, nor does the
@@ -2458,7 +2494,8 @@ def test_no_code_imports_face():
         PACKAGE_DIR / "node.py",
         ROOT / "checks" / "c08_face.py",
         ROOT / "checks" / "c11_providers.py",
-        ROOT / "tests" / "test_build_providers.py",
+        PACKAGE_DIR / "loading.py",
+        ROOT / "tests" / "test_loading.py",
         ROOT / "tests" / "test_providers_face_recognition_buffalo_l.py",
     } <= set(code)
     assert [hit for file in code for hit in _imports_a_module_that_left(file, FACE)] == []
@@ -2469,7 +2506,8 @@ def test_no_code_takes_the_face_model_file_names_from_buffalo_l():
     assert {
         PACKAGE_DIR / "node.py",
         BUFFALO_L_FILE,
-        ROOT / "tests" / "test_build_providers.py",
+        PACKAGE_DIR / "loading.py",
+        ROOT / "tests" / "test_loading.py",
         ROOT / "tests" / "test_providers_face_recognition_buffalo_l.py",
     } <= set(code)
     assert [hit for file in code for hit in _reads_a_name_that_left(file, BUFFALO_L, LEFT_BUFFALO_L)] == []
@@ -2645,7 +2683,8 @@ def test_no_code_imports_reid():
         PACKAGE_DIR / "providers" / "__init__.py",
         ROOT / "checks" / "c09_osnet.py",
         ROOT / "checks" / "c11_providers.py",
-        ROOT / "tests" / "test_build_providers.py",
+        PACKAGE_DIR / "loading.py",
+        ROOT / "tests" / "test_loading.py",
         ROOT / "tests" / "test_providers_reid_osnet.py",
     } <= set(code)
     assert [hit for file in code for hit in _imports_a_module_that_left(file, REID)] == []
@@ -2790,7 +2829,8 @@ def test_no_code_imports_embeddings():
     assert {
         PACKAGE_DIR / "node.py",
         CLIP_FILE,
-        ROOT / "tests" / "test_build_providers.py",
+        PACKAGE_DIR / "loading.py",
+        ROOT / "tests" / "test_loading.py",
         ROOT / "tests" / "test_providers_image_embed_clip.py",
     } <= set(code)
     assert [hit for file in code for hit in _imports_a_module_that_left(file, EMBEDDINGS)] == []
@@ -2921,3 +2961,150 @@ def test_the_tree_check_would_catch_embeddings_at_its_old_home(tmp_path, monkeyp
     for path, text in good.items():
         file = _write(tmp_path / "src" / "walkie_vision" / path, text)
         assert _imports_a_module_that_left(file, EMBEDDINGS) == [], path
+
+
+def test_the_config_and_the_loading_have_their_own_modules():
+    config = _binds_one_of(CONFIG_FILE, LEFT_NODE_CONFIG, imports=False)
+    assert {hit.rpartition(" ")[2] for hit in config} == LEFT_NODE_CONFIG
+    loading = _binds_one_of(LOADING_FILE, LEFT_NODE_LOADING, imports=False)
+    assert {hit.rpartition(" ")[2] for hit in loading} == LEFT_NODE_LOADING
+
+
+def test_no_code_takes_the_config_or_the_loading_from_the_node():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "node.py",
+        ROOT / "checks" / "c11_providers.py",
+        ROOT / "checks" / "c12_memory.py",
+        ROOT / "checks" / "c12_vision_node.py",
+        ROOT / "tests" / "test_loading.py",
+        ROOT / "tests" / "test_node.py",
+        ROOT / "tests" / "test_launch.py",
+    } <= set(code)
+    left = LEFT_NODE_CONFIG | LEFT_NODE_LOADING
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, NODE, left, patched=PATCHED_ON_NODE)] == []
+    # The node calls build_providers by its bare name, so test_node.py patches it there.
+    assert any(
+        hit.endswith(": names build_providers")
+        for hit in _reads_a_name_that_left(ROOT / "tests" / "test_node.py", NODE, left)
+    )
+
+
+def test_the_node_does_not_define_the_config_or_the_loading_again():
+    # node.py imports VisionConfig and build_providers, since it uses them, but defines
+    # neither, and does not bind the other names at all.
+    node = PACKAGE_DIR / "node.py"
+    assert _binds_one_of(node, USED_BY_NODE, imports=False) == []
+    assert _binds_one_of(node, (LEFT_NODE_CONFIG | LEFT_NODE_LOADING) - USED_BY_NODE) == []
+
+
+def test_the_sweep_would_catch_the_config_or_the_loading_at_their_old_home(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision.node import VisionConfig, build_providers\n"
+        "from .node import StartupLogger\n"
+        "assert node.TRACKER_FILES == _ultralytics.TRACKER_NAMES\n"
+        "for name in node._FACE_FILES:\n"
+        "if window > node_module.MAX_PAIR_WINDOW_S:\n"
+        "`walkie_vision.node.VisionConfig` checks every value\n"
+        "    ROOT / 'tests' / 'test_build_providers.py',\n"
+        "`walkie_vision/node:_load` times each model\n"
+        "`walkie_vision.node.build_providers` loads the models\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 9
+    # The new homes, the node's names that stay, a patch of build_providers on the node
+    # by the module or by its dotted path, a parameter of the config, the renamed test
+    # file and a call are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from walkie_vision.config import TRACKER_FILES, VisionConfig\n"
+        "from walkie_vision.loading import StartupLogger, build_providers\n"
+        "from .config import VisionConfig\n"
+        "from .loading import build_providers\n"
+        "from walkie_vision.node import NODE_NAME, VisionNode\n"
+        'monkeypatch.setattr(node_module, "build_providers", fake_build)\n'
+        'monkeypatch.setattr("walkie_vision.node.build_providers", fake_build)\n'
+        "with mock.patch('walkie_vision.node.build_providers', fake_build):\n"
+        "tracker = config.objects_tracker\n"
+        "for name in loading._FACE_FILES:\n"
+        "    ROOT / 'tests' / 'test_loading.py',\n"
+        "providers = build_providers(config, self.get_logger())\n",
+    )
+    assert _mentions([good], REMOVED) == []
+
+
+def test_the_tree_check_would_catch_the_config_or_the_loading_at_their_old_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    left = LEFT_NODE_CONFIG | LEFT_NODE_LOADING
+    # The names, taken from the node under any name.
+    reader = _write(
+        tmp_path / "src" / "walkie_vision" / "fake_publisher.py",
+        "from . import node\n"
+        "from walkie_vision import node as node_module\n"
+        "from .node import (\n"
+        "    NODE_NAME,\n"
+        "    VisionConfig,\n"
+        ")\n"
+        "a = node._FACE_FILES\n"
+        'monkeypatch.setattr(node_module, "TRACKER_FILES", ("x.yaml",))\n'
+        'monkeypatch.setattr(node_module, "build_providers", fake_build)\n'
+        "from .node import *\n",
+    )
+    assert _reads_a_name_that_left(reader, NODE, left, patched=PATCHED_ON_NODE) == [
+        "fake_publisher.py:10: imports *",
+        "fake_publisher.py:3: imports VisionConfig",
+        "fake_publisher.py:7: reads node._FACE_FILES",
+        "fake_publisher.py:8: names TRACKER_FILES",
+    ]
+    # Without `patched`, the patch of build_providers on the node counts too.
+    assert "fake_publisher.py:9: names build_providers" in _reads_a_name_that_left(reader, NODE, left)
+    # Importing or reading build_providers from the node counts even with `patched`.
+    importer = _write(
+        tmp_path / "src" / "walkie_vision" / "debug_viz.py",
+        "from . import node\nfrom .node import build_providers\nb = node.build_providers\n",
+    )
+    assert _reads_a_name_that_left(importer, NODE, left, patched=PATCHED_ON_NODE) == [
+        "debug_viz.py:2: imports build_providers",
+        "debug_viz.py:3: reads node.build_providers",
+    ]
+    # A node that defines, re-exports or star-imports one of them puts it back at its
+    # old home.
+    copy = _write(
+        tmp_path / "node.py",
+        "from .config import VisionConfig\n"
+        "from .loading import build_providers as build_providers\n"
+        "from .loading import _FACE_FILES\n"
+        "MAX_PAIR_WINDOW_S = 0.1\n"
+        "class StartupLogger: ...\n"
+        "from .config import *\n",
+    )
+    assert _binds_one_of(copy, USED_BY_NODE, imports=False) == [
+        "node.py:2: binds build_providers",
+        "node.py:6: binds *",
+    ]
+    assert _binds_one_of(copy, left - USED_BY_NODE) == [
+        "node.py:3: binds _FACE_FILES",
+        "node.py:4: binds MAX_PAIR_WINDOW_S",
+        "node.py:5: binds StartupLogger",
+        "node.py:6: binds *",
+    ]
+    # A node that only imports and uses VisionConfig and build_providers, and the new
+    # homes, are fine.
+    good = _write(
+        tmp_path / "src" / "walkie_vision" / "node.py",
+        '"""VisionConfig was in walkie_vision.node."""\n'
+        "from .config import VisionConfig\n"
+        "from .loading import build_providers\n"
+        "config = VisionConfig.from_node(self)\n"
+        "providers = build_providers(config, self.get_logger())\n",
+    )
+    assert _binds_one_of(good, USED_BY_NODE, imports=False) == []
+    assert _binds_one_of(good, left - USED_BY_NODE) == []
+    assert _reads_a_name_that_left(good, NODE, left) == []
+    loading = _write(
+        tmp_path / "src" / "walkie_vision" / "loading.py",
+        "from .config import VisionConfig\n"
+        "from . import config\n"
+        "a = config.TRACKER_FILES\n",
+    )
+    assert _reads_a_name_that_left(loading, NODE, left) == []
