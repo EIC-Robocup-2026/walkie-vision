@@ -54,7 +54,6 @@ LAYER_OF = {
     "walkie_vision.debug_viz": 0,
     "walkie_vision.embeddings": 3,
     "walkie_vision.errors": 5,
-    "walkie_vision.face": 4,
     "walkie_vision.fake_publisher": 1,
     "walkie_vision.fakes": 2,
     "walkie_vision.geometry": 3,
@@ -68,11 +67,9 @@ LAYER_OF = {
 }
 NOT_LAYERED = {"_vendor"}
 
-# The packages whose __init__.py holds code: face re-exports its analyser and
-# head recogniser, and reid defines load_osnet.
+# The packages whose __init__.py holds code: reid defines load_osnet.
 INIT_WITH_CODE = frozenset(
     {
-        "walkie_vision.face",
         "walkie_vision.reid",
     }
 )

@@ -7,8 +7,8 @@ on it.
 A rectangle is (x0, y0, x1, y1) in whole pixels, with x1 and y1 excluded.
 A box is x1, y1, x2, y2 in float pixels, as in walkie_vision.providers.
 
-face.heads.box_iou and pipeline._box_iou are separate copies of box_iou that
-clamp differently, and stay where they are.
+providers.face_recognition.buffalo_l.box_iou and pipeline._box_iou are
+separate copies of box_iou that clamp differently, and stay where they are.
 """
 
 from __future__ import annotations

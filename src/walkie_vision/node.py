@@ -132,7 +132,7 @@ _BACKWARD_JUMP = JumpThreshold(min_forward=None, min_backward=Duration(nanosecon
 TRACKER_FILES = ("bytetrack.yaml", "botsort.yaml")
 _DEVICE = re.compile(r"^(cpu|cuda(:\d+)?)$")
 # The files build_providers() needs in models/buffalo_l, as named in
-# walkie_vision.face.analysis (which imports onnxruntime).
+# walkie_vision.weights (DETECTOR_FILE and RECOGNIZER_FILE).
 _FACE_FILES = ("det_10g.onnx", "w600k_r50.onnx")
 # How often a repeated warning is logged, in seconds.
 _WARN_PERIOD_S = 5.0
@@ -546,7 +546,7 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
 
     import onnxruntime
 
-    from walkie_vision.face import FaceAnalyzer, HeadCropConfig, HeadFaceRecognizer
+    from walkie_vision.providers.face_recognition.buffalo_l import FaceAnalyzer, HeadCropConfig, HeadFaceRecognizer
 
     # ERROR and above only, for every session created from here on. SCRFD's
     # file declares its output shapes for a 640 input and ArcFace's for a

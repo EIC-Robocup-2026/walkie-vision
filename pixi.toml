@@ -71,8 +71,8 @@ torchvision = { version = "==0.26.0", index = "https://download.pytorch.org/whl/
 # The CUDA provider library has no RUNPATH to the CUDA wheels. A process must
 # call onnxruntime.preload_dlls() (or import torch) before it creates a
 # session; otherwise ONNX Runtime falls back to the CPU provider without
-# raising. walkie_vision.face calls preload_dlls() itself when CUDA is
-# requested.
+# raising. walkie_vision.providers.face_recognition.buffalo_l calls
+# preload_dlls() itself when CUDA is requested.
 onnxruntime-gpu = { version = ">=1.26.0,<1.27", extras = ["cuda", "cudnn"] }
 # The InsightFace package is not used: it requires the CPU-only onnxruntime
 # package, which installs the same `onnxruntime` module and can replace the

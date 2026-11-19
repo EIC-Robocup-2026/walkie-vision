@@ -10,7 +10,7 @@ camera, GPU or model, so it must start without loading a model library.
 
 Each module is imported in its own fresh interpreter (`python -P -c`), so the
 result does not depend on import order. In one shared process, a module
-checked after the face package would find onnxruntime already loaded and could
+checked after the face provider would find onnxruntime already loaded and could
 never be blamed for it. The modules are found from the files on disk without
 importing anything: pkgutil.walk_packages imports each package to descend into
 it, which would load onnxruntime and torch into the walking process.
@@ -38,16 +38,13 @@ PACKAGE = "walkie_vision"
 
 HEAVY = ("torch", "torchvision", "ultralytics", "onnxruntime", "open_clip", "transformers", "timm", "insightface")
 
-# The face package's __init__ imports face.analysis, which loads onnxruntime,
-# so every module under face/ loads it. The reid package and the vendored OSNet
-# network load torch. The vendored InsightFace files load only cv2, numpy and
-# onnx, so they are light.
+# The buffalo_l face provider loads onnxruntime. The reid package and the
+# vendored OSNet network load torch. The vendored InsightFace files load only
+# cv2, numpy and onnx, so they are light.
 HEAVY_AT_IMPORT = frozenset(
     {
         "walkie_vision._vendor.torchreid.osnet",
-        "walkie_vision.face",
-        "walkie_vision.face.analysis",
-        "walkie_vision.face.heads",
+        "walkie_vision.providers.face_recognition.buffalo_l",
         "walkie_vision.reid",
         "walkie_vision.reid.identifier",
     }
@@ -197,8 +194,9 @@ def test_an_allowlisted_module_that_loads_nothing_is_a_stale_entry(tmp_path):
 
 
 def test_a_heavy_import_in_a_copy_of_the_tree_is_blamed_on_its_module(tmp_path):
-    # onnxruntime is the package the face package loads, so a walk in one
-    # shared process would already have it loaded when it reached pipeline.
+    # onnxruntime is the package the face provider loads, so a walk in one
+    # shared process that reached pipeline after the provider would already
+    # have it loaded.
     # Appended, not prepended: a from __future__ import must stay first.
     copy = tmp_path / "src" / PACKAGE
     shutil.copytree(_package_dir(), copy, ignore=shutil.ignore_patterns("__pycache__"))

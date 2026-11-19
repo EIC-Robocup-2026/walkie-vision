@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 BUFFALO_L_DIR = "buffalo_l"
+DETECTOR_FILE = "det_10g.onnx"
+RECOGNIZER_FILE = "w600k_r50.onnx"
 ULTRALYTICS_DIR = "ultralytics"
 _ULTRALYTICS_RELEASE = "https://github.com/ultralytics/assets/releases/download/v8.4.0"
 

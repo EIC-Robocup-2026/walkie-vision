@@ -15,7 +15,7 @@ import pytest
 yoloe = pytest.importorskip("walkie_vision.providers.object_detection.yoloe")
 yolo_pose = pytest.importorskip("walkie_vision.providers.pose_estimation.yolo_pose")
 identifier = pytest.importorskip("walkie_vision.reid.identifier")
-face = pytest.importorskip("walkie_vision.face")
+buffalo_l = pytest.importorskip("walkie_vision.providers.face_recognition.buffalo_l")
 
 import huggingface_hub  # noqa: E402
 import onnxruntime  # noqa: E402
@@ -58,8 +58,8 @@ def manager(monkeypatch):
         (yoloe, "YoloeDetector"),
         (yolo_pose, "YoloPoseTracker"),
         (identifier, "OSNetReIdentifier"),
-        (face, "FaceAnalyzer"),
-        (face, "HeadFaceRecognizer"),
+        (buffalo_l, "FaceAnalyzer"),
+        (buffalo_l, "HeadFaceRecognizer"),
     ):
         fake = mock.create_autospec(getattr(module, name))
         monkeypatch.setattr(module, name, fake)
@@ -88,7 +88,7 @@ def test_every_provider_is_built_from_the_config_in_order(models, manager):
     result = build_providers(config, manager.logger)
 
     ultralytics = (models / ULTRALYTICS_DIR).absolute()
-    expected_crop = face.HeadCropConfig(input_sizes=(160, 256, 384, 640), max_people=6, max_face_offset=0.25)
+    expected_crop = buffalo_l.HeadCropConfig(input_sizes=(160, 256, 384, 640), max_people=6, max_face_offset=0.25)
     assert _model_calls(manager) == [
         mock.call.YoloeTracker(
             ultralytics / config.objects_weights,
@@ -275,7 +275,7 @@ def test_the_parameters_reach_the_providers(models, manager, tmp_path):
     manager.OSNetReIdentifier.assert_called_once_with(device="cpu", batch_size=8)
     manager.FaceAnalyzer.assert_called_once_with((models / BUFFALO_L_DIR).absolute(), det_thresh=0.6)
     crop = manager.HeadFaceRecognizer.call_args.args[1]
-    assert crop == face.HeadCropConfig(input_sizes=(256, 640), max_people=3, max_face_offset=0.3)
+    assert crop == buffalo_l.HeadCropConfig(input_sizes=(256, 640), max_people=3, max_face_offset=0.3)
 
 
 def test_the_cuda_cache_is_emptied_only_when_cuda_started(models, manager, monkeypatch):

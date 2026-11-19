@@ -1241,11 +1241,10 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.messages`    | Model results to messages, with the checks the message comments state, and the QoS profiles of the camera input and the two arrays |
 | `walkie_vision.providers.object_detection.yoloe` | YOLOE-26 with its tracker (`YoloeTracker`)                   |
 | `walkie_vision.providers.pose_estimation.yolo_pose` | YOLO26 pose with its tracker (`YoloPoseTracker`)          |
-| `walkie_vision.face`        | SCRFD and ArcFace on ONNX Runtime (`FaceAnalyzer`, a `FaceRecognizer`)            |
-| `walkie_vision.face.heads`  | Faces from crops around each person's head (`HeadFaceRecognizer`, a `PersonFaceRecognizer`) |
+| `walkie_vision.providers.face_recognition.buffalo_l` | SCRFD and ArcFace on ONNX Runtime (`FaceAnalyzer`, a `FaceRecognizer`), and faces from crops around each person's head (`HeadFaceRecognizer`, a `PersonFaceRecognizer`) |
 | `walkie_vision.reid`        | OSNet x1.0 and its weights (`load_osnet`)                                         |
 | `walkie_vision.reid.identifier` | OSNet on person crops (`OSNetReIdentifier`, a `ReIdentifier`)                 |
-| `walkie_vision._vendor`     | Vendored MIT code, each file's header naming its upstream commit and changes: SCRFD, ArcFace and the alignment from InsightFace (`_vendor.insightface`), wrapped by `face`, and the OSNet network from deep-person-reid (`_vendor.torchreid`), wrapped by `reid` |
+| `walkie_vision._vendor`     | Vendored MIT code, each file's header naming its upstream commit and changes: SCRFD, ArcFace and the alignment from InsightFace (`_vendor.insightface`), wrapped by `providers.face_recognition.buffalo_l`, and the OSNet network from deep-person-reid (`_vendor.torchreid`), wrapped by `reid` |
 | `walkie_vision.weights`     | Every model file and Hugging Face commit, with its checksum and licence           |
 | `walkie_vision.camera`      | `sensor_msgs/Image` to a BGR array and the `camera_info` size check (`camera.image`), registered depth (`camera.depth`), and the newest image and the colour and depth pairing (`camera.mailboxes`) |
 | `walkie_vision.geometry`    | Object points and view quality from registered depth (`lift_mask`, `view_quality`) |

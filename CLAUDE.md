@@ -31,9 +31,10 @@ build, because `scripts/activate.sh` sources the overlay on activation.
   the QoS profiles.
 - `src/walkie_vision/node.py`, `pipeline.py`: the vision node,
   one process for every model (ADR-0010). `providers/object_detection/yoloe.py`,
-  `providers/pose_estimation/yolo_pose.py` and `face/heads.py` are the
-  detector, pose and head-crop face providers, including the second detector
-  behind `DetectObjects` (ADR-0009). Off by default.
+  `providers/pose_estimation/yolo_pose.py` and
+  `providers/face_recognition/buffalo_l.py` are the detector, pose and
+  head-crop face providers, including the second detector behind
+  `DetectObjects` (ADR-0009). Off by default.
 - `src/walkie_vision/camera/`: the camera input. `camera/image.py` turns images
   into BGR arrays. `camera/depth.py` reads registered depth, and
   `camera/mailboxes.py` pairs colour with it, bounded by wall time (ADR-0014);
@@ -56,7 +57,7 @@ build, because `scripts/activate.sh` sources the overlay on activation.
   perception (ADR-0013).
 - `src/walkie_vision/_vendor/`: vendored model code (InsightFace in
   `_vendor/insightface/`, deep-person-reid in `_vendor/torchreid/`), wrapped
-  by `face/` and `reid/`. Keep the licence headers and the change lists up to
+  by `providers/face_recognition/buffalo_l.py` and `reid/`. Keep the licence headers and the change lists up to
   date.
 - `src/walkie_vision/weights.py`: every downloaded file and Hugging Face
   commit, with checksums and licences.

@@ -1,7 +1,7 @@
 """Check 4: onnxruntime-gpu runs a session on CUDAExecutionProvider.
 
 Usage: python c04_ort.py [preload|torch-first]
-  preload      call onnxruntime.preload_dlls() first, as walkie_vision.face does
+  preload      call onnxruntime.preload_dlls() first, as walkie_vision.providers.face_recognition.buffalo_l does
   torch-first  import torch first, as in a process that also runs PyTorch models
 
 Without either, ONNX Runtime does not find the CUDA and cuDNN libraries and

@@ -8,7 +8,7 @@ else from walkie_vision, and each package is imported only by the provider
 that wraps it:
 
 - insightface: SCRFD, ArcFace and the face alignment from InsightFace,
-  wrapped by walkie_vision.face.
+  wrapped by walkie_vision.providers.face_recognition.buffalo_l.
 - torchreid: OSNet x1.0 from deep-person-reid (Torchreid), wrapped by
   walkie_vision.reid.
 """

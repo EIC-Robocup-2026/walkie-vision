@@ -1,4 +1,4 @@
-"""Tests of walkie_vision.face.heads with a stub analyzer, and of FaceAnalyzer on buffalo_l when present."""
+"""Tests of walkie_vision.providers.face_recognition.buffalo_l: the head crops with a stub analyzer, and FaceAnalyzer on buffalo_l when present."""
 
 from __future__ import annotations
 
@@ -11,10 +11,17 @@ import numpy as np
 import pytest
 
 from walkie_vision._vendor.insightface import face_align
-from walkie_vision.face import HeadCropConfig, HeadFaceRecognizer
-from walkie_vision.face.heads import box_iou, clip_faces, head_crop, input_size_for, pick_face
 from walkie_vision.fakes import hash_vector
 from walkie_vision.providers import ARCFACE_W600K_R50, PersonFaceRecognizer, PersonPose
+from walkie_vision.providers.face_recognition.buffalo_l import (
+    HeadCropConfig,
+    HeadFaceRecognizer,
+    box_iou,
+    clip_faces,
+    head_crop,
+    input_size_for,
+    pick_face,
+)
 
 WIDTH, HEIGHT = 1280, 720
 CONFIG = HeadCropConfig()
@@ -440,7 +447,7 @@ def _models_dir() -> Path | None:
 
 @pytest.mark.skipif(_models_dir() is None, reason="buffalo_l is missing; run `pixi run fetch-models`")
 def test_face_analyzer_on_zidane_cpu():
-    from walkie_vision.face import FaceAnalyzer
+    from walkie_vision.providers.face_recognition.buffalo_l import FaceAnalyzer
     from walkie_vision.providers import ARCFACE_W600K_R50, FaceRecognizer
 
     assets = Path(importlib.util.find_spec("ultralytics").origin).parent / "assets"

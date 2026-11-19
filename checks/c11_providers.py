@@ -118,8 +118,7 @@ reid = load("OSNetReIdentifier", lambda: OSNetReIdentifier())
 
 import onnxruntime  # noqa: E402
 
-from walkie_vision.face import FaceAnalyzer, HeadFaceRecognizer  # noqa: E402
-from walkie_vision.face.heads import box_iou  # noqa: E402
+from walkie_vision.providers.face_recognition.buffalo_l import FaceAnalyzer, HeadFaceRecognizer, box_iou  # noqa: E402
 
 # As build_providers() does: without it, ONNX Runtime warns on every crop
 # smaller than 640 and every batch of faces.

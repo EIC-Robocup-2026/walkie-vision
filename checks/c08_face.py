@@ -1,4 +1,4 @@
-"""Check 8: face detection and recognition (walkie_vision.face, buffalo_l) on the GPU.
+"""Check 8: face detection and recognition (walkie_vision.providers.face_recognition.buffalo_l) on the GPU.
 
 The expected boxes are what the InsightFace 2.1 package finds on the CPU in
 the same images. The CUDA embeddings are compared with the CPU ones.
@@ -14,7 +14,7 @@ import numpy as np
 import onnxruntime as ort
 
 from common import assets_dir, expect, finish, gpu_mem_of, mapped_libs
-from walkie_vision.face import FaceAnalyzer
+from walkie_vision.providers.face_recognition.buffalo_l import FaceAnalyzer
 from walkie_vision.weights import BUFFALO_L_DIR, models_dir
 
 EXPECTED = {

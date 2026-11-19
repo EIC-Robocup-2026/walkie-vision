@@ -46,7 +46,6 @@ source_modules = [
     "walkie_vision.crops",
     "walkie_vision.embeddings",
     "walkie_vision.errors",
-    "walkie_vision.face",
     "walkie_vision.fakes",
     "walkie_vision.providers",
     "walkie_vision.reid",
@@ -66,19 +65,16 @@ forbidden_modules = [
 ]
 
 # The InsightFace files in _vendor/insightface/ (SCRFD, ArcFace, the alignment)
-# are vendored. Only the face wrapper uses them, so a change to the vendored
-# code touches one caller. The package is protected as a whole, so arcface may
-# import face_align inside it.
+# are vendored. Only the face wrapper, providers/face_recognition/buffalo_l.py,
+# uses them, so a change to the vendored code touches one caller. The package
+# is protected as a whole, so arcface may import face_align inside it.
 [[tool.importlinter.contracts]]
 id = "insightface-wrapped-once"
 name = "The vendored InsightFace files are imported only by the face wrapper"
 type = "protected"
 as_packages = true
 protected_modules = ["walkie_vision._vendor.insightface"]
-allowed_importers = [
-    "walkie_vision.face.analysis",
-    "walkie_vision.face.heads",
-]
+allowed_importers = ["walkie_vision.providers.face_recognition.buffalo_l"]
 
 # The OSNet network from torchreid, in _vendor/torchreid/, is vendored. Only
 # the reid package's loader uses it. as_packages = false keeps the allowed
@@ -109,7 +105,6 @@ forbidden_modules = [
     "walkie_vision.debug_viz",
     "walkie_vision.embeddings",
     "walkie_vision.errors",
-    "walkie_vision.face",
     "walkie_vision.fake_publisher",
     "walkie_vision.fakes",
     "walkie_vision.geometry",
@@ -141,7 +136,6 @@ forbidden_modules = [
     "walkie_vision.crops",
     "walkie_vision.debug_viz",
     "walkie_vision.embeddings",
-    "walkie_vision.face",
     "walkie_vision.fake_publisher",
     "walkie_vision.fakes",
     "walkie_vision.geometry",

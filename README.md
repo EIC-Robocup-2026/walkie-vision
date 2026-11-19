@@ -84,8 +84,7 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `src/walkie_vision/fakes.py`        | Fake models for tests                                            |
 | `src/walkie_vision/providers/object_detection/yoloe.py` | YOLOE-26 with its tracker, and YOLOE-26 with no tracker for `DetectObjects` |
 | `src/walkie_vision/providers/pose_estimation/yolo_pose.py` | YOLO26 pose with its tracker                            |
-| `src/walkie_vision/face/`           | SCRFD and ArcFace on ONNX Runtime                                |
-| `src/walkie_vision/face/heads.py`   | Faces from crops around each person's head                       |
+| `src/walkie_vision/providers/face_recognition/buffalo_l.py` | SCRFD and ArcFace on ONNX Runtime, and faces from crops around each person's head |
 | `src/walkie_vision/reid/`           | OSNet re-identification and its weights                          |
 | `src/walkie_vision/reid/identifier.py` | OSNet on person crops, batched                                |
 | `src/walkie_vision/_vendor/`        | Vendored code, MIT: SCRFD, ArcFace and the alignment from InsightFace, OSNet from deep-person-reid |

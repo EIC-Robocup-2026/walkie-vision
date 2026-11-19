@@ -176,6 +176,18 @@ REMOVED = re.compile(
             r"from \.+ import [^\n]*\byolo\b",
             r"\byolo\.py\b",
             r"\btest_yolo\.py\b",
+            # The walkie_vision.face package became providers.face_recognition.buffalo_l:
+            # face/heads.py with the analyser from face/analysis.py. The two buffalo_l file
+            # names left the analyser for walkie_vision.weights. face_recognition,
+            # face_align, insightface/ and the word face are fine.
+            r"walkie_vision[./]face\b",
+            r"from walkie_vision import [^\n]*\bface\b",
+            r"from \.+face(\.\w+)? import",
+            r"from \.+ import [^\n]*\bface\b",
+            r"(?<![\w/.-])face/",
+            r"\btest_heads\.py\b",
+            r"\b(analysis|buffalo_l)(_module)?[.:](DETECTOR_FILE|RECOGNIZER_FILE)\b",
+            r"from (walkie_vision\.|\.+)([\w.]+\.)?buffalo_l import [^\n]*\b(DETECTOR_FILE|RECOGNIZER_FILE)\b",
         ]
     )
 )
@@ -346,6 +358,13 @@ PRIVATE_HELPERS = frozenset({"_clip_box", "_check_rows", "_require", "_reset_tra
 LEFT_YOLOE = SHARED_HELPERS | PRIVATE_HELPERS | {"poses_from_arrays", "YoloPoseTracker"}
 # The ones yoloe.py no longer uses: it does not even import them.
 UNUSED_IN_YOLOE = LEFT_YOLOE - {"validate_tracker", "clip_box", "check_rows", "require", "reset_trackers"}
+# The face package became providers/face_recognition/buffalo_l.py: face/heads.py with
+# the analyser from face/analysis.py, and nothing re-exports it. The two buffalo_l file
+# names left the analyser for weights.py; buffalo_l.py imports them from there but
+# defines neither.
+BUFFALO_L = "walkie_vision.providers.face_recognition.buffalo_l"
+BUFFALO_L_FILE = PACKAGE_DIR / "providers" / "face_recognition" / "buffalo_l.py"
+LEFT_BUFFALO_L = frozenset({"DETECTOR_FILE", "RECOGNIZER_FILE"})
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -2041,11 +2060,10 @@ def test_the_vendored_files_did_not_come_back_to_face_or_reid():
 def test_no_code_imports_the_vendored_files_from_face_or_reid():
     code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
     assert {
-        PACKAGE_DIR / "face" / "analysis.py",
-        PACKAGE_DIR / "face" / "heads.py",
+        BUFFALO_L_FILE,
         PACKAGE_DIR / "reid" / "__init__.py",
         PACKAGE_DIR / "_vendor" / "insightface" / "arcface.py",
-        ROOT / "tests" / "test_heads.py",
+        ROOT / "tests" / "test_providers_face_recognition_buffalo_l.py",
         ROOT / "tests" / "test_vendor_insightface_face_align.py",
     } <= set(code)
     assert [hit for file in code for old in VENDORED for hit in _imports_a_module_that_left(file, old)] == []
@@ -2054,10 +2072,12 @@ def test_no_code_imports_the_vendored_files_from_face_or_reid():
 
 
 def test_face_and_reid_do_not_bind_the_vendored_modules_again():
-    # face/heads.py binds face_align, which it calls through the module; the face
-    # package's __init__ binds none of the vendored modules, and reid's binds osnet_x1_0
-    # only.
-    assert _binds_one_of(PACKAGE_DIR / "face" / "__init__.py", LEFT_FACE) == []
+    # The face package is gone, so nothing serves the vendored modules under it. Its
+    # successor, providers/face_recognition/buffalo_l.py, binds face_align, which it
+    # calls through the module, and no other vendored module. reid's __init__ binds
+    # osnet_x1_0 only.
+    assert _old_homes(SRC, FACE) == []
+    assert {hit.rpartition(" ")[2] for hit in _binds_one_of(BUFFALO_L_FILE, LEFT_FACE)} == {"face_align"}
     assert _binds_one_of(PACKAGE_DIR / "reid" / "__init__.py", LEFT_REID) == []
 
 
@@ -2078,14 +2098,15 @@ def test_the_sweep_would_catch_the_vendored_files_at_their_old_homes(tmp_path):
         "reid/osnet.py keeps its header\n",
     )
     assert len(_mentions([bad], REMOVED)) == 12
-    # The new homes, the wrappers that stay in face and reid, the provider osnet.py,
-    # the vendored files by their new paths, the vector model names and prose are fine.
+    # The new homes, the face wrapper in buffalo_l.py, the wrappers that stay in reid,
+    # the provider osnet.py, the vendored files by their new paths, the vector model
+    # names and prose are fine.
     good = _write(
         tmp_path / "good.py",
         "from walkie_vision._vendor.insightface.face_align import _similarity_transform, arcface_dst\n"
         "from walkie_vision._vendor.insightface import face_align\n"
-        "from walkie_vision.face import HeadCropConfig, HeadFaceRecognizer\n"
-        "from walkie_vision.face.heads import box_iou, clip_faces\n"
+        "from walkie_vision.providers.face_recognition.buffalo_l import HeadCropConfig, HeadFaceRecognizer\n"
+        "from walkie_vision.providers.face_recognition.buffalo_l import box_iou, clip_faces\n"
         "from walkie_vision.reid import INPUT_SIZE, MEAN, STD, load_osnet\n"
         "from walkie_vision.reid.identifier import OSNetReIdentifier, osnet_input\n"
         "from .._vendor.torchreid.osnet import osnet_x1_0\n"
@@ -2093,7 +2114,7 @@ def test_the_sweep_would_catch_the_vendored_files_at_their_old_homes(tmp_path):
         "`_vendor/torchreid/osnet.py` keeps its header\n"
         "provider = PACKAGE_DIR / 'providers' / 'reid' / 'osnet.py'\n"
         "`src/walkie_vision/providers/reid/osnet.py` wraps the network\n"
-        "| `src/walkie_vision/face/` | SCRFD and ArcFace on ONNX Runtime |\n"
+        "| `src/walkie_vision/providers/face_recognition/buffalo_l.py` | SCRFD and ArcFace on ONNX Runtime |\n"
         'ARCFACE_W600K_R50 = "arcface_w600k_r50"\n'
         "tests/test_vendor_insightface_face_align.py compares them, and test_faces.py others.\n",
     )
@@ -2158,8 +2179,8 @@ def test_the_tree_check_would_catch_the_vendored_files_at_their_old_homes(tmp_pa
         "face_init.py:2: binds scrfd",
         "face_init.py:3: binds *",
     ]
-    # The new homes, a sibling import inside the vendored package, the provider
-    # osnet.py of a later step and a docstring are fine.
+    # The new homes, a sibling import inside the vendored package, the face wrapper in
+    # buffalo_l.py, the provider osnet.py of a later step and a docstring are fine.
     good = {
         "_vendor/insightface/arcface.py": "from . import face_align\n",
         "face/analysis.py": (
@@ -2168,6 +2189,11 @@ def test_the_tree_check_would_catch_the_vendored_files_at_their_old_homes(tmp_pa
             "from .._vendor.insightface.scrfd import SCRFD\n"
         ),
         "face/__init__.py": "from .analysis import Face, FaceAnalyzer\nfrom .heads import HeadFaceRecognizer\n",
+        "providers/face_recognition/buffalo_l.py": (
+            "from ..._vendor.insightface import face_align\n"
+            "from ..._vendor.insightface.arcface import ArcFaceONNX\n"
+            "from ..._vendor.insightface.scrfd import SCRFD\n"
+        ),
         "reid/__init__.py": "from .._vendor.torchreid.osnet import osnet_x1_0\nfrom ..weights import HUB_MODELS\n",
         "providers/reid/osnet.py": (
             "from . import base\n"
@@ -2374,3 +2400,186 @@ def test_the_tree_check_would_catch_yolo_or_its_names_at_their_old_homes(tmp_pat
     providers = tmp_path / "src" / "walkie_vision" / "providers"
     assert _binds_one_of(providers / "object_detection" / "yoloe.py", LEFT_YOLOE, imports=False) == []
     assert _binds_one_of(providers / "pose_estimation" / "yolo_pose.py", SHARED_HELPERS, imports=False) == []
+
+
+def test_face_did_not_come_back_to_the_package_root():
+    assert BUFFALO_L_FILE.is_file()
+    assert _old_homes(SRC, FACE) == []
+
+
+def test_no_code_imports_face():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "node.py",
+        ROOT / "checks" / "c08_face.py",
+        ROOT / "checks" / "c11_providers.py",
+        ROOT / "tests" / "test_build_providers.py",
+        ROOT / "tests" / "test_providers_face_recognition_buffalo_l.py",
+    } <= set(code)
+    assert [hit for file in code for hit in _imports_a_module_that_left(file, FACE)] == []
+
+
+def test_no_code_takes_the_face_model_file_names_from_buffalo_l():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "node.py",
+        BUFFALO_L_FILE,
+        ROOT / "tests" / "test_build_providers.py",
+        ROOT / "tests" / "test_providers_face_recognition_buffalo_l.py",
+    } <= set(code)
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, BUFFALO_L, LEFT_BUFFALO_L)] == []
+
+
+def test_buffalo_l_does_not_define_the_face_model_file_names_again():
+    # buffalo_l.py imports both file names from weights.py, which defines them.
+    assert _binds_one_of(BUFFALO_L_FILE, LEFT_BUFFALO_L, imports=False) == []
+    weights = _binds_one_of(PACKAGE_DIR / "weights.py", LEFT_BUFFALO_L, imports=False)
+    assert {hit.rpartition(" ")[2] for hit in weights} == LEFT_BUFFALO_L
+
+
+def test_the_sweep_would_catch_face_at_its_old_home(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision.face import FaceAnalyzer, HeadCropConfig, HeadFaceRecognizer\n"
+        "from walkie_vision.face.heads import box_iou  # noqa: E402\n"
+        "import walkie_vision.face.analysis\n"
+        'face = pytest.importorskip("walkie_vision.face")\n'
+        "from walkie_vision import errors, face, node\n"
+        "from walkie_vision import face as face_module\n"
+        "from . import errors, face\n"
+        "from .face import FaceAnalyzer\n"
+        "from ..face.analysis import DETECTOR_FILE\n"
+        "| `src/walkie_vision/face/heads.py`   | Faces from crops around each person's head |\n"
+        "  by `face/` and `reid/`. Keep the licence headers and the change lists\n"
+        "# walkie_vision.face.analysis (which imports onnxruntime).\n"
+        "heads.py and analysis.py, in face/, wrap them\n"
+        "Tests of tests/test_heads.py with a stub analyzer\n"
+        "det_path = model_dir / analysis.DETECTOR_FILE\n"
+        "rec_path = model_dir / buffalo_l.RECOGNIZER_FILE\n"
+        "from walkie_vision.providers.face_recognition.buffalo_l import DETECTOR_FILE\n"
+        "from .buffalo_l import FaceAnalyzer, RECOGNIZER_FILE\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 18
+    # The new home, the names that stay in buffalo_l.py, the file names at weights.py,
+    # the face recognition task, the vendored face_align, the word face, the check
+    # c08_face.py and the dotted parameter names of a later step are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from walkie_vision.providers.face_recognition.buffalo_l import FaceAnalyzer, HeadCropConfig\n"
+        'buffalo_l = pytest.importorskip("walkie_vision.providers.face_recognition.buffalo_l")\n'
+        "from walkie_vision.providers import face_recognition\n"
+        "from . import base, buffalo_l\n"
+        "from .base import Face\n"
+        "from ..._vendor.insightface import face_align\n"
+        "from ...weights import DETECTOR_FILE, RECOGNIZER_FILE\n"
+        "from walkie_vision.weights import BUFFALO_L_DIR, DETECTOR_FILE\n"
+        "providers = buffalo_l.DEFAULT_PROVIDERS\n"
+        "| `src/walkie_vision/providers/face_recognition/buffalo_l.py` | SCRFD and ArcFace on ONNX Runtime |\n"
+        "`providers/face_recognition/base.py` holds Face\n"
+        "the head tests in `tests/test_providers_face_recognition_buffalo_l.py`\n"
+        "# https://github.com/deepinsight/insightface/blob/668e8d4/python-package/insightface/utils/face_align.py\n"
+        "face = Face(bbox=det[j, :4].copy(), kps=kpss[j].copy(), det_score=float(det[j, 4]))\n"
+        'WARM_UP = "warming up the face models; the first run on this GPU can take minutes"\n'
+        "python checks/c08_face.py\n"
+        "| `face_recognition.buffalo_l.det_thresh` |\n",
+    )
+    assert _mentions([good], REMOVED) == []
+
+
+def test_the_tree_check_would_catch_face_or_its_names_at_their_old_homes(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    # The package that left, in any spelling of an import, absolute or relative.
+    caller = _write(
+        tmp_path / "src" / "walkie_vision" / "node.py",
+        "from . import (\n"
+        "    errors,\n"
+        "    face,\n"
+        ")\n"
+        "from .face import FaceAnalyzer\n"
+        "from .face.heads import box_iou\n"
+        "import walkie_vision.face.analysis as analysis\n"
+        "def build():\n"
+        "    from walkie_vision.face import HeadFaceRecognizer\n"
+        "    return HeadFaceRecognizer\n",
+    )
+    assert _imports_a_module_that_left(caller, FACE) == [
+        "node.py:1: imports walkie_vision.face",
+        "node.py:5: imports from walkie_vision.face",
+        "node.py:6: imports from walkie_vision.face.heads",
+        "node.py:7: imports walkie_vision.face.analysis",
+        "node.py:9: imports from walkie_vision.face",
+    ]
+    sibling = _write(tmp_path / "src" / "walkie_vision" / "face" / "heads.py", "from .analysis import FaceAnalyzer\n")
+    assert _imports_a_module_that_left(sibling, FACE) == ["heads.py:1: imports from walkie_vision.face.analysis"]
+    check = _write(tmp_path / "checks" / "c11_providers.py", "from walkie_vision import (\n    face as faces,\n)\n")
+    assert _imports_a_module_that_left(check, FACE) == ["c11_providers.py:1: imports walkie_vision.face"]
+    # A face package or namespace folder at the old path.
+    assert _old_homes(tmp_path / "src", FACE) == [tmp_path / "src" / "walkie_vision" / "face"]
+    # The file names read from buffalo_l, under any name for the module.
+    reader = _write(
+        tmp_path / "tests" / "test_loading.py",
+        "from walkie_vision.providers.face_recognition import buffalo_l as provider\n"
+        "from walkie_vision.providers.face_recognition.buffalo_l import (\n"
+        "    DETECTOR_FILE,\n"
+        "    FaceAnalyzer,\n"
+        ")\n"
+        "rec = provider.RECOGNIZER_FILE\n"
+        'monkeypatch.setattr(provider, "DETECTOR_FILE", "other.onnx")\n'
+        'loaded = pytest.importorskip("walkie_vision.providers.face_recognition.buffalo_l")\n'
+        "det = loaded.DETECTOR_FILE\n",
+    )
+    assert _reads_a_name_that_left(reader, BUFFALO_L, LEFT_BUFFALO_L) == [
+        "test_loading.py:2: imports DETECTOR_FILE",
+        "test_loading.py:6: reads provider.RECOGNIZER_FILE",
+        "test_loading.py:7: names DETECTOR_FILE",
+        "test_loading.py:9: reads loaded.DETECTOR_FILE",
+    ]
+    registry = _write(
+        tmp_path / "src" / "walkie_vision" / "providers" / "face_recognition" / "registry.py",
+        "from .buffalo_l import DETECTOR_FILE\nfrom . import buffalo_l\nrec = buffalo_l.RECOGNIZER_FILE\n",
+    )
+    assert _reads_a_name_that_left(registry, BUFFALO_L, LEFT_BUFFALO_L) == [
+        "registry.py:1: imports DETECTOR_FILE",
+        "registry.py:3: reads buffalo_l.RECOGNIZER_FILE",
+    ]
+    # A buffalo_l.py that defines or re-exports the file names puts them back.
+    copy = _write(
+        tmp_path / "copy" / "buffalo_l.py",
+        'DETECTOR_FILE = "det_10g.onnx"\n'
+        "from ...weights import RECOGNIZER_FILE as RECOGNIZER_FILE\n"
+        "from ...weights import *\n",
+    )
+    assert _binds_one_of(copy, LEFT_BUFFALO_L, imports=False) == [
+        "buffalo_l.py:1: binds DETECTOR_FILE",
+        "buffalo_l.py:2: binds RECOGNIZER_FILE",
+        "buffalo_l.py:3: binds *",
+    ]
+    # The new homes, a module named face inside another package, the vendored
+    # face_align, modules that import the file names from weights, and a docstring are fine.
+    good = {
+        "node.py": (
+            '"""_FACE_FILES copies what walkie_vision.face.analysis named."""\n'
+            "from . import errors, weights\n"
+            "from .providers.face_recognition.buffalo_l import FaceAnalyzer\n"
+            "from .weights import DETECTOR_FILE\n"
+        ),
+        "providers/face_recognition/buffalo_l.py": (
+            "from ..._vendor.insightface import face_align\n"
+            "from ...weights import DETECTOR_FILE, RECOGNIZER_FILE\n"
+            "from . import base\n"
+            "from .base import Face\n"
+        ),
+        "providers/face_recognition/registry.py": (
+            "from ...weights import DETECTOR_FILE, RECOGNIZER_FILE\n"
+            "from . import buffalo_l\n"
+            "providers = buffalo_l.DEFAULT_PROVIDERS\n"
+        ),
+        "_vendor/insightface/arcface.py": "from . import face_align\n",
+        "camera/image.py": "from . import face\nfrom .face import crop\n",
+    }
+    for path, text in good.items():
+        file = _write(tmp_path / "src" / "walkie_vision" / path, text)
+        assert _imports_a_module_that_left(file, FACE) == [], path
+        assert _reads_a_name_that_left(file, BUFFALO_L, LEFT_BUFFALO_L) == [], path
+    good_provider = tmp_path / "src" / "walkie_vision" / "providers" / "face_recognition" / "buffalo_l.py"
+    assert _binds_one_of(good_provider, LEFT_BUFFALO_L, imports=False) == []
