@@ -1,4 +1,4 @@
-"""walkie_vision.embeddings: the CLIP provider, without a GPU or a model file.
+"""walkie_vision.providers.image_embed.clip: the CLIP provider, without a GPU or a model file.
 
 The provider's tests inject a stub loader and a stub open_clip, so nothing
 downloads or loads a model.
@@ -14,7 +14,7 @@ import pytest
 import torch
 from huggingface_hub.errors import LocalEntryNotFoundError
 
-from walkie_vision.embeddings import ClipEmbedder, clip_checkpoint
+from walkie_vision.providers.image_embed.clip import ClipEmbedder, clip_checkpoint
 
 CLIP_REPO = "timm/vit_base_patch16_clip_224.openai"
 CLIP_REVISION = "977e3dd0ec55ab8da155f2fbeb6b5f54948b6e3d"

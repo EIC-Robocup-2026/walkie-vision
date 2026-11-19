@@ -52,7 +52,6 @@ LAYER_OF = {
     "walkie_vision.camera": 3,
     "walkie_vision.crops": 3,
     "walkie_vision.debug_viz": 0,
-    "walkie_vision.embeddings": 3,
     "walkie_vision.errors": 5,
     "walkie_vision.fake_publisher": 1,
     "walkie_vision.fakes": 2,

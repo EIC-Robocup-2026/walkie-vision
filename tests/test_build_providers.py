@@ -22,10 +22,11 @@ import onnxruntime  # noqa: E402
 import torch  # noqa: E402
 from huggingface_hub.errors import LocalEntryNotFoundError  # noqa: E402
 
-from walkie_vision import embeddings, errors, node  # noqa: E402
+from walkie_vision import errors, node  # noqa: E402
 from walkie_vision.node import VisionConfig, build_providers  # noqa: E402
 from walkie_vision.pipeline import Providers  # noqa: E402
 from walkie_vision.providers import _ultralytics  # noqa: E402
+from walkie_vision.providers.image_embed import clip as clip_module  # noqa: E402
 from walkie_vision.weights import BUFFALO_L_DIR, ULTRALYTICS_DIR  # noqa: E402
 
 CLASSES = ("chair", "sofa")
@@ -161,15 +162,15 @@ def test_geometry_asks_the_object_detector_for_masks(models, manager):
 @pytest.mark.parametrize("flag", ["object_crops_enabled", "object_embeddings_enabled"])
 def test_sampling_asks_the_object_detector_for_masks(models, manager, monkeypatch, flag):
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: "/cache/clip.safetensors")
-    monkeypatch.setattr(embeddings, "ClipEmbedder", mock.create_autospec(embeddings.ClipEmbedder))
+    monkeypatch.setattr(clip_module, "ClipEmbedder", mock.create_autospec(clip_module.ClipEmbedder))
     build_providers(VisionConfig(classes=CLASSES, **{flag: True}), manager.logger)
     assert manager.YoloeTracker.call_args.kwargs["keep_masks"] is True
 
 
 def test_no_embedder_is_built_without_object_embeddings(models, manager, monkeypatch):
     # hf_hub_download raises in the manager fixture, so the cache is not read either.
-    clip = mock.create_autospec(embeddings.ClipEmbedder)
-    monkeypatch.setattr(embeddings, "ClipEmbedder", clip)
+    clip = mock.create_autospec(clip_module.ClipEmbedder)
+    monkeypatch.setattr(clip_module, "ClipEmbedder", clip)
     assert build_providers(VisionConfig(classes=CLASSES, object_crops_enabled=True), manager.logger).embedder is None
     clip.assert_not_called()
 
@@ -193,8 +194,8 @@ def test_a_model_that_fails_to_load_is_named_in_the_log(models, manager, provide
 
 def test_clip_that_fails_to_load_is_named_in_the_log(models, manager, monkeypatch):
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: "/cache/clip.safetensors")
-    clip = mock.create_autospec(embeddings.ClipEmbedder, side_effect=RuntimeError("out of memory"))
-    monkeypatch.setattr(embeddings, "ClipEmbedder", clip)
+    clip = mock.create_autospec(clip_module.ClipEmbedder, side_effect=RuntimeError("out of memory"))
+    monkeypatch.setattr(clip_module, "ClipEmbedder", clip)
     config = VisionConfig(classes=CLASSES, device="cpu", object_embeddings_enabled=True)
     with pytest.raises(RuntimeError, match="out of memory"):
         build_providers(config, manager.logger)
@@ -214,8 +215,8 @@ def test_object_embeddings_load_clip_offline_at_the_pinned_commit(models, manage
         return "/cache/clip.safetensors"
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", stub)
-    clip = mock.create_autospec(embeddings.ClipEmbedder)
-    monkeypatch.setattr(embeddings, "ClipEmbedder", clip)
+    clip = mock.create_autospec(clip_module.ClipEmbedder)
+    monkeypatch.setattr(clip_module, "ClipEmbedder", clip)
 
     result = build_providers(VisionConfig(classes=CLASSES, device="cpu", object_embeddings_enabled=True), manager.logger)
 

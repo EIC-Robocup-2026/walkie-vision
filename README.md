@@ -87,7 +87,7 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `src/walkie_vision/providers/face_recognition/buffalo_l.py` | SCRFD and ArcFace on ONNX Runtime, and faces from crops around each person's head |
 | `src/walkie_vision/providers/reid/osnet.py` | OSNet re-identification and its weights, on person crops, batched |
 | `src/walkie_vision/_vendor/`        | Vendored code, MIT: SCRFD, ArcFace and the alignment from InsightFace, OSNet from deep-person-reid |
-| `src/walkie_vision/embeddings.py`   | The interim CLIP provider                                        |
+| `src/walkie_vision/providers/image_embed/clip.py` | The interim CLIP provider                          |
 | `src/walkie_vision/services/`       | Bounded service work: the job, its one slot, and each service's request checks and responses |
 | `src/walkie_vision/weights.py`      | Every model file and Hugging Face commit, with checksums. `fetch-models` runs it. |
 | `config/`                           | The vision node's parameters, and one file per task with its classes |

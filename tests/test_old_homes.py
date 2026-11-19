@@ -201,6 +201,19 @@ REMOVED = re.compile(
             r"\btest_reid_identifier\.py\b",
             r"\b(reid|identifier)(_module)?[.:](identifier|load_osnet|OSNetReIdentifier|osnet_input|INPUT_SIZE|MEAN"
             r"|STD)\b",
+            # walkie_vision.embeddings, which held only the CLIP provider after the
+            # sampler and the palette left it, became providers.image_embed.clip. No new
+            # module is called embeddings, so its relative spellings are rows too. The
+            # word embeddings, object_embeddings_enabled, the image_embed vision task and
+            # the embed services are fine.
+            r"walkie_vision[./]embeddings\b",
+            r"from walkie_vision import [^\n]*\bembeddings\b",
+            r"from \.+embeddings import",
+            r"from \.+ import [^\n]*\bembeddings\b",
+            r"\bembeddings\.py\b",
+            r"\btest_embeddings\.py\b",
+            r"\bembeddings(_module)?[.:](CLIP_ARCHITECTURE|CLIP_DIM|TEXT_TEMPLATE|clip_checkpoint|_build_open_clip"
+            r"|ClipEmbedder)\b",
         ]
     )
 )
@@ -252,8 +265,9 @@ LEFT_PERSON_CROP = frozenset(
 # The ones crops/person.py no longer uses: it does not even import them.
 UNUSED_IN_PERSON_CROP = LEFT_PERSON_CROP - {"color_shares", "scale_down", "encode_jpeg"}
 # The object sampler and the padded crops left embeddings.py for crops/objects.py,
-# and the Lab palette shares for crops/colour.py. embeddings.py, which keeps the CLIP
-# provider, uses none of them, so it does not even import them.
+# and the Lab palette shares for crops/colour.py. The CLIP provider that embeddings.py
+# kept, providers/image_embed/clip.py now, uses none of them, so it does not even
+# import them.
 EMBEDDINGS = "walkie_vision.embeddings"
 LEFT_EMBEDDINGS = frozenset(
     {
@@ -382,6 +396,13 @@ LEFT_BUFFALO_L = frozenset({"DETECTOR_FILE", "RECOGNIZER_FILE"})
 # and the input constants from reid/__init__.py, and nothing re-exports it.
 OSNET_FILE = PACKAGE_DIR / "providers" / "reid" / "osnet.py"
 LEFT_REID_PACKAGE = frozenset({"INPUT_SIZE", "MEAN", "STD", "load_osnet", "osnet_input", "OSNetReIdentifier"})
+# embeddings.py became providers/image_embed/clip.py whole, and nothing re-exports
+# the CLIP provider's names.
+CLIP = "walkie_vision.providers.image_embed.clip"
+CLIP_FILE = PACKAGE_DIR / "providers" / "image_embed" / "clip.py"
+LEFT_EMBEDDINGS_CLIP = frozenset(
+    {"CLIP_ARCHITECTURE", "CLIP_DIM", "TEXT_TEMPLATE", "clip_checkpoint", "_build_open_clip", "ClipEmbedder"}
+)
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -611,7 +632,7 @@ def test_the_sweep_would_catch_the_startup_error_at_its_old_home(tmp_path):
         tmp_path / "good.py",
         "from walkie_vision.errors import StartupError\n"
         "from .errors import StartupError\n"
-        "from walkie_vision import embeddings, errors, node\n"
+        "from walkie_vision import errors, node\n"
         "with pytest.raises(errors.StartupError):\n"
         "from walkie_vision.node import VisionConfig, build_providers\n"
         "from .node import StartupLogger\n"
@@ -731,22 +752,26 @@ def test_no_code_takes_the_sampler_or_the_palette_from_embeddings():
         ROOT / "tests" / "test_pipeline.py",
         ROOT / "tests" / "test_node.py",
     } <= set(code)
+    # embeddings.py is providers/image_embed/clip.py now: neither the old module nor its
+    # successor serves them.
     assert [hit for file in code for hit in _reads_a_name_that_left(file, EMBEDDINGS, LEFT_EMBEDDINGS)] == []
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, CLIP, LEFT_EMBEDDINGS)] == []
 
 
 def test_embeddings_does_not_define_or_import_the_sampler_or_the_palette():
     for module in ("objects", "colour"):
         assert (PACKAGE_DIR / "crops" / f"{module}.py").is_file()
-    embeddings = PACKAGE_DIR / "embeddings.py"
-    assert _binds_one_of(embeddings, LEFT_EMBEDDINGS) == []
-    # The CLIP code uses no box or crop helper, so embeddings imports neither.
-    assert _imports_a_module_that_left(embeddings, "walkie_vision.crops") == []
-    assert _imports_a_module_that_left(embeddings, "walkie_vision.boxes") == []
-    # Nor do the crops import the CLIP code back: they share a layer, so no contract
-    # checks this direction.
+    # embeddings.py is providers/image_embed/clip.py now. The CLIP code uses no box or
+    # crop helper, so clip.py imports neither.
+    assert _binds_one_of(CLIP_FILE, LEFT_EMBEDDINGS) == []
+    assert _imports_a_module_that_left(CLIP_FILE, "walkie_vision.crops") == []
+    assert _imports_a_module_that_left(CLIP_FILE, "walkie_vision.boxes") == []
+    # Nor do the crops import the CLIP code back: an import from the crops down to the
+    # providers is allowed, so no contract checks this direction.
     crops = sorted((PACKAGE_DIR / "crops").glob("*.py"))
     assert PACKAGE_DIR / "crops" / "objects.py" in crops
-    assert [hit for file in crops for hit in _imports_a_module_that_left(file, EMBEDDINGS)] == []
+    for module in (EMBEDDINGS, CLIP):
+        assert [hit for file in crops for hit in _imports_a_module_that_left(file, module)] == []
 
 
 def test_the_tree_check_would_catch_a_module_imported_from_its_old_home(tmp_path, monkeypatch):
@@ -798,7 +823,7 @@ def test_the_tree_check_would_catch_a_module_imported_from_its_old_home(tmp_path
         "import walkie_vision.weights\n"
         "import walkie_vision.models_cache\n"
         "from walkie_vision import (\n"
-        "    embeddings,\n"
+        "    messages,\n"
         "    weights,\n"
         ")\n"
         "from .. import weights\n"
@@ -829,7 +854,7 @@ def test_the_sweep_would_catch_the_model_file_table_at_its_old_home(tmp_path):
     good = _write(
         tmp_path / "good.py",
         "from walkie_vision.weights import ULTRALYTICS_DIR, models_dir\n"
-        "from walkie_vision import embeddings, weights\n"
+        "from walkie_vision import messages, weights\n"
         "from . import crops, messages, services\n"
         "from .. import models_dir\n"
         "from .weights import CLIP_WEIGHTS, HUB_MODELS\n"
@@ -1206,18 +1231,18 @@ def test_the_sweep_would_catch_the_sampler_or_the_palette_at_their_old_home(tmp_
         "`walkie_vision/embeddings:nearest_palette_indices` takes the earlier centre\n",
     )
     assert len(_mentions([bad], REMOVED)) == 8
-    # The new homes, the CLIP provider that stays, longer names and the other
+    # The new homes, the CLIP provider at its own new home, longer names and the other
     # PALETTE_RGB in debug_viz are fine.
     good = _write(
         tmp_path / "good.py",
-        "from walkie_vision.embeddings import ClipEmbedder, clip_checkpoint\n"
-        "from .embeddings import ClipEmbedder, clip_checkpoint\n"
+        "from walkie_vision.providers.image_embed.clip import ClipEmbedder, clip_checkpoint\n"
+        "from .clip import ClipEmbedder, clip_checkpoint\n"
         "from walkie_vision.crops.objects import CROP_MAX_SIDE, CROP_PADDING\n"
         "from .crops.colour import MIN_COLOR_PIXELS, PALETTE_RGB\n"
         "chosen = object_crops.select_samples(detections, counter, width, height)\n"
         'monkeypatch.setattr(objects_module, "encode_crop", clock.slowed(objects_module.encode_crop, 3.0))\n'
-        "`walkie_vision.embeddings.ClipEmbedder` is the interim provider\n"
-        "embeddings.ClipEmbedder, embeddings.CLIP_DIM, object_embeddings.select_samples\n"
+        "`walkie_vision.providers.image_embed.clip.ClipEmbedder` is the interim provider\n"
+        "clip.ClipEmbedder, clip.CLIP_DIM, object_embeddings.select_samples\n"
         "r, g, b = debug_viz.PALETTE_RGB[0]\n",
     )
     assert _mentions([good], REMOVED) == []
@@ -1270,23 +1295,25 @@ def test_the_tree_check_would_catch_the_sampler_or_the_palette_at_their_old_home
         "embeddings.py:4: imports from walkie_vision.crops.colour",
     ]
     assert _imports_a_module_that_left(copy, "walkie_vision.boxes") == ["embeddings.py:1: imports walkie_vision.boxes"]
-    # The new homes and the CLIP names that stay are fine.
+    # The new homes and the CLIP names at their own new home are fine.
     good = _write(
         tmp_path / "src" / "walkie_vision" / "pipeline.py",
-        "from . import convert, embeddings\n"
+        "from . import messages\n"
         "from .crops import colour\n"
         "from .crops import objects as object_crops\n"
-        "from .embeddings import ClipEmbedder, clip_checkpoint\n"
+        "from .providers.image_embed import clip\n"
+        "from .providers.image_embed.clip import ClipEmbedder, clip_checkpoint\n"
         "a = object_crops.select_samples(detections, counter, width, height)\n"
         "b = colour.mask_color_shares(image, mask)\n"
-        "c = embeddings.ClipEmbedder(checkpoint)\n"
-        'monkeypatch.setattr(embeddings, "ClipEmbedder", fake)\n',
+        "c = clip.ClipEmbedder(checkpoint)\n"
+        'monkeypatch.setattr(clip, "ClipEmbedder", fake)\n',
     )
     assert _reads_a_name_that_left(good, EMBEDDINGS, LEFT_EMBEDDINGS) == []
+    assert _reads_a_name_that_left(good, CLIP, LEFT_EMBEDDINGS) == []
     clean = _write(
-        tmp_path / "src" / "walkie_vision" / "clean" / "embeddings.py",
-        "from ..providers import CLIP_VIT_B16\n"
-        "from ..weights import CLIP_WEIGHTS, HUB_MODELS\n"
+        tmp_path / "src" / "walkie_vision" / "providers" / "image_embed" / "clip.py",
+        "from ...weights import CLIP_WEIGHTS, HUB_MODELS\n"
+        "from ..vector_tables import CLIP_VIT_B16\n"
         "CLIP_DIM = 512\n"
         "def clip_checkpoint(download=None): ...\n",
     )
@@ -2747,3 +2774,150 @@ def test_the_tree_check_would_catch_reid_at_its_old_home(tmp_path, monkeypatch):
     for path, text in good.items():
         file = _write(tmp_path / "src" / "walkie_vision" / path, text)
         assert _imports_a_module_that_left(file, REID) == [], path
+
+
+def test_the_clip_embedder_did_not_come_back_to_embeddings():
+    assert CLIP_FILE.is_file()
+    assert _old_homes(SRC, EMBEDDINGS) == []
+    # Neither the image_embed vision task's package nor the providers package serves
+    # the CLIP provider's names: callers import them from clip.py.
+    for package in ("providers/image_embed", "providers"):
+        assert _binds_one_of(PACKAGE_DIR / package / "__init__.py", LEFT_EMBEDDINGS_CLIP) == [], package
+
+
+def test_no_code_imports_embeddings():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "node.py",
+        CLIP_FILE,
+        ROOT / "tests" / "test_build_providers.py",
+        ROOT / "tests" / "test_providers_image_embed_clip.py",
+    } <= set(code)
+    assert [hit for file in code for hit in _imports_a_module_that_left(file, EMBEDDINGS)] == []
+
+
+def test_the_sweep_would_catch_embeddings_at_its_old_home(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision.embeddings import ClipEmbedder, clip_checkpoint\n"
+        "from .embeddings import ClipEmbedder, clip_checkpoint\n"
+        "import walkie_vision.embeddings\n"
+        "from walkie_vision import embeddings, errors, node  # noqa: E402\n"
+        "from walkie_vision import embeddings as clip_module\n"
+        "from . import convert, embeddings\n"
+        "from .. import embeddings\n"
+        "| `src/walkie_vision/embeddings.py`   | The interim CLIP provider |\n"
+        "  padded crops and colour shares. `embeddings.py`: the interim CLIP provider.\n"
+        '"""walkie_vision.embeddings: the CLIP provider, without a GPU or a model file."""\n'
+        "**The model.** `walkie_vision.embeddings.ClipEmbedder` is the interim provider:\n"
+        "git mv tests/test_embeddings.py tests/test_providers_image_embed_clip.py\n"
+        "clip = mock.create_autospec(embeddings.ClipEmbedder)\n"
+        "assert built.dim == embeddings_module.CLIP_DIM\n"
+        "`embeddings:clip_checkpoint` reads the cache\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 15
+    # The new home, the image_embed vision task, its base module, the vector model
+    # name, the embed services, the parameter, the word embeddings, the bake-off's
+    # embedders.py and the new test file are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from walkie_vision.providers.image_embed.clip import ClipEmbedder, clip_checkpoint\n"
+        "from .providers.image_embed.clip import ClipEmbedder, clip_checkpoint\n"
+        "from walkie_vision.providers.image_embed import clip as clip_module\n"
+        "from walkie_vision.providers import CLIP_VIT_B16, Embedder\n"
+        "from .image_embed.base import Embedder, check_model_dim\n"
+        "from ..vector_tables import CLIP_VIT_B16\n"
+        "from .services import embed_text as embed_text_service\n"
+        "from . import embed_crop, jobs\n"
+        'monkeypatch.setattr(clip_module, "ClipEmbedder", clip)\n'
+        "clip = mock.create_autospec(clip_module.ClipEmbedder)\n"
+        "| `src/walkie_vision/providers/image_embed/clip.py` | The interim CLIP provider |\n"
+        "`walkie_vision.providers.image_embed.clip.ClipEmbedder` is the interim provider\n"
+        "`providers/image_embed/` holds the image embedding vision task\n"
+        "    object_embeddings_enabled: false\n"
+        "if not self.config.object_embeddings_enabled:\n"
+        "self._embeddings_enabled = bool(object_embeddings_enabled)\n"
+        'print(f"text embeddings {tuple(temb.shape)}, image embeddings {tuple(iemb.shape)}")\n'
+        "normalize_embeddings=True,\n"
+        "The CLIP vectors match tools/bakeoff/embedders.py\n"
+        '"""walkie_vision.providers.image_embed.clip: the CLIP provider."""\n'
+        "tests/test_providers_image_embed_clip.py stubs open_clip\n",
+    )
+    assert _mentions([good], REMOVED) == []
+
+
+def test_the_tree_check_would_catch_embeddings_at_its_old_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    # The module that left, in any spelling of an import, absolute or relative.
+    caller = _write(
+        tmp_path / "src" / "walkie_vision" / "node.py",
+        "from . import (\n"
+        "    errors,\n"
+        "    embeddings,\n"
+        ")\n"
+        "from .embeddings import ClipEmbedder\n"
+        "import walkie_vision.embeddings as clip\n"
+        "def build_providers():\n"
+        "    from .embeddings import ClipEmbedder, clip_checkpoint\n"
+        "    return ClipEmbedder, clip_checkpoint\n",
+    )
+    assert _imports_a_module_that_left(caller, EMBEDDINGS) == [
+        "node.py:1: imports walkie_vision.embeddings",
+        "node.py:5: imports from walkie_vision.embeddings",
+        "node.py:6: imports walkie_vision.embeddings",
+        "node.py:8: imports from walkie_vision.embeddings",
+    ]
+    inside = _write(
+        tmp_path / "src" / "walkie_vision" / "providers" / "image_embed" / "registry.py",
+        "from ... import embeddings\nfrom ...embeddings import CLIP_DIM\n",
+    )
+    assert _imports_a_module_that_left(inside, EMBEDDINGS) == [
+        "registry.py:1: imports walkie_vision.embeddings",
+        "registry.py:2: imports from walkie_vision.embeddings",
+    ]
+    check = _write(
+        tmp_path / "checks" / "c07_clip.py",
+        "from walkie_vision import (\n    embeddings as clip_module,\n)\n",
+    )
+    assert _imports_a_module_that_left(check, EMBEDDINGS) == ["c07_clip.py:1: imports walkie_vision.embeddings"]
+    # A module, a package or a namespace folder at the old path.
+    folder = tmp_path / "src" / "walkie_vision" / "embeddings"
+    _write(folder / "clip.py", "CLIP_DIM = 512\n")
+    assert _old_homes(tmp_path / "src", EMBEDDINGS) == [folder]
+    module = _write(
+        tmp_path / "flat" / "walkie_vision" / "embeddings.py", "from .providers.image_embed.clip import *\n"
+    )
+    assert _old_homes(tmp_path / "flat", EMBEDDINGS) == [module]
+    # An image_embed package that re-exports the provider's names serves them under a
+    # second name.
+    init = _write(
+        tmp_path / "image_embed_init.py",
+        "from .clip import ClipEmbedder\nfrom .clip import clip_checkpoint as clip_checkpoint\nfrom .clip import *\n",
+    )
+    assert _binds_one_of(init, LEFT_EMBEDDINGS_CLIP) == [
+        "image_embed_init.py:1: binds ClipEmbedder",
+        "image_embed_init.py:2: binds clip_checkpoint",
+        "image_embed_init.py:3: binds *",
+    ]
+    # The new home from inside and outside providers/, the image_embed vision task's
+    # package and base module, a module named embeddings inside another package and a
+    # docstring are fine.
+    good = {
+        "node.py": (
+            '"""ClipEmbedder was in walkie_vision.embeddings."""\n'
+            "from .providers import image_embed\n"
+            "from .providers.image_embed.clip import ClipEmbedder, clip_checkpoint\n"
+        ),
+        "providers/__init__.py": "from .image_embed.base import Embedder\n",
+        "providers/image_embed/clip.py": (
+            "from ...weights import CLIP_WEIGHTS, HUB_MODELS\nfrom ..vector_tables import CLIP_VIT_B16\n"
+        ),
+        "providers/image_embed/registry.py": (
+            "from . import clip\nfrom .base import Embedder\nfrom .clip import clip_checkpoint\n"
+        ),
+        "services/embed_text.py": "from . import jobs\nfrom ..providers.image_embed.base import Embedder\n",
+        "crops/objects.py": "from . import embeddings\nfrom .embeddings import CLIP_DIM\n",
+    }
+    for path, text in good.items():
+        file = _write(tmp_path / "src" / "walkie_vision" / path, text)
+        assert _imports_a_module_that_left(file, EMBEDDINGS) == [], path

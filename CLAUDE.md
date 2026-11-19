@@ -42,8 +42,8 @@ build, because `scripts/activate.sh` sources the overlay on activation.
 - `src/walkie_vision/geometry.py`: lifts masks to points and scores views. Off
   by default.
 - `src/walkie_vision/crops/objects.py`, `crops/colour.py`: the object sampler,
-  padded crops and colour shares. `src/walkie_vision/embeddings.py`: the
-  interim CLIP provider. Off by default.
+  padded crops and colour shares. `src/walkie_vision/providers/image_embed/clip.py`:
+  the interim CLIP provider. Off by default.
 - `src/walkie_vision/services/`: bounded service work on the one model worker
   (ADR-0015): the job and its slot (`services/jobs.py`), and each service's
   request checks and responses (`embed_text.py`, `embed_crop.py`,

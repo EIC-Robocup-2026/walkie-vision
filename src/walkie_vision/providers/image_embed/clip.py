@@ -24,8 +24,8 @@ from typing import Any
 import cv2
 import numpy as np
 
-from .providers import CLIP_VIT_B16
-from .weights import CLIP_WEIGHTS, HUB_MODELS
+from ...weights import CLIP_WEIGHTS, HUB_MODELS
+from ..vector_tables import CLIP_VIT_B16
 
 CLIP_ARCHITECTURE = "ViT-B-16-quickgelu"
 """The OpenAI weights were trained with QuickGELU (see checks/c07_clip.py)."""

@@ -449,7 +449,7 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
     on_demand_enabled, and here at start, so a first request never loads a model.
     """
     started = time.perf_counter()
-    from .embeddings import ClipEmbedder, clip_checkpoint
+    from .providers.image_embed.clip import ClipEmbedder, clip_checkpoint
     from .providers.object_detection.yoloe import MOBILECLIP_FILE
     from .weights import BUFFALO_L_DIR, HUB_MODELS, OSNET_CHECKPOINT, ULTRALYTICS_DIR, models_dir
 

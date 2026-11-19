@@ -56,7 +56,7 @@ Details that change the results if they are wrong:
 - **CLIP** loads as `ViT-B-16-quickgelu` in open_clip. The OpenAI weights
   were trained with QuickGELU, and the plain `ViT-B-16` gives worse vectors
   with no error. The vision node's interim provider
-  (`walkie_vision.embeddings.ClipEmbedder`) uses the same weights, the same
+  (`walkie_vision.providers.image_embed.clip.ClipEmbedder`) uses the same weights, the same
   QuickGELU config and the same template, so its vectors keep the name
   `clip_vit_b16`. A vector from raw tokens must not use that name.
 - **SigLIP 2** uses `pooler_output`, the vector the model was trained to
