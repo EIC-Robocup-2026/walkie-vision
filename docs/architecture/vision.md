@@ -793,7 +793,9 @@ other people greyed and the colour shares of the person's top and bottom
 plans to use it to describe the first guest to the second guest. The crop
 is the "compressed snapshot on request" of walkie-agent-ros ADR-0028, so the
 agent never subscribes to the camera image. The pure code is in
-`walkie_vision.crops`, with no ROS and no model.
+`walkie_vision.crops`, with no ROS and no model. The request check, the
+job, its one-slot mailbox and the response are in
+`walkie_vision.services.get_person_crop`.
 
 ### Serving
 
@@ -1246,7 +1248,7 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.camera`      | `sensor_msgs/Image` to a BGR array and the `camera_info` size check (`camera.image`), registered depth (`camera.depth`), and the newest image and the colour and depth pairing (`camera.mailboxes`) |
 | `walkie_vision.geometry`    | Object points and view quality from registered depth (`lift_mask`, `view_quality`) |
 | `walkie_vision.embeddings`  | The interim CLIP provider (`ClipEmbedder`, an `Embedder`)                        |
-| `walkie_vision.services`    | Bounded service work: the job and its one slot (`services.jobs`), and each service's request checks and responses (`services.embed_text`, `services.embed_crop`, `services.detect_objects`) ([Bounded services](#bounded-services)) |
+| `walkie_vision.services`    | Bounded service work: the job and its one slot (`services.jobs`), and each service's request checks and responses (`services.embed_text`, `services.embed_crop`, `services.detect_objects`, `services.get_person_crop`) ([Bounded services](#bounded-services)) |
 | `walkie_vision.pipeline`    | One image through every provider to the two arrays, with the score floors, the person dedupe (`dedupe_poses`) and the track id base. No ROS node |
 | `walkie_vision.crops`       | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. The object sampler and padded crops (`crops.objects`), and colour recipe v1 (`crops.colour`). No ROS node and no model |
 | `walkie_vision.node`        | The vision node: parameters, threads, publishing, health checks and `build_providers` |

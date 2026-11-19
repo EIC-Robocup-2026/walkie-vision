@@ -53,11 +53,12 @@ from walkie_vision.fakes import (
     figure_pose,
 )
 from walkie_vision.geometry import frame_laplacian, view_quality
-from walkie_vision.node import IMAGE_QOS, NODE_NAME, CropJob, CropMailbox, VisionConfig, VisionNode
+from walkie_vision.node import IMAGE_QOS, NODE_NAME, VisionConfig, VisionNode
 from walkie_vision.pipeline import Providers, TrackIdBase
 from walkie_vision.providers import Detection, Face, PersonPose
 from walkie_vision.services import detect_objects, embed_crop, embed_text, jobs
 from walkie_vision.services.embed_text import embed_text_failure, vectors_from_response
+from walkie_vision.services.get_person_crop import CropJob, CropMailbox
 from walkie_vision.services.jobs import MAX_MESSAGE_CHARS
 
 REPO = Path(__file__).resolve().parents[1]

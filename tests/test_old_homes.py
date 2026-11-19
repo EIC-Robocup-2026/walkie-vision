@@ -133,6 +133,14 @@ REMOVED = re.compile(
             r"from (walkie_vision\.|\.+)convert import [^\n]*\b(fill_embed_text_response|embed_text_failure"
             r"|vectors_from_response|detect_objects_failure|embed_crop_failure|fill_embed_crop_response"
             r"|bounded_message|MAX_MESSAGE_CHARS|_float32_array)\b",
+            # GetPersonCrop's request check, job, mailbox and timeout cap left
+            # walkie_vision.node, and its response builder left walkie_vision.convert, for
+            # walkie_vision.services.get_person_crop. node.py imports the ones it uses.
+            r"\bnode(_module)?[.:](CropJob|CropMailbox|_crop_answer|crop_request_problem|MAX_CROP_TIMEOUT_S)\b",
+            r"from (walkie_vision\.|\.+)node import [^\n]*\b(CropJob|CropMailbox|_crop_answer|crop_request_problem"
+            r"|MAX_CROP_TIMEOUT_S)\b",
+            r"\bconvert(_module)?[.:]fill_person_crop_response\b",
+            r"from (walkie_vision\.|\.+)convert import [^\n]*\bfill_person_crop_response\b",
         ]
     )
 )
@@ -264,6 +272,13 @@ LEFT_CONVERT_SERVICES = frozenset(
         "_float32_array",
     }
 )
+# GetPersonCrop's request check, job, mailbox and timeout cap left node.py, and its
+# response builder left convert.py, for services/get_person_crop.py. node.py imports
+# the ones it uses but MAX_CROP_TIMEOUT_S, and convert.py uses none of them.
+LEFT_NODE_PERSON_CROP = frozenset(
+    {"MAX_CROP_TIMEOUT_S", "_crop_answer", "CropJob", "CropMailbox", "crop_request_problem"}
+)
+LEFT_CONVERT_PERSON_CROP = frozenset({"fill_person_crop_response"})
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -1417,7 +1432,7 @@ def test_the_sweep_would_catch_providers_py_or_the_vector_lengths_at_their_old_h
         "from ..vector_tables import EMBEDDING_DIMS\n"
         "checks/c11_providers.py and tests/test_build_providers.py\n"
         "convert.to_point_cloud(header, points), convert.unit_vector(vector)\n"
-        "from walkie_vision.convert import fill_person_crop_response\n"
+        "from walkie_vision.convert import pose_from_person_detection\n"
         "check_model_dim(providers.embedder)\n",
     )
     assert _mentions([good], REMOVED) == []
@@ -1537,13 +1552,13 @@ def test_the_sweep_would_catch_requests_or_the_service_builders_at_their_old_hom
         "from .services import embed_text as embed_text_service\n"
         "from .jobs import MAX_TIMEOUT_S, bounded_message\n"
         "from ..convert import float32_array, stamp_ns, unit_vector\n"
-        "from walkie_vision.convert import box_to_bbox, fill_person_crop_response\n"
+        "from walkie_vision.convert import box_to_bbox, pose_from_person_detection\n"
         "response.embedding = convert.float32_array(unit)\n"
         "| `src/walkie_vision/services/` | Bounded service work |\n"
         "The pure parts are tested in tests/test_services_jobs.py.\n"
         "import requests\n"
         "Each callback checks its request, so requests cannot stop the stream.\n"
-        "convert.fill_person_crop_response(response, people, found)\n",
+        "convert.pose_from_person_detection(person)\n",
     )
     assert _mentions([good], REMOVED) == []
 
@@ -1623,3 +1638,129 @@ def test_the_tree_check_would_catch_requests_or_the_service_builders_at_their_ol
         "def float32_array(values): ...\nresponse.embedding = float32_array(unit)\n",
     )
     assert _binds_one_of(clean, LEFT_CONVERT_SERVICES) == []
+
+
+def test_no_code_takes_the_person_crop_service_from_the_node_or_convert():
+    assert (PACKAGE_DIR / "services" / "get_person_crop.py").is_file()
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "node.py",
+        ROOT / "tests" / "test_node.py",
+        ROOT / "tests" / "test_golden_messages.py",
+        ROOT / "tests" / "test_services_get_person_crop.py",
+    } <= set(code)
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, NODE, LEFT_NODE_PERSON_CROP)] == []
+    assert [hit for file in code for hit in _reads_a_name_that_left(file, CONVERT, LEFT_CONVERT_PERSON_CROP)] == []
+
+
+def test_the_node_and_convert_do_not_define_the_person_crop_service_again():
+    # node.py imports the job, the mailbox, the check and the answers it uses, but
+    # defines none of them; the timeout cap is used only by the check, so node.py does
+    # not even import it. convert.py does not use the response builder.
+    node = PACKAGE_DIR / "node.py"
+    assert _binds_one_of(node, LEFT_NODE_PERSON_CROP, imports=False) == []
+    assert _binds_one_of(node, frozenset({"MAX_CROP_TIMEOUT_S"})) == []
+    assert _binds_one_of(PACKAGE_DIR / "convert.py", LEFT_CONVERT_PERSON_CROP) == []
+
+
+def test_the_sweep_would_catch_the_person_crop_service_at_its_old_homes(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision.node import IMAGE_QOS, CropJob, CropMailbox, VisionConfig\n"
+        "from walkie_vision.node import _crop_answer\n"
+        "from .node import crop_request_problem\n"
+        "from ..node import MAX_CROP_TIMEOUT_S\n"
+        "mailbox = node.CropMailbox()\n"
+        "assert node_module.MAX_CROP_TIMEOUT_S == 5.0\n"
+        "`walkie_vision.node:crop_request_problem` checks the request\n"
+        "response = convert.fill_person_crop_response(GetPersonCrop.Response(), people, found)\n"
+        "from walkie_vision.convert import (pose_from_person_detection, fill_person_crop_response)\n"
+        "from .convert import fill_person_crop_response\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 10
+    # The new home, the names that stay in node and convert, longer names and the
+    # bare calls are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from walkie_vision.services.get_person_crop import CropJob, CropMailbox, fill_person_crop_response\n"
+        "from .services.get_person_crop import _crop_answer, crop_request_problem\n"
+        "from .get_person_crop import MAX_CROP_TIMEOUT_S\n"
+        "from walkie_vision.services import get_person_crop\n"
+        "mailbox = get_person_crop.CropMailbox()\n"
+        "from walkie_vision.node import IMAGE_QOS, NODE_NAME, VisionConfig, VisionNode\n"
+        "from walkie_vision.convert import pose_from_person_detection, to_person_detection_array\n"
+        "convert.to_person_detection_array(header, info, people), node.CropJobs\n"
+        "self._crops = CropMailbox()\n"
+        "response = fill_person_crop_response(GetPersonCrop.Response(), people, found)\n",
+    )
+    assert _mentions([good], REMOVED) == []
+
+
+def test_the_tree_check_would_catch_the_person_crop_service_at_its_old_homes(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    # The node's names and convert's builder, taken from their old homes under any name.
+    reader = _write(
+        tmp_path / "src" / "walkie_vision" / "services" / "describe_crop.py",
+        "from .. import convert, node\n"
+        "from walkie_vision import node as node_module\n"
+        "from ..node import (\n"
+        "    CropJob,\n"
+        "    VisionConfig,\n"
+        ")\n"
+        "from ..convert import (\n"
+        "    fill_person_crop_response,\n"
+        "    stamp_ns,\n"
+        ")\n"
+        "a = node._crop_answer(status, message)\n"
+        'monkeypatch.setattr(node_module, "MAX_CROP_TIMEOUT_S", 1.0)\n'
+        "b = convert.fill_person_crop_response(response, people, found)\n"
+        "from ..node import *\n",
+    )
+    assert _reads_a_name_that_left(reader, NODE, LEFT_NODE_PERSON_CROP) == [
+        "describe_crop.py:11: reads node._crop_answer",
+        "describe_crop.py:12: names MAX_CROP_TIMEOUT_S",
+        "describe_crop.py:14: imports *",
+        "describe_crop.py:3: imports CropJob",
+    ]
+    assert _reads_a_name_that_left(reader, CONVERT, LEFT_CONVERT_PERSON_CROP) == [
+        "describe_crop.py:13: reads convert.fill_person_crop_response",
+        "describe_crop.py:7: imports fill_person_crop_response",
+    ]
+    # A node that defines one again, re-exports one or imports the cap it no longer
+    # uses, and a convert that imports or copies the builder, put them back.
+    node = _write(
+        tmp_path / "node.py",
+        "from .services.get_person_crop import CropJob, MAX_CROP_TIMEOUT_S\n"
+        "from .services.get_person_crop import CropMailbox as CropMailbox\n"
+        "def crop_request_problem(request): ...\n",
+    )
+    assert _binds_one_of(node, LEFT_NODE_PERSON_CROP, imports=False) == [
+        "node.py:2: binds CropMailbox",
+        "node.py:3: binds crop_request_problem",
+    ]
+    assert _binds_one_of(node, frozenset({"MAX_CROP_TIMEOUT_S"})) == ["node.py:1: binds MAX_CROP_TIMEOUT_S"]
+    convert = _write(
+        tmp_path / "convert.py",
+        "from .services.get_person_crop import fill_person_crop_response\n"
+        "def fill_person_crop_response(response, people, found): ...\n",
+    )
+    assert _binds_one_of(convert, LEFT_CONVERT_PERSON_CROP) == [
+        "convert.py:1: binds fill_person_crop_response",
+        "convert.py:2: binds fill_person_crop_response",
+    ]
+    # The new home, a node that only imports and uses them, and the names that stay
+    # in node and convert are fine.
+    good = _write(
+        tmp_path / "src" / "walkie_vision" / "node.py",
+        "from . import convert\n"
+        "from .services import get_person_crop\n"
+        "from .services.get_person_crop import CropJob, CropMailbox, _crop_answer, crop_request_problem\n"
+        "from .services.get_person_crop import fill_person_crop_response\n"
+        "a = convert.pose_from_person_detection(person)\n"
+        "b = get_person_crop.MAX_CROP_TIMEOUT_S\n"
+        'monkeypatch.setattr(get_person_crop, "MAX_CROP_TIMEOUT_S", 1.0)\n'
+        "mailbox = CropMailbox()\n",
+    )
+    assert _reads_a_name_that_left(good, NODE, LEFT_NODE_PERSON_CROP) == []
+    assert _reads_a_name_that_left(good, CONVERT, LEFT_CONVERT_PERSON_CROP) == []
+    assert _binds_one_of(good, LEFT_NODE_PERSON_CROP, imports=False) == []

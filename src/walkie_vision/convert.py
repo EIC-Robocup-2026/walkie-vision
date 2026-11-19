@@ -33,10 +33,8 @@ from walkie_vision_msgs.msg import (
     PersonDetection,
     PersonDetectionArray,
 )
-from walkie_vision_msgs.srv import GetPersonCrop
 
 from .crops.colour import COLOR_NAMES
-from .crops.person import CropStatus, PersonCrop
 from .providers import Detection, Face, PersonPose
 from .providers.vector_tables import EMBEDDING_DIMS
 
@@ -442,35 +440,3 @@ def pose_from_person_detection(msg: PersonDetection) -> PersonPose:
         keypoint_scores=np.asarray(msg.keypoint_scores, dtype=np.float64),
         track_id=int(msg.track_id),
     )
-
-
-def fill_person_crop_response(
-    response: GetPersonCrop.Response, people: PersonDetectionArray, found: PersonCrop
-) -> GetPersonCrop.Response:
-    """Fill a GetPersonCrop response from walkie_vision.crops.person.crop_person()'s result.
-
-    people is the published array of the image that found came from. The
-    header is set for every status that found can have; the person and the
-    overlaps once the track is found; the crop and the shares only for OK.
-    """
-    response.status = int(found.status)
-    response.message = found.message
-    response.header = people.header
-    if found.index < 0:
-        return response
-    response.person = people.people[found.index]
-    response.max_overlap = float(found.max_overlap)
-    response.torso_cover = float(found.torso_cover)
-    if found.status != CropStatus.OK:
-        return response
-    response.crop = CompressedImage(header=people.header, format="jpeg", data=found.jpeg)
-    response.crop_keypoints = float32_array(np.asarray(found.keypoints).reshape(-1))
-    response.masked_boxes = float32_array(np.asarray(found.masked).reshape(-1))
-    response.color_names = list(COLOR_NAMES)
-    if found.top_shares is not None:
-        response.top_shares = float32_array(found.top_shares)
-        response.top_left = float(found.top_left)
-    if found.bottom_shares is not None:
-        response.bottom_shares = float32_array(found.bottom_shares)
-        response.bottom_left = float(found.bottom_left)
-    return response

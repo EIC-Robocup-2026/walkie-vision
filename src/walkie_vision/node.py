@@ -96,6 +96,13 @@ from .errors import StartupError
 from .pipeline import ON_DEMAND_MAX_OBJECTS, Providers, StageTimes, TrackIdBase, VisionPipeline
 from .services import detect_objects, embed_crop, jobs
 from .services import embed_text as embed_text_service
+from .services.get_person_crop import (
+    CropJob,
+    CropMailbox,
+    _crop_answer,
+    crop_request_problem,
+    fill_person_crop_response,
+)
 
 NODE_NAME = "walkie_vision"
 
@@ -127,8 +134,6 @@ EXIT_STARTUP = 2
 """A failure before the worker started: a missing file, a bad parameter, a model that did not load."""
 EXECUTOR_THREADS = 4
 """One for the input callbacks, one for a waiting GetPersonCrop, one for a waiting service job, one for a BUSY answer."""
-MAX_CROP_TIMEOUT_S = 5.0
-"""The longest timeout_s a GetPersonCrop request may ask for: the service answers one request at a time."""
 MAX_PAIR_WINDOW_S = 0.1
 """The largest max_pair_gap_s and pair_wait_s: the output must stay near 5 Hz, and a wider gap pairs other captures."""
 # Any jump back of the clock, however small, means that the sim restarted: the
@@ -337,100 +342,6 @@ class VisionConfig:
                 value = tuple(value)
             values[f.name] = value
         return cls(**values)
-
-
-def _crop_answer(status: CropStatus, message: str) -> GetPersonCrop.Response:
-    """A GetPersonCrop response with only a status and a message."""
-    return GetPersonCrop.Response(status=int(status), message=message)
-
-
-class CropJob:
-    """One GetPersonCrop request, from the service callback to the worker and back.
-
-    The job gets one answer: the worker's through finish(), or none when
-    wait() stops waiting first. A lock decides which comes first.
-    """
-
-    def __init__(self, request: GetPersonCrop.Request, frames_received: int) -> None:
-        self.request = request
-        self.frames_received = frames_received
-        """The node's frames_received when the request arrived, to tell NO_IMAGE from TIMEOUT."""
-        self._lock = threading.Lock()
-        self._done = threading.Event()
-        self._response: GetPersonCrop.Response | None = None
-        self._given_up = False
-
-    def finish(self, response: GetPersonCrop.Response) -> bool:
-        """Answer the job. False when it has an answer already, or nobody waits for one."""
-        with self._lock:
-            if self._given_up or self._response is not None:
-                return False
-            self._response = response
-        self._done.set()
-        return True
-
-    def wait(self, timeout: float) -> GetPersonCrop.Response | None:
-        """Return the answer, waiting up to timeout seconds; None when there is none, and then no answer is taken."""
-        self._done.wait(timeout)
-        with self._lock:
-            if self._response is None:
-                self._given_up = True
-            return self._response
-
-
-class CropMailbox:
-    """A one-slot mailbox for the GetPersonCrop job that waits for the next image.
-
-    The service's callback group is mutually exclusive, so at most one job
-    waits at a time.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._job: CropJob | None = None
-        self._closed = False
-
-    def put(self, job: CropJob) -> bool:
-        """Leave a job for the worker. False when the mailbox is closed."""
-        with self._lock:
-            if self._closed:
-                return False
-            self._job = job
-            return True
-
-    def take(self) -> CropJob | None:
-        """Return the waiting job without waiting; None when there is none."""
-        with self._lock:
-            job, self._job = self._job, None
-            return job
-
-    def withdraw(self, job: CropJob) -> None:
-        """Remove job if it still waits."""
-        with self._lock:
-            if self._job is job:
-                self._job = None
-
-    def close(self) -> None:
-        """Refuse new jobs, and answer the waiting one with FAILED."""
-        with self._lock:
-            self._closed = True
-            job, self._job = self._job, None
-        if job is not None:
-            job.finish(_crop_answer(CropStatus.FAILED, "the node is shutting down"))
-
-
-def crop_request_problem(request: GetPersonCrop.Request) -> str | None:
-    """Return why a GetPersonCrop request is refused, or None when it is valid."""
-    if request.track_id == 0:
-        return "track_id 0 is not a track"
-    timeout = float(request.timeout_s)
-    if not (math.isfinite(timeout) and 0.0 < timeout <= MAX_CROP_TIMEOUT_S):
-        return f"timeout_s must be more than 0 and at most {MAX_CROP_TIMEOUT_S:g}, not {timeout}"
-    try:
-        person.check_options(float(request.padding), int(request.max_side), float(request.min_keypoint_score))
-    except ValueError as e:
-        return str(e)
-    return None
 
 
 class LatencyLog:
@@ -1466,7 +1377,7 @@ class VisionNode(Node):
                 mask_others=bool(request.mask_others),
                 min_keypoint_score=float(request.min_keypoint_score),
             )
-            response = convert.fill_person_crop_response(GetPersonCrop.Response(), people, found)
+            response = fill_person_crop_response(GetPersonCrop.Response(), people, found)
         except Exception as e:
             self.get_logger().error(f"a person crop failed:\n{traceback.format_exc()}")
             response = _crop_answer(CropStatus.FAILED, f"{type(e).__name__}: {e}")
