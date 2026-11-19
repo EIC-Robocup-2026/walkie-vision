@@ -1,7 +1,7 @@
 """The vector model names that walkie-database stores, and the vector length of each.
 
 It imports nothing from walkie_vision, so every provider and every message
-check can read these names without loading anything else.
+check can import it without a cycle.
 """
 
 # The model names of walkie-database's vector tables (its ADR-0007).

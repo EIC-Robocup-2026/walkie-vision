@@ -28,8 +28,10 @@ Threads:
   depth. Its wait is bounded by wall time (ADR-0014). Without it, the node
   does not subscribe to depth at all.
 - The GetPersonCrop callback has its own callback group. It leaves the
-  request in a one-slot mailbox and waits for the worker's answer, while
-  another of the executor's threads runs the callbacks above.
+  request in a one-slot mailbox
+  (walkie_vision.services.get_person_crop.CropMailbox) and waits for the
+  worker's answer, while another of the executor's threads runs the
+  callbacks above.
 - The EmbedText, EmbedCrop, DescribeCrop and DetectObjects callbacks share a
   reentrant group. Each checks its request and tries to leave one job in the slot of
   walkie_vision.services.jobs. One that gets the slot waits for the worker, up to
