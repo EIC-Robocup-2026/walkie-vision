@@ -229,6 +229,12 @@ REMOVED = re.compile(
             r"from (walkie_vision\.|\.+)node import [^\n]*\b(VisionConfig|MAX_PAIR_WINDOW_S|TRACKER_FILES|_DEVICE"
             r"|build_providers|StartupLogger|_load|_FACE_FILES|_T)\b",
             r"\btest_build_providers\.py\b",
+            # Two copies are gone from every module: config.py's TRACKER_FILES copied
+            # _ultralytics.TRACKER_NAMES, which config.py imports now, and loading.py's
+            # _FACE_FILES copied weights.DETECTOR_FILE and RECOGNIZER_FILE, which the
+            # face recognition registry reads.
+            r"\bTRACKER_FILES\b",
+            r"\b_FACE_FILES\b",
         ]
     )
 )
@@ -431,6 +437,10 @@ LEFT_NODE_CONFIG = frozenset({"MAX_PAIR_WINDOW_S", "TRACKER_FILES", "_DEVICE", "
 LEFT_NODE_LOADING = frozenset({"_T", "_FACE_FILES", "StartupLogger", "_load", "build_providers"})
 USED_BY_NODE = frozenset({"VisionConfig", "build_providers"})
 PATCHED_ON_NODE = frozenset({"build_providers"})
+# Two of those names left config.py and loading.py later, and no module binds them
+# now: TRACKER_FILES copied _ultralytics.TRACKER_NAMES, and _FACE_FILES copied the
+# buffalo_l file names in weights.py.
+DROPPED = frozenset({"TRACKER_FILES", "_FACE_FILES"})
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -2966,9 +2976,54 @@ def test_the_tree_check_would_catch_embeddings_at_its_old_home(tmp_path, monkeyp
 
 def test_the_config_and_the_loading_have_their_own_modules():
     config = _binds_one_of(CONFIG_FILE, LEFT_NODE_CONFIG, imports=False)
-    assert {hit.rpartition(" ")[2] for hit in config} == LEFT_NODE_CONFIG
+    assert {hit.rpartition(" ")[2] for hit in config} == LEFT_NODE_CONFIG - DROPPED
     loading = _binds_one_of(LOADING_FILE, LEFT_NODE_LOADING, imports=False)
-    assert {hit.rpartition(" ")[2] for hit in loading} == LEFT_NODE_LOADING
+    assert {hit.rpartition(" ")[2] for hit in loading} == LEFT_NODE_LOADING - DROPPED
+
+
+def test_no_module_binds_a_dropped_copy():
+    files = sorted(PACKAGE_DIR.rglob("*.py"))
+    assert {CONFIG_FILE, LOADING_FILE} <= set(files)
+    assert [hit for file in files for hit in _binds_one_of(file, DROPPED) if not hit.endswith(" *")] == []
+
+
+def test_the_sweep_would_catch_a_dropped_copy(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision.config import TRACKER_FILES, VisionConfig\n"
+        "TRACKER_FILES = TRACKER_NAMES\n"
+        "for name in loading._FACE_FILES:\n"
+        "_FACE_FILES = (DETECTOR_FILE, RECOGNIZER_FILE)\n"
+        "assert config_module.TRACKER_FILES == _ultralytics.TRACKER_NAMES\n"
+        "from .loading import (\n"
+        "    _FACE_FILES,\n"
+        ")\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 6
+    # The tables they copied, and longer names that hold them, are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from .providers._ultralytics import TRACKER_NAMES\n"
+        "if tracker not in TRACKER_NAMES:\n"
+        "from ...weights import BUFFALO_L_DIR, DETECTOR_FILE, RECOGNIZER_FILE\n"
+        "MY_TRACKER_FILES = ()\n"
+        "TRACKER_FILES_SEEN = 0\n"
+        "BUFFALO_FACE_FILES = ()\n",
+    )
+    assert _mentions([good], REMOVED) == []
+    # A module that binds one under any name puts it back.
+    copy = _write(
+        tmp_path / "config.py",
+        "TRACKER_FILES = TRACKER_NAMES\n"
+        "from .loading import _FACE_FILES\n"
+        "from .providers._ultralytics import TRACKER_NAMES as TRACKER_FILES\n"
+        "from .providers._ultralytics import TRACKER_NAMES\n",
+    )
+    assert _binds_one_of(copy, DROPPED) == [
+        "config.py:1: binds TRACKER_FILES",
+        "config.py:2: binds _FACE_FILES",
+        "config.py:3: binds TRACKER_FILES",
+    ]
 
 
 def test_no_code_takes_the_config_or_the_loading_from_the_node():
@@ -3018,7 +3073,7 @@ def test_the_sweep_would_catch_the_config_or_the_loading_at_their_old_home(tmp_p
     # file and a call are fine.
     good = _write(
         tmp_path / "good.py",
-        "from walkie_vision.config import TRACKER_FILES, VisionConfig\n"
+        "from walkie_vision.config import MAX_PAIR_WINDOW_S, VisionConfig\n"
         "from walkie_vision.loading import StartupLogger, build_providers\n"
         "from .config import VisionConfig\n"
         "from .loading import build_providers\n"
@@ -3027,7 +3082,7 @@ def test_the_sweep_would_catch_the_config_or_the_loading_at_their_old_home(tmp_p
         'monkeypatch.setattr("walkie_vision.node.build_providers", fake_build)\n'
         "with mock.patch('walkie_vision.node.build_providers', fake_build):\n"
         "tracker = config.objects_tracker\n"
-        "for name in loading._FACE_FILES:\n"
+        "build = loading._load\n"
         "    ROOT / 'tests' / 'test_loading.py',\n"
         "providers = build_providers(config, self.get_logger())\n",
     )

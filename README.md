@@ -80,7 +80,7 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `src/walkie_vision/pipeline.py`     | One image through every model to the two arrays, without ROS     |
 | `src/walkie_vision/camera/`         | Camera images to BGR arrays, the `camera_info` checks, registered depth, and colour and depth paired within bounds |
 | `src/walkie_vision/geometry.py`     | Object points and view quality from registered depth. Off by default |
-| `src/walkie_vision/providers/`      | The interfaces every model implements, and their result types    |
+| `src/walkie_vision/providers/`      | The interfaces every model implements, their result types, and one `registry.py` per vision task that says how to build each provider (`spec.py`) |
 | `src/walkie_vision/messages.py`     | Model results to messages, with checks, and the QoS profiles     |
 | `src/walkie_vision/crops/`          | One person's crop, mask and colour shares for `GetPersonCrop`; the object sampler, padded crops and colour shares |
 | `src/walkie_vision/fakes.py`        | Fake models for tests                                            |

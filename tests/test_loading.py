@@ -7,6 +7,8 @@ empty files in a temporary folder.
 
 from __future__ import annotations
 
+import ast
+import re
 from pathlib import Path
 from unittest import mock
 
@@ -29,7 +31,14 @@ from walkie_vision.loading import build_providers  # noqa: E402
 from walkie_vision.pipeline import Providers  # noqa: E402
 from walkie_vision.providers import _ultralytics  # noqa: E402
 from walkie_vision.providers.image_embed import clip as clip_module  # noqa: E402
-from walkie_vision.weights import BUFFALO_L_DIR, ULTRALYTICS_DIR  # noqa: E402
+from walkie_vision.providers.spec import ProviderSpec  # noqa: E402
+from walkie_vision.weights import (  # noqa: E402
+    BUFFALO_L_DIR,
+    DETECTOR_FILE,
+    OSNET_CHECKPOINT,
+    RECOGNIZER_FILE,
+    ULTRALYTICS_DIR,
+)
 
 CLASSES = ("chair", "sofa")
 WARM_UP = "warming up the face models; the first run on this GPU can take minutes"
@@ -47,7 +56,7 @@ def models(tmp_path, monkeypatch) -> Path:
     config = VisionConfig(classes=CLASSES)
     for name in (config.objects_weights, yoloe.MOBILECLIP_FILE, config.pose_weights):
         _touch(tmp_path / ULTRALYTICS_DIR / name)
-    for name in loading._FACE_FILES:
+    for name in (DETECTOR_FILE, RECOGNIZER_FILE):
         _touch(tmp_path / BUFFALO_L_DIR / name)
     return tmp_path
 
@@ -83,7 +92,8 @@ def _model_calls(manager) -> list:
 
 
 def test_the_tracker_names_match_the_providers():
-    assert config_module.TRACKER_FILES == _ultralytics.TRACKER_NAMES
+    # One table: the config checks the names the Ultralytics providers accept.
+    assert config_module.TRACKER_NAMES is _ultralytics.TRACKER_NAMES
 
 
 def test_every_provider_is_built_from_the_config_in_order(models, manager):
@@ -124,6 +134,29 @@ def test_every_provider_is_built_from_the_config_in_order(models, manager):
         faces=manager.HeadFaceRecognizer.return_value,
         reid=manager.OSNetReIdentifier.return_value,
     )
+
+
+def test_every_model_is_built_in_order_with_every_option_on(models, manager, monkeypatch):
+    # The objects tracker, the on-demand detector, pose, OSNet and CLIP, then
+    # the ONNX Runtime face models last.
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lambda *a, **k: "/cache/clip.safetensors")
+    clip = mock.create_autospec(clip_module.ClipEmbedder)
+    monkeypatch.setattr(clip_module, "ClipEmbedder", clip)
+    manager.attach_mock(clip, "ClipEmbedder")
+    config = VisionConfig(classes=CLASSES, on_demand_enabled=True, object_embeddings_enabled=True)
+    result = build_providers(config, manager.logger)
+    assert [c[0] for c in _model_calls(manager)] == [
+        "YoloeTracker",
+        "YoloeDetector",
+        "YoloPoseTracker",
+        "OSNetReIdentifier",
+        "ClipEmbedder",
+        "set_default_logger_severity",
+        "FaceAnalyzer",
+        "HeadFaceRecognizer",
+    ]
+    assert result.on_demand is manager.YoloeDetector.return_value
+    assert result.embedder is clip.return_value
 
 
 def test_the_second_yoloe_is_built_at_start_only_with_on_demand(models, manager):
@@ -308,9 +341,115 @@ def test_every_missing_file_is_named(tmp_path, monkeypatch, manager):
     with pytest.raises(FileNotFoundError) as caught:
         build_providers(VisionConfig(classes=CLASSES), manager.logger)
     message = str(caught.value)
-    for name in ("yoloe-26s-seg.pt", yoloe.MOBILECLIP_FILE, "yolo26s-pose.pt", *loading._FACE_FILES):
+    for name in ("yoloe-26s-seg.pt", yoloe.MOBILECLIP_FILE, "yolo26s-pose.pt", DETECTOR_FILE, RECOGNIZER_FILE):
         assert name in message
     assert _model_calls(manager) == []
+
+
+def test_the_missing_files_are_named_in_the_order_of_the_registries(tmp_path, monkeypatch, manager):
+    monkeypatch.setenv("WALKIE_VISION_MODELS", str(tmp_path))
+    with pytest.raises(FileNotFoundError) as caught:
+        build_providers(VisionConfig(classes=CLASSES), manager.logger)
+    ultralytics = (tmp_path / ULTRALYTICS_DIR).absolute()
+    face = (tmp_path / BUFFALO_L_DIR).absolute()
+    files = [
+        ultralytics / "yoloe-26s-seg.pt",
+        ultralytics / yoloe.MOBILECLIP_FILE,
+        ultralytics / "yolo26s-pose.pt",
+        face / DETECTOR_FILE,
+        face / RECOGNIZER_FILE,
+    ]
+    assert str(caught.value) == f"model files are missing: {', '.join(map(str, files))}; run `pixi run fetch-models`"
+
+
+def test_each_task_builds_a_provider_its_registry_names():
+    assert list(loading._REGISTRIES) == [
+        "object_detection",
+        "pose_estimation",
+        "face_recognition",
+        "reid",
+        "image_embed",
+    ]
+    assert loading._PROVIDER_NAMES.keys() == loading._REGISTRIES.keys()
+    package = Path(loading.__file__).parent / "providers"
+    for task, providers in loading._REGISTRIES.items():
+        assert loading._PROVIDER_NAMES[task] in providers
+        for name, spec in providers.items():
+            # Each key is the module of its provider in the task's package.
+            assert (package / task / f"{name}.py").is_file(), (task, name)
+            assert isinstance(spec, ProviderSpec)
+
+
+def test_only_yoloe_builds_an_on_demand_detector():
+    with_detector = [
+        (task, name)
+        for task, providers in loading._REGISTRIES.items()
+        for name, spec in providers.items()
+        if spec.build_detector is not None
+    ]
+    assert with_detector == [("object_detection", "yoloe")]
+
+
+HEAVY_LIBRARIES = ("huggingface_hub", "onnxruntime", "torch")
+
+
+def _imports_a_heavy_library_at_module_level(path: Path) -> list[str]:
+    """The model libraries a module imports outside its functions, with their lines."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found = []
+    stack: list[ast.AST] = list(tree.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            continue
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module]
+        else:
+            names = []
+        found += [
+            f"{path.name}:{node.lineno}: {name}"
+            for name in names
+            if name.partition(".")[0] in HEAVY_LIBRARIES
+        ]
+        stack.extend(ast.iter_child_nodes(node))
+    return sorted(found)
+
+
+def test_the_loading_and_the_registries_import_no_model_library_at_module_level():
+    package = Path(loading.__file__).parent
+    registries = sorted(package.glob("providers/*/registry.py"))
+    assert len(registries) == 5
+    for path in (package / "loading.py", package / "providers" / "spec.py", *registries):
+        assert _imports_a_heavy_library_at_module_level(path) == [], path
+
+
+def test_the_module_level_import_check_finds_each_spelling(tmp_path):
+    bad = tmp_path / "bad.py"
+    bad.write_text(
+        "import torch\n"
+        "import onnxruntime as ort\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "from torch.nn import functional\n"
+        "if True:\n"
+        "    import torch.cuda\n"
+        "class Holder:\n"
+        "    import onnxruntime\n"
+        "def lazy():\n"
+        "    import torch\n"
+    )
+    assert _imports_a_heavy_library_at_module_level(bad) == [
+        "bad.py:1: torch",
+        "bad.py:2: onnxruntime",
+        "bad.py:3: huggingface_hub",
+        "bad.py:4: torch.nn",
+        "bad.py:6: torch.cuda",
+        "bad.py:8: onnxruntime",
+    ]
+    good = tmp_path / "good.py"
+    good.write_text("import torchvision_like\nfrom .torch import x\ndef lazy():\n    import torch\n")
+    assert _imports_a_heavy_library_at_module_level(good) == []
 
 
 def test_osnet_downloads_once_when_it_is_not_cached(models, manager, monkeypatch):
@@ -332,3 +471,35 @@ def test_osnet_that_cannot_download_fails_before_any_model_loads(models, manager
     assert isinstance(caught.value, RuntimeError)
     assert "no network" in str(caught.value)
     assert _model_calls(manager) == []
+
+
+def test_osnet_is_prepared_before_clip(models, manager, monkeypatch):
+    # Offline with neither cached: the OSNet download is tried first, and its
+    # StartupError is what main() logs, not CLIP's missing file.
+    calls = []
+
+    def offline(repo, filename, **kwargs):
+        calls.append((filename, kwargs.get("local_files_only", False)))
+        raise LocalEntryNotFoundError("no network")
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", offline)
+    with pytest.raises(errors.StartupError) as caught:
+        build_providers(VisionConfig(classes=CLASSES, object_embeddings_enabled=True), manager.logger)
+    assert calls == [(OSNET_CHECKPOINT, False)]
+    assert str(caught.value) == (
+        "OSNet is not in the Hugging Face cache and could not be downloaded: no network. "
+        "Run once with internet access; see docs/guides/vision-node.md"
+    )
+    assert _model_calls(manager) == []
+
+
+def test_the_osnet_download_and_the_load_time_are_logged_word_for_word(models, manager, monkeypatch):
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", mock.Mock(return_value="/cache/osnet.pth"))
+    build_providers(VisionConfig(classes=CLASSES), manager.logger)
+    manager.logger.warning.assert_called_once_with(
+        "OSNet is not in the Hugging Face cache; downloading it now, which needs the internet once"
+    )
+    # Seconds with one decimal.
+    assert re.fullmatch(r"loaded the models in \d+\.\d s", manager.logger.info.call_args_list[-1].args[0])

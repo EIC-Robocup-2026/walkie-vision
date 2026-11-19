@@ -1,27 +1,53 @@
 """Loading the vision node's models: build_providers() checks their files, then builds every provider.
 
-torch, Ultralytics and ONNX Runtime are imported only inside build_providers(),
-so importing this module loads no model library. build_providers() logs to the
-logger it is given (StartupLogger): the vision node (walkie_vision.node) passes
-its own rclpy logger.
+Each vision task's registry (walkie_vision.providers.<task>.registry) says how
+one of its providers is checked, prepared and built. torch, Ultralytics and
+ONNX Runtime are imported only while build_providers() runs, so importing
+this module loads no model library. build_providers() logs to the logger it
+is given (StartupLogger): the vision node (walkie_vision.node) passes its own
+rclpy logger.
 """
 
 from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from pathlib import Path
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 from .config import VisionConfig
-from .errors import StartupError
 from .pipeline import ON_DEMAND_MAX_OBJECTS, Providers
+from .providers.face_recognition import registry as face_recognition_registry
+from .providers.face_recognition.registry import BuffaloLOptions
+from .providers.image_embed import registry as image_embed_registry
+from .providers.image_embed.registry import ClipOptions
+from .providers.object_detection import registry as object_detection_registry
+from .providers.object_detection.registry import YoloeOptions
+from .providers.pose_estimation import registry as pose_estimation_registry
+from .providers.pose_estimation.registry import YoloPoseOptions
+from .providers.reid import registry as reid_registry
+from .providers.reid.registry import OsnetOptions
+from .providers.spec import LoadContext, ProviderSpec
 
 _T = TypeVar("_T")
 
-# The files build_providers() needs in models/buffalo_l, as named in
-# walkie_vision.weights (DETECTOR_FILE and RECOGNIZER_FILE).
-_FACE_FILES = ("det_10g.onnx", "w600k_r50.onnx")
+# Each vision task's registry, in the order the files are checked and the
+# Hugging Face cache is prepared.
+_REGISTRIES: dict[str, dict[str, ProviderSpec[Any]]] = {
+    "object_detection": object_detection_registry.PROVIDERS,
+    "pose_estimation": pose_estimation_registry.PROVIDERS,
+    "face_recognition": face_recognition_registry.PROVIDERS,
+    "reid": reid_registry.PROVIDERS,
+    "image_embed": image_embed_registry.PROVIDERS,
+}
+# The provider each vision task builds, by its key in the task's registry.
+# The model parameters have flat names, so the choice is fixed here.
+_PROVIDER_NAMES = {
+    "object_detection": "yoloe",
+    "pose_estimation": "yolo_pose",
+    "face_recognition": "buffalo_l",
+    "reid": "osnet",
+    "image_embed": "clip",
+}
 
 
 class StartupLogger(Protocol):
@@ -41,6 +67,33 @@ def _load(logger: StartupLogger, name: str, build: Callable[[], _T]) -> _T:
         raise
 
 
+def _options(config: VisionConfig) -> dict[str, object]:
+    """Each vision task's options, from the node's flat parameters."""
+    return {
+        "object_detection": YoloeOptions(
+            weights=config.objects_weights,
+            imgsz=config.objects_imgsz,
+            conf=config.objects_conf,
+            agnostic_nms=config.objects_agnostic_nms,
+            tracker=config.objects_tracker,
+        ),
+        "pose_estimation": YoloPoseOptions(
+            weights=config.pose_weights,
+            imgsz=config.pose_imgsz,
+            conf=config.pose_conf,
+            tracker=config.pose_tracker,
+        ),
+        "face_recognition": BuffaloLOptions(
+            det_thresh=config.face_det_thresh,
+            input_sizes=config.face_input_sizes,
+            max_people=config.face_max_people,
+            max_offset=config.face_max_offset,
+        ),
+        "reid": OsnetOptions(batch_size=config.reid_batch_size),
+        "image_embed": ClipOptions(),
+    }
+
+
 def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
     """Load every model the node runs, after checking that their files are there.
 
@@ -57,124 +110,54 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
     on_demand_enabled, and here at start, so a first request never loads a model.
     """
     started = time.perf_counter()
-    from .providers.image_embed.clip import ClipEmbedder, clip_checkpoint
-    from .providers.object_detection.yoloe import MOBILECLIP_FILE
-    from .weights import BUFFALO_L_DIR, HUB_MODELS, OSNET_CHECKPOINT, ULTRALYTICS_DIR, models_dir
+    from .weights import models_dir
 
+    # CLIP is checked, prepared and built only with object embeddings on.
+    tasks = [task for task in _REGISTRIES if task != "image_embed" or config.object_embeddings_enabled]
+    specs = {task: _REGISTRIES[task][_PROVIDER_NAMES[task]] for task in tasks}
+    options = _options(config)
     root = models_dir()
-    ultralytics_dir = (root / ULTRALYTICS_DIR).absolute()
-    face_dir = (root / BUFFALO_L_DIR).absolute()
 
-    def weights(name: str) -> Path:
-        path = Path(name)
-        return path if path.is_absolute() else ultralytics_dir / path
-
-    objects_path = weights(config.objects_weights)
-    pose_path = weights(config.pose_weights)
-    # YOLOE loads its text encoder by file name from the folder of its weights.
-    needed = [objects_path, objects_path.parent / MOBILECLIP_FILE, pose_path, *(face_dir / f for f in _FACE_FILES)]
+    needed = [path for task in tasks for path in specs[task].files(options[task], root)]
     missing = [str(p) for p in needed if not p.is_file()]
     if missing:
         raise FileNotFoundError(f"model files are missing: {', '.join(missing)}; run `pixi run fetch-models`")
 
-    import huggingface_hub
+    prepared = {
+        task: None if spec.prepare is None else spec.prepare(options[task], logger) for task, spec in specs.items()
+    }
 
-    hub = HUB_MODELS["osnet"]
-    cached = huggingface_hub.try_to_load_from_cache(hub.repo, OSNET_CHECKPOINT, revision=hub.revision)
-    if not isinstance(cached, str):
-        logger.warning("OSNet is not in the Hugging Face cache; downloading it now, which needs the internet once")
-        try:
-            huggingface_hub.hf_hub_download(hub.repo, OSNET_CHECKPOINT, revision=hub.revision)
-        except Exception as e:
-            raise StartupError(
-                f"OSNet is not in the Hugging Face cache and could not be downloaded: {e}. "
-                "Run once with internet access; see docs/guides/vision-node.md"
-            ) from e
-    clip_path = clip_checkpoint() if config.object_embeddings_enabled else None
-
-    from walkie_vision.providers.object_detection.yoloe import YoloeDetector, YoloeTracker
-    from walkie_vision.providers.pose_estimation.yolo_pose import YoloPoseTracker
-
-    # Asked for only when geometry or sampling reads them: copying masks to
-    # the CPU costs time.
-    keep_masks = (
-        {"keep_masks": True}
-        if config.geometry_enabled or config.object_crops_enabled or config.object_embeddings_enabled
-        else {}
+    context = LoadContext(
+        models_dir=root,
+        device=config.device,
+        classes=config.classes,
+        # Asked for only when geometry or sampling reads them: copying masks to
+        # the CPU costs time.
+        keep_masks=config.geometry_enabled or config.object_crops_enabled or config.object_embeddings_enabled,
+        logger=logger,
     )
-    objects = _load(
-        logger,
-        "objects",
-        lambda: YoloeTracker(
-            objects_path,
-            list(config.classes),
-            device=config.device,
-            imgsz=config.objects_imgsz,
-            conf=config.objects_conf,
-            agnostic_nms=config.objects_agnostic_nms,
-            tracker=config.objects_tracker,
-            **keep_masks,
-        ),
-    )
+
+    def build(task: str, name: str) -> Any:
+        return _load(logger, name, specs[task].build(options[task], context, prepared[task]))
+
+    objects = build("object_detection", "objects")
+    detection = specs["object_detection"]
     # With no tracker, nothing reads a box under the published floor.
     on_demand = (
         _load(
             logger,
             "on-demand",
-            lambda: YoloeDetector(
-                objects_path,
-                list(config.classes),
-                device=config.device,
-                imgsz=config.objects_imgsz,
-                conf=config.objects_min_score,
-                agnostic_nms=config.objects_agnostic_nms,
-                max_det=ON_DEMAND_MAX_OBJECTS,
-                **keep_masks,
+            detection.build_detector(
+                options["object_detection"], context, config.objects_min_score, ON_DEMAND_MAX_OBJECTS
             ),
         )
-        if config.on_demand_enabled
+        if config.on_demand_enabled and detection.build_detector is not None
         else None
     )
-    pose = _load(
-        logger,
-        "pose",
-        lambda: YoloPoseTracker(
-            pose_path,
-            device=config.device,
-            imgsz=config.pose_imgsz,
-            conf=config.pose_conf,
-            tracker=config.pose_tracker,
-        ),
-    )
-
-    from walkie_vision.providers.reid.osnet import OSNetReIdentifier
-
-    reid = _load(logger, "OSNet", lambda: OSNetReIdentifier(device=config.device, batch_size=config.reid_batch_size))
-    embedder = None if clip_path is None else _load(logger, "CLIP", lambda: ClipEmbedder(clip_path, device=config.device))
-
-    import onnxruntime
-
-    from walkie_vision.providers.face_recognition.buffalo_l import FaceAnalyzer, HeadCropConfig, HeadFaceRecognizer
-
-    # ERROR and above only, for every session created from here on. SCRFD's
-    # file declares its output shapes for a 640 input and ArcFace's for a
-    # batch of 1, so ONNX Runtime would warn on every smaller crop and every
-    # batch of faces, burying the node's own warnings. A session takes the
-    # level when it is created, so this must come before FaceAnalyzer.
-    onnxruntime.set_default_logger_severity(3)
-    logger.info("warming up the face models; the first run on this GPU can take minutes")
-    faces = _load(
-        logger,
-        "face",
-        lambda: HeadFaceRecognizer(
-            FaceAnalyzer(face_dir, det_thresh=config.face_det_thresh),
-            HeadCropConfig(
-                input_sizes=tuple(config.face_input_sizes),
-                max_people=config.face_max_people,
-                max_face_offset=config.face_max_offset,
-            ),
-        ),
-    )
+    pose = build("pose_estimation", "pose")
+    reid = build("reid", "OSNet")
+    embedder = build("image_embed", "CLIP") if config.object_embeddings_enabled else None
+    faces = build("face_recognition", "face")
 
     import torch
 

@@ -478,9 +478,10 @@ and about 11 ms more on a mostly black one (20.9 against 10.1 ms). Run
 - ONNX Runtime logs only errors. SCRFD's file declares its output shapes
   for a 640 input and ArcFace's for a batch of 1, so at its default level
   ONNX Runtime warns on every smaller head crop and every batch of faces:
-  about 190 lines a second with two guests at 10 Hz. `build_providers()`
-  sets the level before it creates the face sessions, because a session
-  takes the level when it is created.
+  about 190 lines a second with two guests at 10 Hz. The buffalo_l build in
+  `walkie_vision.providers.face_recognition.registry`, which
+  `build_providers()` runs, sets the level before it creates the face
+  sessions, because a session takes the level when it is created.
 - On the robot the ZED SDK's depth shares the GPU, and neither memory nor
   latency is measured there yet.
 
@@ -1235,7 +1236,7 @@ The status constants, `OK` to `FAILED`, are on the response
 
 | Module                      | What it holds                                                                     |
 | --------------------------- | --------------------------------------------------------------------------------- |
-| `walkie_vision.providers`   | The interfaces every model implements (`ObjectDetector`, `Embedder`, `PoseEstimator`, `ReIdentifier`, `FaceRecognizer`, `PersonFaceRecognizer`) and their result types, one `base` module per vision task (`providers.object_detection.base` and the others), and the vector model names with their lengths (`providers.vector_tables`) |
+| `walkie_vision.providers`   | The interfaces every model implements (`ObjectDetector`, `Embedder`, `PoseEstimator`, `ReIdentifier`, `FaceRecognizer`, `PersonFaceRecognizer`) and their result types, one `base` module per vision task (`providers.object_detection.base` and the others), and the vector model names with their lengths (`providers.vector_tables`), and one `registry` module per vision task that maps provider names to a `ProviderSpec` (`providers.spec`) |
 | `walkie_vision.fakes`       | A fake for each interface, with deterministic vectors, for tests without a GPU (`FakePersonFaceRecognizer` among them), and painted figures for the crop tests (`figure_pose`, `paint_figure`) |
 | `walkie_vision.fake_publisher` | Synthetic object arrays from a scene file, with no model, for consumers' tests ([The fake publisher](../guides/vision-node.md#fake-publisher)) |
 | `walkie_vision.messages`    | Model results to messages, with the checks the message comments state, and the QoS profiles of the camera input and the two arrays |
@@ -1252,7 +1253,7 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.pipeline`    | One image through every provider to the two arrays, with the score floors, the person dedupe (`dedupe_poses`) and the track id base. No ROS node |
 | `walkie_vision.crops`       | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. The object sampler and padded crops (`crops.objects`), and colour recipe v1 (`crops.colour`). No ROS node and no model |
 | `walkie_vision.config`      | The node's parameters, with the check of every value (`VisionConfig`)             |
-| `walkie_vision.loading`     | Every model the node runs, loaded after a check of their files (`build_providers`) |
+| `walkie_vision.loading`     | Every model the node runs, built from the vision tasks' registries after a check of their files (`build_providers`) |
 | `walkie_vision.node`        | The vision node: threads, publishing and health checks                            |
 
 The node holds one provider for each model, and `pipeline` uses `messages`

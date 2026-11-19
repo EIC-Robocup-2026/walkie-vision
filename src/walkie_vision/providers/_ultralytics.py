@@ -17,6 +17,8 @@ from typing import Any
 
 import numpy as np
 
+from ..weights import ULTRALYTICS_DIR
+
 # The tracker files that ship with Ultralytics, by name.
 TRACKER_NAMES = ("bytetrack.yaml", "botsort.yaml")
 
@@ -47,6 +49,12 @@ def validate_tracker(tracker: str) -> str:
     raise ValueError(
         f"tracker {tracker!r} must be one of {', '.join(TRACKER_NAMES)} or an absolute path to an existing .yaml file"
     )
+
+
+def weights_path(name: str, models_dir: Path) -> Path:
+    """Return the path of Ultralytics weights: name when it is absolute, else name in models/ultralytics."""
+    path = Path(name)
+    return path if path.is_absolute() else (models_dir / ULTRALYTICS_DIR).absolute() / path
 
 
 def require(path: Path) -> None:

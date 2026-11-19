@@ -304,6 +304,19 @@ def test_the_fakes_name_their_vectors_as_walkie_agent_ros_copies_them():
     assert all(name.startswith(VECTOR_MODEL_NAMES["FAKE_MODEL_PREFIX"]) for name in defaults.values())
 
 
+def test_no_provider_key_is_a_stored_vector_model_name():
+    # A provider key names code; a vector model name names stored vectors. The
+    # two must not be read as each other.
+    stored = {value for name, value in VECTOR_MODEL_NAMES.items() if name != "FAKE_MODEL_PREFIX"}
+    stored |= set(FAKE_MODEL_NAMES.values())
+    registries = sorted(PACKAGE_DIR.glob("providers/*/registry.py"))
+    assert len(registries) == 5
+    keys = {key for path in registries for key in importlib.import_module(module_name(path, PACKAGE_DIR)).PROVIDERS}
+    assert keys
+    assert not keys & stored
+    assert not [key for key in keys if key.startswith(VECTOR_MODEL_NAMES["FAKE_MODEL_PREFIX"])]
+
+
 def test_object_clouds_keep_the_point_layout_walkie_agent_ros_copies():
     header = Header(frame_id="camera_color_optical_frame")
     points = np.column_stack([np.linspace(-0.5, 0.5, 40), np.linspace(-0.2, 0.2, 40), np.linspace(1.0, 2.0, 40)])

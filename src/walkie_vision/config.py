@@ -20,13 +20,11 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.validate_full_topic_name import validate_full_topic_name
 
+from .providers._ultralytics import TRACKER_NAMES
+
 MAX_PAIR_WINDOW_S = 0.1
 """The largest max_pair_gap_s and pair_wait_s: the output must stay near 5 Hz, and a wider gap pairs other captures."""
 
-# Ultralytics' own tracker files, by name. The same names as
-# walkie_vision.providers._ultralytics.TRACKER_NAMES, which this module does
-# not import.
-TRACKER_FILES = ("bytetrack.yaml", "botsort.yaml")
 _DEVICE = re.compile(r"^(cpu|cuda(:\d+)?)$")
 
 
@@ -133,9 +131,9 @@ class VisionConfig:
                 raise ValueError(f"{name} must not be empty")
         for name in ("objects_tracker", "pose_tracker"):
             tracker = getattr(self, name)
-            if tracker not in TRACKER_FILES and not (Path(tracker).is_absolute() and tracker.endswith(".yaml")):
+            if tracker not in TRACKER_NAMES and not (Path(tracker).is_absolute() and tracker.endswith(".yaml")):
                 raise ValueError(
-                    f"{name} must be one of {', '.join(TRACKER_FILES)} or an absolute path to a .yaml file, "
+                    f"{name} must be one of {', '.join(TRACKER_NAMES)} or an absolute path to a .yaml file, "
                     f"not {tracker!r}"
                 )
 

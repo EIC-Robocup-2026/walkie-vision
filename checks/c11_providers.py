@@ -120,7 +120,7 @@ import onnxruntime  # noqa: E402
 
 from walkie_vision.providers.face_recognition.buffalo_l import FaceAnalyzer, HeadFaceRecognizer, box_iou  # noqa: E402
 
-# As build_providers() does: without it, ONNX Runtime warns on every crop
+# As the buffalo_l registry's build does: without it, ONNX Runtime warns on every crop
 # smaller than 640 and every batch of faces.
 onnxruntime.set_default_logger_severity(3)
 analyzer = FaceAnalyzer(models_dir() / BUFFALO_L_DIR)

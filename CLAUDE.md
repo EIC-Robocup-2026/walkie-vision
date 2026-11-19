@@ -27,6 +27,9 @@ build, because `scripts/activate.sh` sources the overlay on activation.
 - `ros2_ws/src/walkie_vision_msgs/`: the messages and the services only.
 - `src/walkie_vision/providers/`: model interfaces and result types, one
   `base.py` per vision task, and the vector model names in `vector_tables.py`.
+  Each vision task's `registry.py` maps provider names to a `ProviderSpec`
+  (`spec.py`): its files, its preparation and how to build it.
+  `loading.py` builds from them. A provider module never imports its registry.
 - `src/walkie_vision/messages.py`: results to messages, with validation, and
   the QoS profiles.
 - `src/walkie_vision/node.py`, `pipeline.py`: the vision node,

@@ -158,6 +158,18 @@ def test_the_walk_finds_every_module_file():
     assert walk_modules(package_dir, PACKAGE) == modules_on_disk(package_dir, PACKAGE)
 
 
+def test_the_loading_path_before_the_models_is_light():
+    # The node imports these before it checks the model files, so none of them
+    # may load a model library. The walk above imports each of them.
+    registries = [
+        f"{PACKAGE}.providers.{task}.registry"
+        for task in ("face_recognition", "image_embed", "object_detection", "pose_estimation", "reid")
+    ]
+    light = {f"{PACKAGE}.config", f"{PACKAGE}.loading", f"{PACKAGE}.providers.spec", *registries}
+    assert light <= set(modules_on_disk(_package_dir(), PACKAGE))
+    assert not light & HEAVY_AT_IMPORT
+
+
 def test_a_module_that_imports_a_heavy_package_is_reported(tmp_path):
     site = tmp_path / "site"
     _write(site / "fake_heavy.py", "")
