@@ -30,7 +30,11 @@ from walkie_vision.config import VisionConfig  # noqa: E402
 from walkie_vision.loading import build_providers  # noqa: E402
 from walkie_vision.pipeline import Providers  # noqa: E402
 from walkie_vision.providers import _ultralytics  # noqa: E402
+from walkie_vision.providers.face_recognition.registry import BuffaloLOptions  # noqa: E402
 from walkie_vision.providers.image_embed import clip as clip_module  # noqa: E402
+from walkie_vision.providers.object_detection.registry import YoloeOptions  # noqa: E402
+from walkie_vision.providers.pose_estimation.registry import YoloPoseOptions  # noqa: E402
+from walkie_vision.providers.reid.registry import OsnetOptions  # noqa: E402
 from walkie_vision.providers.spec import ProviderSpec  # noqa: E402
 from walkie_vision.weights import (  # noqa: E402
     BUFFALO_L_DIR,
@@ -54,7 +58,7 @@ def _touch(path: Path) -> Path:
 def models(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("WALKIE_VISION_MODELS", str(tmp_path))
     config = VisionConfig(classes=CLASSES)
-    for name in (config.objects_weights, yoloe.MOBILECLIP_FILE, config.pose_weights):
+    for name in (config.object_detection.weights, yoloe.MOBILECLIP_FILE, config.pose_estimation.weights):
         _touch(tmp_path / ULTRALYTICS_DIR / name)
     for name in (DETECTOR_FILE, RECOGNIZER_FILE):
         _touch(tmp_path / BUFFALO_L_DIR / name)
@@ -92,8 +96,12 @@ def _model_calls(manager) -> list:
 
 
 def test_the_tracker_names_match_the_providers():
-    # One table: the config checks the names the Ultralytics providers accept.
-    assert config_module.TRACKER_NAMES is _ultralytics.TRACKER_NAMES
+    # One table: the options take the names the Ultralytics providers accept, and no other.
+    for options in (YoloeOptions, YoloPoseOptions):
+        for name in _ultralytics.TRACKER_NAMES:
+            assert options(tracker=name).tracker == name
+        with pytest.raises(ValueError, match=r"\.tracker must be one of bytetrack\.yaml, botsort\.yaml"):
+            options(tracker="ocsort.yaml")
 
 
 def test_every_provider_is_built_from_the_config_in_order(models, manager):
@@ -104,7 +112,7 @@ def test_every_provider_is_built_from_the_config_in_order(models, manager):
     expected_crop = buffalo_l.HeadCropConfig(input_sizes=(160, 256, 384, 640), max_people=6, max_face_offset=0.25)
     assert _model_calls(manager) == [
         mock.call.YoloeTracker(
-            ultralytics / config.objects_weights,
+            ultralytics / config.object_detection.weights,
             list(CLASSES),
             device="cuda:0",
             imgsz=640,
@@ -113,7 +121,7 @@ def test_every_provider_is_built_from_the_config_in_order(models, manager):
             tracker="bytetrack.yaml",
         ),
         mock.call.YoloPoseTracker(
-            ultralytics / config.pose_weights, device="cuda:0", imgsz=640, conf=0.1, tracker="botsort.yaml"
+            ultralytics / config.pose_estimation.weights, device="cuda:0", imgsz=640, conf=0.1, tracker="botsort.yaml"
         ),
         mock.call.OSNetReIdentifier(device="cuda:0", batch_size=16),
         # ERROR and above, before the face sessions exist: a session takes the level when it is created.
@@ -165,7 +173,7 @@ def test_the_second_yoloe_is_built_at_start_only_with_on_demand(models, manager)
     ultralytics = (models / ULTRALYTICS_DIR).absolute()
     assert manager.YoloeDetector.mock_calls == [
         mock.call(
-            ultralytics / config.objects_weights,
+            ultralytics / config.object_detection.weights,
             list(CLASSES),
             device="cuda:0",
             imgsz=640,
@@ -283,26 +291,19 @@ def test_the_parameters_reach_the_providers(models, manager, tmp_path):
     config = VisionConfig(
         classes=CLASSES,
         device="cpu",
-        objects_weights=str(weights),
-        objects_imgsz=320,
-        objects_conf=0.2,
-        objects_agnostic_nms=False,
-        objects_tracker="botsort.yaml",
-        pose_imgsz=480,
-        pose_conf=0.3,
-        pose_tracker="bytetrack.yaml",
-        face_det_thresh=0.6,
-        face_input_sizes=(256, 640),
-        face_max_people=3,
-        face_max_offset=0.3,
-        reid_batch_size=8,
+        object_detection=YoloeOptions(
+            weights=str(weights), imgsz=320, conf=0.2, agnostic_nms=False, tracker="botsort.yaml"
+        ),
+        pose_estimation=YoloPoseOptions(imgsz=480, conf=0.3, tracker="bytetrack.yaml"),
+        face_recognition=BuffaloLOptions(det_thresh=0.6, input_sizes=(256, 640), max_people=3, max_offset=0.3),
+        reid=OsnetOptions(batch_size=8),
     )
     build_providers(config, manager.logger)
     manager.YoloeTracker.assert_called_once_with(
         weights, list(CLASSES), device="cpu", imgsz=320, conf=0.2, agnostic_nms=False, tracker="botsort.yaml"
     )
     manager.YoloPoseTracker.assert_called_once_with(
-        (models / ULTRALYTICS_DIR).absolute() / config.pose_weights,
+        (models / ULTRALYTICS_DIR).absolute() / config.pose_estimation.weights,
         device="cpu",
         imgsz=480,
         conf=0.3,
@@ -327,7 +328,7 @@ def test_the_cuda_cache_is_emptied_only_when_cuda_started(models, manager, monke
 def test_a_missing_text_encoder_next_to_absolute_weights_fails_first(models, manager, tmp_path):
     # The weights exist in another folder, but mobileclip2_b.ts is not next to them.
     weights = _touch(tmp_path / "elsewhere" / "custom-seg.pt")
-    config = VisionConfig(classes=CLASSES, objects_weights=str(weights))
+    config = VisionConfig(classes=CLASSES, object_detection=YoloeOptions(weights=str(weights)))
     with pytest.raises(FileNotFoundError) as caught:
         build_providers(config, manager.logger)
     message = str(caught.value)
@@ -363,17 +364,20 @@ def test_the_missing_files_are_named_in_the_order_of_the_registries(tmp_path, mo
 
 
 def test_each_task_builds_a_provider_its_registry_names():
-    assert list(loading._REGISTRIES) == [
+    assert list(config_module.REGISTRIES) == [
         "object_detection",
         "pose_estimation",
         "face_recognition",
         "reid",
         "image_embed",
     ]
-    assert loading._PROVIDER_NAMES.keys() == loading._REGISTRIES.keys()
+    config = VisionConfig(classes=CLASSES)
     package = Path(loading.__file__).parent / "providers"
-    for task, providers in loading._REGISTRIES.items():
-        assert loading._PROVIDER_NAMES[task] in providers
+    for task, providers in config_module.REGISTRIES.items():
+        # The default provider is in the registry, with its options' defaults.
+        default = getattr(config, f"{task}_provider")
+        assert default in providers
+        assert getattr(config, task) == providers[default].options()
         for name, spec in providers.items():
             # Each key is the module of its provider in the task's package.
             assert (package / task / f"{name}.py").is_file(), (task, name)
@@ -383,7 +387,7 @@ def test_each_task_builds_a_provider_its_registry_names():
 def test_only_yoloe_builds_an_on_demand_detector():
     with_detector = [
         (task, name)
-        for task, providers in loading._REGISTRIES.items()
+        for task, providers in config_module.REGISTRIES.items()
         for name, spec in providers.items()
         if spec.build_detector is not None
     ]

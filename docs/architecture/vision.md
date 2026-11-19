@@ -208,6 +208,14 @@ list stops the node at start. `config/sim.yaml` sets `use_sim_time`, the
 sim output topics and the sim service names. Write every double with a decimal point (`10.0`, not
 `10`): rclpy rejects an integer for a double parameter.
 
+A model's parameters are named by its vision task and its provider:
+`<task>.provider` picks the provider, and `<task>.<provider>.<option>` sets
+one of its options. In a parameter file they are nested blocks, such as
+`object_detection: {provider: yoloe, yoloe: {conf: 0.1}}`. The node only
+declares the options of the chosen provider. rclpy ignores a name the node
+does not declare, so a misspelt or old flat name falls back to its default
+without a warning.
+
 | Name                       | Type     | Default                                  | Meaning                                                                                       |
 | -------------------------- | -------- | ---------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `image_topic`              | string   | `/zed_head/zed_node/rgb/color/rect/image` | The RGB image. On the robot: `bgra8`, 2208 x 1242, 15 Hz                                     |
@@ -221,24 +229,28 @@ sim output topics and the sim service names. Write every double with a decimal p
 | `detect_objects_service`   | string   | `/walkie_vision/detect_objects`          | The `DetectObjects` service ([On-demand DetectObjects](#on-demand-detectobjects))             |
 | `classes`                  | string[] | none; from `config/tasks/<task>.yaml`    | YOLOE's text prompts for the whole run                                                        |
 | `device`                   | string   | `cuda:0`                                 | The PyTorch and Ultralytics device: `cpu`, `cuda` or `cuda:N`. ONNX Runtime's face models always use GPU 0 |
-| `objects_weights`          | string   | `yoloe-26s-seg.pt`                       | A file in `models/ultralytics/`, or an absolute path. `mobileclip2_b.ts` must be next to it  |
-| `objects_imgsz`            | int      | 640                                      | A multiple of 32                                                                              |
-| `objects_conf`             | double   | 0.1                                      | The detector's threshold, fed to the tracker                                                  |
-| `objects_agnostic_nms`     | bool     | true                                     | One label per box                                                                             |
-| `objects_tracker`          | string   | `bytetrack.yaml`                         | An Ultralytics tracker file, by name or absolute path                                         |
+| `object_detection.provider` | string  | `yoloe`                                  | The object detector. `yoloe` is the only one                                                  |
+| `object_detection.yoloe.weights` | string | `yoloe-26s-seg.pt`                 | A file in `models/ultralytics/`, or an absolute path. `mobileclip2_b.ts` must be next to it  |
+| `object_detection.yoloe.imgsz` | int  | 640                                      | A multiple of 32                                                                              |
+| `object_detection.yoloe.conf` | double | 0.1                                     | The detector's threshold, fed to the tracker                                                  |
+| `object_detection.yoloe.agnostic_nms` | bool | true                              | One label per box                                                                             |
+| `object_detection.yoloe.tracker` | string | `bytetrack.yaml`                   | An Ultralytics tracker file, by name or absolute path                                         |
 | `objects_min_score`        | double   | 0.25                                     | Objects under it are not published                                                            |
-| `pose_weights`             | string   | `yolo26s-pose.pt`                        | Like `objects_weights`                                                                        |
-| `pose_imgsz`               | int      | 640                                      | A multiple of 32                                                                              |
-| `pose_conf`                | double   | 0.1                                      | The pose model's threshold, fed to the tracker                                                |
-| `pose_tracker`             | string   | `botsort.yaml`                           | BoT-SORT with camera-motion compensation and no re-ID model                                   |
+| `pose_estimation.provider` | string   | `yolo_pose`                              | The pose model. `yolo_pose` is the only one                                                   |
+| `pose_estimation.yolo_pose.weights` | string | `yolo26s-pose.pt`             | Like `object_detection.yoloe.weights`                                                         |
+| `pose_estimation.yolo_pose.imgsz` | int | 640                                    | A multiple of 32                                                                              |
+| `pose_estimation.yolo_pose.conf` | double | 0.1                                  | The pose model's threshold, fed to the tracker                                                |
+| `pose_estimation.yolo_pose.tracker` | string | `botsort.yaml`                | BoT-SORT with camera-motion compensation and no re-ID model                                   |
 | `people_min_score`         | double   | 0.25                                     | People under it are not published                                                             |
 | `people_dedupe_iou`        | double   | 0.5                                      | A person whose box has an IoU above this with a higher-scoring person's box is not published. 1.0 publishes every box |
-| `face_det_thresh`          | double   | 0.5                                      | SCRFD's threshold. walkie-agent-ros trusts a face from 0.5                                    |
-| `face_input_sizes`         | int[]    | [160, 256, 384, 640]                     | SCRFD's input sizes for the head crops                                                        |
-| `face_max_people`          | int      | 6                                        | Only this many of the largest people get a face search                                        |
-| `face_max_offset`          | double   | 0.25                                     | A face's centre must be within this share of the head crop's side from the head keypoints     |
+| `face_recognition.provider` | string  | `buffalo_l`                              | The face models. `buffalo_l` is the only one                                                  |
+| `face_recognition.buffalo_l.det_thresh` | double | 0.5                       | SCRFD's threshold. walkie-agent-ros trusts a face from 0.5                                    |
+| `face_recognition.buffalo_l.input_sizes` | int[] | [160, 256, 384, 640]      | SCRFD's input sizes for the head crops                                                        |
+| `face_recognition.buffalo_l.max_people` | int | 6                            | Only this many of the largest people get a face search                                        |
+| `face_recognition.buffalo_l.max_offset` | double | 0.25                      | A face's centre must be within this share of the head crop's side from the head keypoints     |
 | `reid_min_crop_px`         | int      | 16                                       | People with a smaller box get no appearance vector                                            |
-| `reid_batch_size`          | int      | 16                                       | OSNet's batch size                                                                            |
+| `reid.provider`            | string   | `osnet`                                  | The appearance model. `osnet` is the only one                                                 |
+| `reid.osnet.batch_size`    | int      | 16                                       | OSNet's batch size                                                                            |
 | `max_rate_hz`              | double   | 10.0                                     | At most this many images a second; 0 means as fast as the GPU allows (bench only). Leaves GPU time for the ZED's depth |
 | `max_consecutive_failures` | int      | 30                                       | Then the node exits 1, and the launch starts it again                                         |
 | `process_timeout_s`        | double   | 60.0                                     | One image taking longer means the GPU hangs: the node exits 1                                 |
@@ -254,6 +266,7 @@ sim output topics and the sim service names. Write every double with a decimal p
 | `depth_max_m`              | double   | 3.0                                      | Farther depth becomes no point. Finite and above `depth_min_m`. A starting value too          |
 | `object_crops_enabled`     | bool     | false                                    | Sample up to three objects per image and fill their crops and colour shares. Off for HRI: no mask copied to the CPU, no JPEG and no added work |
 | `object_embeddings_enabled` | bool    | false                                    | Sample the same objects and fill their CLIP vectors and colour shares, and serve `EmbedText` and `EmbedCrop`. Off for HRI: CLIP does not load and both services answer `DISABLED`. On needs the weights from `pixi run fetch-models` |
+| `image_embed.provider`     | string   | `clip`                                   | The image and text embedder. `clip` is the only one, and it has no options                   |
 | `on_demand_enabled`        | bool     | false                                    | Load a second YOLOE instance at start and serve `DetectObjects`. Off for HRI: the model does not load and the service answers `DISABLED`. A new list stops the stream while it is prepared |
 | `captions_enabled`         | bool     | false                                    | Must be false. This build has no caption model, so the node refuses true at start             |
 
@@ -436,10 +449,10 @@ the node exits.
 
 ### Trackers
 
-- Objects use ByteTrack (`objects_tracker`).
+- Objects use ByteTrack (`object_detection.yoloe.tracker`).
 - People use BoT-SORT with `gmc_method: sparseOptFlow` and no re-ID model
-  (`pose_tracker`). The base turns while the agent follows a person. The
-  camera-motion compensation shifts the tracks by the camera's motion, so a
+  (`pose_estimation.yolo_pose.tracker`). The base turns while the agent
+  follows a person. The camera-motion compensation shifts the tracks by the camera's motion, so a
   person's box does not jump past the tracker's matching gate and get a new
   id.
 - Both are parameters, so a tracker can change without a code change.
@@ -596,8 +609,8 @@ walkie-database can cite each item by its link.
 - A face has `face_det_score >= 0.5` (SCRFD's threshold),
   `face_model = arcface_w600k_r50`, and a unit 512-value `face_embedding`.
 - `face_bbox` is in whole-image pixels and clipped to the image. Its centre
-  is within `face_max_offset` (0.25) of the head crop's side from the
-  person's head keypoints. No face is given to two people.
+  is within `face_recognition.buffalo_l.max_offset` (0.25) of the head
+  crop's side from the person's head keypoints. No face is given to two people.
 - `appearance_model = osnet_x1_0_msmt17`, with a unit 512-value vector, for
   every person whose clipped box is at least 16 x 16 px.
 
@@ -1252,7 +1265,7 @@ The status constants, `OK` to `FAILED`, are on the response
 | `walkie_vision.services`    | Bounded service work: the job and its one slot (`services.jobs`), and each service's request checks and responses (`services.embed_text`, `services.embed_crop`, `services.detect_objects`, `services.get_person_crop`) ([Bounded services](#bounded-services)) |
 | `walkie_vision.pipeline`    | One image through every provider to the two arrays, with the score floors, the person dedupe (`dedupe_poses`) and the track id base. No ROS node |
 | `walkie_vision.crops`       | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. The object sampler and padded crops (`crops.objects`), and colour recipe v1 (`crops.colour`). No ROS node and no model |
-| `walkie_vision.config`      | The node's parameters, with the check of every value (`VisionConfig`)             |
+| `walkie_vision.config`      | The node's parameters (`VisionConfig`), with the checks of the flat ones and of each vision task's provider name. Each provider's options are checked by its options dataclass in `providers.<task>.registry` |
 | `walkie_vision.loading`     | Every model the node runs, built from the vision tasks' registries after a check of their files (`build_providers`) |
 | `walkie_vision.node`        | The vision node: threads, publishing and health checks                            |
 

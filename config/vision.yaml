@@ -1,7 +1,10 @@
 # Parameters of the vision node (walkie_vision.node). The values here equal
-# the defaults in VisionConfig (walkie_vision.config). Every parameter is
-# read-only: change it here and restart the node. The detector's classes are
-# not here; they come from the task's file in config/tasks/.
+# the defaults in VisionConfig (walkie_vision.config) and, for each provider's
+# options, in its vision task's registry (walkie_vision.providers.<task>.registry).
+# Every parameter is read-only: change it here and restart the node. The
+# detector's classes are not here; they come from the task's file in
+# config/tasks/. A name the node does not declare is ignored without a
+# message, so a misspelt or renamed key leaves its parameter at the default.
 # Write every double with a decimal point (10.0, not 10): rclpy rejects an
 # integer for a double parameter.
 walkie_vision:
@@ -29,29 +32,37 @@ walkie_vision:
     # face models always use GPU 0.
     device: cuda:0
 
-    # YOLOE-26 with text prompts. A file name is looked up in
-    # models/ultralytics/; an absolute path is used as it is. mobileclip2_b.ts
-    # must be in the same folder.
-    objects_weights: yoloe-26s-seg.pt
-    # The input size; a multiple of 32.
-    objects_imgsz: 640
-    # The detector's threshold. The tracker needs low-score boxes for its
-    # second matching stage, so this stays low.
-    objects_conf: 0.1
-    # One label per box: an armchair is not also a chair.
-    objects_agnostic_nms: true
-    # An Ultralytics tracker file by name, or an absolute path.
-    objects_tracker: bytetrack.yaml
+    # Each vision task's block names its provider, and holds that provider's
+    # options under the provider's name: object_detection.yoloe.weights.
+    object_detection:
+      # YOLOE-26 with text prompts.
+      provider: yoloe
+      yoloe:
+        # A file name is looked up in models/ultralytics/; an absolute path is
+        # used as it is. mobileclip2_b.ts must be in the same folder.
+        weights: yoloe-26s-seg.pt
+        # The input size; a multiple of 32.
+        imgsz: 640
+        # The detector's threshold. The tracker needs low-score boxes for its
+        # second matching stage, so this stays low.
+        conf: 0.1
+        # One label per box: an armchair is not also a chair.
+        agnostic_nms: true
+        # An Ultralytics tracker file by name, or an absolute path.
+        tracker: bytetrack.yaml
     # Objects that score under this are not published.
     objects_min_score: 0.25
 
-    # YOLO26 pose with tracking.
-    pose_weights: yolo26s-pose.pt
-    pose_imgsz: 640
-    pose_conf: 0.1
-    # BoT-SORT with camera-motion compensation and no re-ID model, so a
-    # person keeps their id while the base turns.
-    pose_tracker: botsort.yaml
+    pose_estimation:
+      # YOLO26 pose with tracking.
+      provider: yolo_pose
+      yolo_pose:
+        weights: yolo26s-pose.pt
+        imgsz: 640
+        conf: 0.1
+        # BoT-SORT with camera-motion compensation and no re-ID model, so a
+        # person keeps their id while the base turns.
+        tracker: botsort.yaml
     # People who score under this are not published.
     people_min_score: 0.25
     # YOLO26 pose has no NMS and sometimes gives one person a second, partial
@@ -59,20 +70,27 @@ walkie_vision:
     # person's box is not published. 1.0 publishes every box.
     people_dedupe_iou: 0.5
 
-    # SCRFD's threshold. walkie-agent-ros trusts a face from 0.5.
-    face_det_thresh: 0.5
-    # SCRFD's input sizes for the crops around each head; multiples of 32.
-    face_input_sizes: [160, 256, 384, 640]
-    # Only this many of the largest people get a face search.
-    face_max_people: 6
-    # A face's centre must be within this share of the head crop's side
-    # from the head keypoints.
-    face_max_offset: 0.25
+    face_recognition:
+      # InsightFace's buffalo_l: SCRFD finds the faces, ArcFace embeds them.
+      provider: buffalo_l
+      buffalo_l:
+        # SCRFD's threshold. walkie-agent-ros trusts a face from 0.5.
+        det_thresh: 0.5
+        # SCRFD's input sizes for the crops around each head; multiples of 32.
+        input_sizes: [160, 256, 384, 640]
+        # Only this many of the largest people get a face search.
+        max_people: 6
+        # A face's centre must be within this share of the head crop's side
+        # from the head keypoints.
+        max_offset: 0.25
 
     # People whose box is smaller than this, in pixels, get no appearance vector.
     reid_min_crop_px: 16
-    # OSNet's batch size.
-    reid_batch_size: 16
+    reid:
+      provider: osnet
+      osnet:
+        # OSNet's batch size.
+        batch_size: 16
 
     # At most this many images a second; 0 means as fast as the GPU allows
     # (bench only). The cap leaves GPU time for the ZED's depth.
@@ -118,6 +136,10 @@ walkie_vision:
     # `pixi run fetch-models` puts in the Hugging Face cache; the node never
     # downloads them.
     object_embeddings_enabled: false
+    image_embed:
+      # CLIP ViT-B/16, loaded only with object_embeddings_enabled. It has no
+      # options: its weights are pinned in the code.
+      provider: clip
     # Serve DetectObjects with a second YOLOE, built at start. Off for HRI: the
     # model does not load and the service answers DISABLED. New classes stop the
     # stream for about 1.5 s, because one worker runs every model.

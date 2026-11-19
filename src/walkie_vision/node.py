@@ -371,7 +371,8 @@ class VisionNode(Node):
         self.get_logger().info(
             f"classes {list(cfg.classes)}; image {cfg.image_topic}, camera_info {cfg.camera_info_topic}; "
             f"publishing {cfg.people_topic} and {cfg.objects_topic}; serving {cfg.person_crop_service}; "
-            f"trackers: objects {cfg.objects_tracker}, people {cfg.pose_tracker}; track id offset {track_ids.offset}"
+            f"trackers: objects {cfg.object_detection.tracker}, people {cfg.pose_estimation.tracker}; "
+            f"track id offset {track_ids.offset}"
         )
         if cfg.geometry_enabled:
             self.get_logger().info(

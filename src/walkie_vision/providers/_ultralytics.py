@@ -51,6 +51,25 @@ def validate_tracker(tracker: str) -> str:
     )
 
 
+def check_options(parameters: str, weights: str, imgsz: int, conf: float, tracker: str) -> None:
+    """Check the options both Ultralytics providers take; each ValueError names <parameters>.<option>.
+
+    The tracker is checked by name only: a file named by an absolute path is
+    read when the provider is built.
+    """
+    if not weights:
+        raise ValueError(f"{parameters}.weights must not be empty")
+    if tracker not in TRACKER_NAMES and not (Path(tracker).is_absolute() and tracker.endswith(".yaml")):
+        raise ValueError(
+            f"{parameters}.tracker must be one of {', '.join(TRACKER_NAMES)} or an absolute path to a .yaml file, "
+            f"not {tracker!r}"
+        )
+    if not 0.0 <= conf <= 1.0:
+        raise ValueError(f"{parameters}.conf must be in [0, 1], not {conf}")
+    if imgsz <= 0 or imgsz % 32:
+        raise ValueError(f"{parameters}.imgsz must be a positive multiple of 32, not {imgsz}")
+
+
 def weights_path(name: str, models_dir: Path) -> Path:
     """Return the path of Ultralytics weights: name when it is absolute, else name in models/ultralytics."""
     path = Path(name)

@@ -1,8 +1,10 @@
 """The pose estimators the vision node can build, by provider name.
 
-PROVIDERS maps each name to its ProviderSpec (walkie_vision.providers.spec).
-The provider classes are imported only inside the build functions, so
-importing this module loads no model library.
+PROVIDERS maps each name to its ProviderSpec (walkie_vision.providers.spec),
+and DEFAULT_PROVIDER is the one the vision node builds unless the parameter
+pose_estimation.provider names another. The provider classes are imported
+only inside the build functions, so importing this module loads no model
+library.
 """
 
 from __future__ import annotations
@@ -12,19 +14,28 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .._ultralytics import weights_path
+from .._ultralytics import check_options, weights_path
 from ..spec import LoadContext, ProviderSpec
 from .base import PoseEstimator
+
+DEFAULT_PROVIDER = "yolo_pose"
 
 
 @dataclass(frozen=True)
 class YoloPoseOptions:
-    """YOLO26 pose's options: the weights file and the tracker's settings."""
+    """YOLO26 pose's options: the weights file and the tracker's settings.
 
-    weights: str
-    imgsz: int
-    conf: float
-    tracker: str
+    Each is the vision node's parameter pose_estimation.yolo_pose.<option>,
+    and the defaults equal config/vision.yaml.
+    """
+
+    weights: str = "yolo26s-pose.pt"
+    imgsz: int = 640
+    conf: float = 0.1
+    tracker: str = "botsort.yaml"
+
+    def __post_init__(self) -> None:
+        check_options("pose_estimation.yolo_pose", self.weights, self.imgsz, self.conf, self.tracker)
 
 
 def _yolo_pose_files(options: YoloPoseOptions, models_dir: Path) -> tuple[Path, ...]:

@@ -1,8 +1,9 @@
 """The image embedders the vision node can build, by provider name.
 
-PROVIDERS maps each name to its ProviderSpec (walkie_vision.providers.spec).
-The provider classes are imported only inside the functions, so importing
-this module loads no model library.
+PROVIDERS maps each name to its ProviderSpec (walkie_vision.providers.spec),
+and DEFAULT_PROVIDER is the one the vision node builds unless the parameter
+image_embed.provider names another. The provider classes are imported only
+inside the functions, so importing this module loads no model library.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ from typing import Any
 
 from ..spec import LoadContext, Logger, ProviderSpec
 from .base import Embedder
+
+DEFAULT_PROVIDER = "clip"
 
 
 @dataclass(frozen=True)

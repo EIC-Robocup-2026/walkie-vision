@@ -307,7 +307,7 @@ the on-demand model failed to load: RuntimeError: CUDA out of memory
 | Restarts after running a while             | 30 failed images in a row, a hung GPU call, or the worker stopped (exit 1)                              |
 | The first start takes minutes              | ONNX Runtime compiling kernels; keep `~/.nv/ComputeCache`                                               |
 | "another node also publishes"              | `oracle_perception` or a second vision node on the same topics                                          |
-| People get new ids while the robot turns   | `pose_tracker` is not `botsort.yaml`                                                                    |
+| People get new ids while the robot turns   | `pose_estimation.yolo_pose.tracker` is not `botsort.yaml`                                               |
 | One person published twice                 | Two boxes with an IoU of 0.5 or less; lower `people_dedupe_iou`, which can merge real people who overlap |
 | GPU out of memory                          | Other GPU users, such as the ZED SDK's depth                                                            |
 | Person crops answer `NO_IMAGE`             | No image arrives on `image_topic`: the camera, the router or the domain                                 |

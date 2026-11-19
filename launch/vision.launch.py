@@ -61,7 +61,12 @@ def node_command(task: str, sim: bool) -> list[str]:
 
 
 def node_parameters(task: str, sim: bool) -> dict:
-    """Return the vision node's parameters as its parameter files set them, later files winning."""
+    """Return the vision node's parameters as its parameter files set them, later files winning.
+
+    The merge is shallow, so read only flat names from it. A nested block,
+    such as object_detection, that a later file sets in part replaces the
+    earlier block whole here, while the node merges it parameter by parameter.
+    """
     cmd = node_command(task, sim)
     merged: dict = {}
     for i, arg in enumerate(cmd):

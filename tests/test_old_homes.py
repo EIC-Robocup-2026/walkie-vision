@@ -230,9 +230,10 @@ REMOVED = re.compile(
             r"|build_providers|StartupLogger|_load|_FACE_FILES|_T)\b",
             r"\btest_build_providers\.py\b",
             # Two copies are gone from every module: config.py's TRACKER_FILES copied
-            # _ultralytics.TRACKER_NAMES, which config.py imports now, and loading.py's
-            # _FACE_FILES copied weights.DETECTOR_FILE and RECOGNIZER_FILE, which the
-            # face recognition registry reads.
+            # _ultralytics.TRACKER_NAMES, which the Ultralytics options check through
+            # _ultralytics.check_options, and loading.py's _FACE_FILES copied
+            # weights.DETECTOR_FILE and RECOGNIZER_FILE, which the face recognition
+            # registry reads.
             r"\bTRACKER_FILES\b",
             r"\b_FACE_FILES\b",
         ]

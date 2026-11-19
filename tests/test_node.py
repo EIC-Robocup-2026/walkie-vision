@@ -11,6 +11,7 @@ import copy
 import dataclasses
 import gc
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -41,7 +42,7 @@ from walkie_vision import errors
 from walkie_vision import node as node_module
 from walkie_vision import pipeline as pipeline_module
 from walkie_vision.camera.mailboxes import NewestFrame, RgbdBuffer
-from walkie_vision.config import VisionConfig
+from walkie_vision.config import REGISTRIES, VisionConfig
 from walkie_vision.crops import colour, objects, person
 from walkie_vision.fakes import (
     FakeEmbedder,
@@ -57,6 +58,8 @@ from walkie_vision.messages import IMAGE_QOS, bbox_to_box, box_to_bbox, check_ob
 from walkie_vision.node import NODE_NAME, VisionNode
 from walkie_vision.pipeline import Providers, TrackIdBase
 from walkie_vision.providers import Detection, Face, PersonPose
+from walkie_vision.providers.pose_estimation.registry import YoloPoseOptions
+from walkie_vision.providers.reid.registry import OsnetOptions
 from walkie_vision.services import detect_objects, embed_crop, embed_text, jobs
 from walkie_vision.services.embed_text import embed_text_failure, vectors_from_response
 from walkie_vision.services.get_person_crop import CropJob, CropMailbox
@@ -573,9 +576,9 @@ def test_an_empty_classes_list_fails_at_construction(ctx):
 @pytest.mark.parametrize(
     "name, value",
     [
-        ("objects_conf", 1.5),
-        ("reid_batch_size", 0),
-        ("face_input_sizes", [100]),
+        ("object_detection.yoloe.conf", 1.5),
+        ("reid.osnet.batch_size", 0),
+        ("face_recognition.buffalo_l.input_sizes", [100]),
         ("device", "gpu"),
         ("people_topic", "no_slash"),
         ("person_crop_service", "no_slash"),
@@ -583,9 +586,9 @@ def test_an_empty_classes_list_fails_at_construction(ctx):
         ("embed_crop_service", "no_slash"),
         ("describe_crop_service", "no_slash"),
         ("captions_enabled", True),
-        ("objects_tracker", "relative/tracker.yaml"),
-        ("objects_imgsz", 100),
-        ("face_det_thresh", 0.0),
+        ("object_detection.yoloe.tracker", "relative/tracker.yaml"),
+        ("object_detection.yoloe.imgsz", 100),
+        ("face_recognition.buffalo_l.det_thresh", 0.0),
         ("people_dedupe_iou", 0.0),
         ("max_rate_hz", -1.0),
         # The wrong type: an integer for a double parameter.
@@ -608,8 +611,35 @@ def test_an_empty_classes_list_fails_at_construction(ctx):
 )
 def test_a_bad_parameter_fails_at_construction(ctx, name, value):
     overrides = [Parameter("classes", value=CLASSES), Parameter(name, value=value)]
-    with pytest.raises(ValueError, match=name):
+    with pytest.raises(ValueError, match=re.escape(name)):
         _fake_node(ctx, parameter_overrides=overrides)
+
+
+@pytest.mark.parametrize("task", sorted(REGISTRIES))
+def test_an_unknown_provider_fails_with_the_registry_keys(ctx, task):
+    overrides = [Parameter("classes", value=CLASSES), Parameter(f"{task}.provider", value="unknown")]
+    keys = ", ".join(REGISTRIES[task])
+    with pytest.raises(ValueError, match=re.escape(f"{task}.provider must be one of {keys}, not 'unknown'")):
+        _fake_node(ctx, parameter_overrides=overrides)
+
+
+def test_a_config_built_in_python_checks_each_provider_and_its_options():
+    with pytest.raises(ValueError, match=re.escape("reid.provider must be one of osnet, not 'unknown'")):
+        VisionConfig(classes=("person",), reid_provider="unknown")
+    with pytest.raises(ValueError, match="object_detection: yoloe takes YoloeOptions, not OsnetOptions"):
+        VisionConfig(classes=("person",), object_detection=OsnetOptions())
+    with pytest.raises(ValueError, match=re.escape("pose_estimation.yolo_pose.imgsz must be a positive multiple of 32")):
+        VisionConfig(classes=("person",), pose_estimation=YoloPoseOptions(imgsz=100))
+
+
+def test_the_python_config_with_classes_only_is_the_node_default(ctx):
+    # checks/c11_providers.py and checks/c12_vision_node.py build VisionConfig in
+    # Python from classes alone and expect the node's defaults.
+    node = _fake_node(ctx, parameter_overrides=[Parameter("classes", value=["person"])])
+    try:
+        assert node.config == VisionConfig(classes=("person",))
+    finally:
+        assert node.close()
 
 
 def test_an_integer_for_a_double_in_a_params_file_fails(ctx, tmp_path):
@@ -623,8 +653,28 @@ def _yaml_parameters(path: Path) -> dict:
     return yaml.safe_load(path.read_text())[NODE_NAME]["ros__parameters"]
 
 
+def _flat(parameters: dict, prefix: str = "") -> dict:
+    """Nested blocks as dotted names, the way rcl reads a parameter file."""
+    flat = {}
+    for key, value in parameters.items():
+        if isinstance(value, dict):
+            flat.update(_flat(value, f"{prefix}{key}."))
+        else:
+            flat[f"{prefix}{key}"] = value
+    return flat
+
+
+def _file_parameters(path: Path) -> dict:
+    return _flat(_yaml_parameters(path))
+
+
 def _as_config_value(value):
     return tuple(value) if isinstance(value, list) else value
+
+
+def _default_parameters() -> dict:
+    """Every parameter the node declares, with its default, by its ROS name."""
+    return VisionConfig(classes=("chair",)).parameters()
 
 
 def test_the_real_parameter_files(ctx):
@@ -632,9 +682,10 @@ def test_the_real_parameter_files(ctx):
     args = ["--ros-args"] + [a for f in files for a in ("--params-file", str(f))]
     node = _fake_node(ctx, cli_args=args)
     try:
+        values = node.config.parameters()
         for f in files:
-            for key, value in _yaml_parameters(f).items():
-                assert getattr(node.config, key) == _as_config_value(value), key
+            for key, value in _file_parameters(f).items():
+                assert values[key] == _as_config_value(value), key
         assert node.config.classes == ("chair", "sofa", "armchair", "stool")
         assert node.get_parameter("use_sim_time").value is False
         assert node.config.people_topic == "/walkie_vision/people"
@@ -698,28 +749,30 @@ def test_the_hri_task_keeps_every_object_addition_off():
 
 
 def test_the_config_defaults_equal_vision_yaml():
-    values = _yaml_parameters(CONFIG / "vision.yaml")
-    for f in dataclasses.fields(VisionConfig):
-        if f.name != "classes":
-            assert f.default == _as_config_value(values[f.name]), f.name
+    values = _file_parameters(CONFIG / "vision.yaml")
+    for name, default in _default_parameters().items():
+        if name != "classes":
+            assert default == _as_config_value(values[name]), name
 
 
 def test_every_key_in_the_parameter_files_is_a_config_field():
-    names = {f.name for f in dataclasses.fields(VisionConfig)}
-    vision = set(_yaml_parameters(CONFIG / "vision.yaml"))
+    # rclpy ignores a name the node does not declare, so a misspelt or stale
+    # key would leave its parameter at the default without a message.
+    names = set(_default_parameters())
+    vision = set(_file_parameters(CONFIG / "vision.yaml"))
     assert vision == names - {"classes"}
     assert "classes" not in vision
-    assert set(_yaml_parameters(CONFIG / "sim.yaml")) <= names | {"use_sim_time"}
+    assert set(_file_parameters(CONFIG / "sim.yaml")) <= names | {"use_sim_time"}
     for task in (CONFIG / "tasks").glob("*.yaml"):
-        assert set(_yaml_parameters(task)) <= names, task.name
-        assert "classes" in _yaml_parameters(task), task.name
+        assert set(_file_parameters(task)) <= names, task.name
+        assert "classes" in _file_parameters(task), task.name
 
 
 def test_every_double_in_the_parameter_files_has_a_decimal_point():
     # rclpy rejects an integer for a declared double.
-    doubles = {f.name for f in dataclasses.fields(VisionConfig) if isinstance(f.default, float)}
+    doubles = {name for name, default in _default_parameters().items() if isinstance(default, float)}
     for path in [CONFIG / "vision.yaml", CONFIG / "sim.yaml", *(CONFIG / "tasks").glob("*.yaml")]:
-        for key, value in _yaml_parameters(path).items():
+        for key, value in _file_parameters(path).items():
             if key in doubles:
                 assert isinstance(value, float), f"{path.name}: {key}"
 

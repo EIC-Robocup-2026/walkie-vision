@@ -1,9 +1,11 @@
 """The object detectors the vision node can build, by provider name.
 
-PROVIDERS maps each name to its ProviderSpec (walkie_vision.providers.spec).
-The provider classes are imported only inside the build functions, so
-importing this module loads no model library; yoloe.py is imported here for
-MOBILECLIP_FILE, since it loads Ultralytics only in its constructors.
+PROVIDERS maps each name to its ProviderSpec (walkie_vision.providers.spec),
+and DEFAULT_PROVIDER is the one the vision node builds unless the parameter
+object_detection.provider names another. The provider classes are imported
+only inside the build functions, so importing this module loads no model
+library; yoloe.py is imported here for MOBILECLIP_FILE, since it loads
+Ultralytics only in its constructors.
 """
 
 from __future__ import annotations
@@ -13,21 +15,30 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .._ultralytics import weights_path
+from .._ultralytics import check_options, weights_path
 from ..spec import LoadContext, ProviderSpec
 from .base import ObjectDetector
 from .yoloe import MOBILECLIP_FILE
 
+DEFAULT_PROVIDER = "yoloe"
+
 
 @dataclass(frozen=True)
 class YoloeOptions:
-    """YOLOE-26's options: the weights file and the tracker's settings."""
+    """YOLOE-26's options: the weights file and the tracker's settings.
 
-    weights: str
-    imgsz: int
-    conf: float
-    agnostic_nms: bool
-    tracker: str
+    Each is the vision node's parameter object_detection.yoloe.<option>, and
+    the defaults equal config/vision.yaml.
+    """
+
+    weights: str = "yoloe-26s-seg.pt"
+    imgsz: int = 640
+    conf: float = 0.1
+    agnostic_nms: bool = True
+    tracker: str = "bytetrack.yaml"
+
+    def __post_init__(self) -> None:
+        check_options("object_detection.yoloe", self.weights, self.imgsz, self.conf, self.tracker)
 
 
 def _yoloe_files(options: YoloeOptions, models_dir: Path) -> tuple[Path, ...]:

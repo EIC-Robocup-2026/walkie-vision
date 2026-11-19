@@ -97,7 +97,12 @@ def load_memory_fixture(path: Path) -> tuple[np.ndarray, RegisteredDepth, Camera
 
 
 def memory_config() -> VisionConfig:
-    """Return the configuration of the memory task, from its parameter file."""
+    """Return the configuration of the memory task, from its parameter file.
+
+    memory.yaml sets flat parameters only, and each is the VisionConfig field
+    of the same name. A nested provider block there would need the node's
+    own mapping, VisionConfig.from_node().
+    """
     params = yaml.safe_load(MEMORY_TASK.read_text())["walkie_vision"]["ros__parameters"]
     return VisionConfig(**{**params, "classes": tuple(params["classes"])})
 
