@@ -188,6 +188,19 @@ REMOVED = re.compile(
             r"\btest_heads\.py\b",
             r"\b(analysis|buffalo_l)(_module)?[.:](DETECTOR_FILE|RECOGNIZER_FILE)\b",
             r"from (walkie_vision\.|\.+)([\w.]+\.)?buffalo_l import [^\n]*\b(DETECTOR_FILE|RECOGNIZER_FILE)\b",
+            # The walkie_vision.reid package became providers.reid.osnet: reid/identifier.py
+            # with the loader and the input constants from reid/__init__.py. The reid vision
+            # task (providers.reid, providers/reid/, and its folder named alone as reid/),
+            # torchreid/, deep-person-reid and the reid stage are fine, so only the two old
+            # files are rows by bare path. The relative spellings are left to the syntax-tree
+            # check, which resolves them by the file's package: inside providers/,
+            # `from .reid.base import` is the new home.
+            r"walkie_vision[./]reid\b",
+            r"from walkie_vision import [^\n]*\breid\b",
+            r"(?<![\w/.-])reid/(identifier|__init__)\.py\b",
+            r"\btest_reid_identifier\.py\b",
+            r"\b(reid|identifier)(_module)?[.:](identifier|load_osnet|OSNetReIdentifier|osnet_input|INPUT_SIZE|MEAN"
+            r"|STD)\b",
         ]
     )
 )
@@ -365,6 +378,10 @@ UNUSED_IN_YOLOE = LEFT_YOLOE - {"validate_tracker", "clip_box", "check_rows", "r
 BUFFALO_L = "walkie_vision.providers.face_recognition.buffalo_l"
 BUFFALO_L_FILE = PACKAGE_DIR / "providers" / "face_recognition" / "buffalo_l.py"
 LEFT_BUFFALO_L = frozenset({"DETECTOR_FILE", "RECOGNIZER_FILE"})
+# The reid package became providers/reid/osnet.py: reid/identifier.py with the loader
+# and the input constants from reid/__init__.py, and nothing re-exports it.
+OSNET_FILE = PACKAGE_DIR / "providers" / "reid" / "osnet.py"
+LEFT_REID_PACKAGE = frozenset({"INPUT_SIZE", "MEAN", "STD", "load_osnet", "osnet_input", "OSNetReIdentifier"})
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -463,7 +480,7 @@ def _imports_a_module_that_left(file: Path, module: str) -> list[str]:
 
     It reads the syntax tree rather than lines, and resolves a relative import by the
     file's package, so `from . import models` counts in walkie_vision/node.py but not in
-    walkie_vision/reid/identifier.py, and a docstring that names the old home does not.
+    walkie_vision/providers/reid/osnet.py, and a docstring that names the old home does not.
     """
     tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
     parent, _, child = module.rpartition(".")
@@ -2061,7 +2078,7 @@ def test_no_code_imports_the_vendored_files_from_face_or_reid():
     code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
     assert {
         BUFFALO_L_FILE,
-        PACKAGE_DIR / "reid" / "__init__.py",
+        OSNET_FILE,
         PACKAGE_DIR / "_vendor" / "insightface" / "arcface.py",
         ROOT / "tests" / "test_providers_face_recognition_buffalo_l.py",
         ROOT / "tests" / "test_vendor_insightface_face_align.py",
@@ -2074,11 +2091,12 @@ def test_no_code_imports_the_vendored_files_from_face_or_reid():
 def test_face_and_reid_do_not_bind_the_vendored_modules_again():
     # The face package is gone, so nothing serves the vendored modules under it. Its
     # successor, providers/face_recognition/buffalo_l.py, binds face_align, which it
-    # calls through the module, and no other vendored module. reid's __init__ binds
-    # osnet_x1_0 only.
+    # calls through the module, and no other vendored module. The reid package is gone
+    # too; its successor, providers/reid/osnet.py, binds osnet_x1_0 only.
     assert _old_homes(SRC, FACE) == []
     assert {hit.rpartition(" ")[2] for hit in _binds_one_of(BUFFALO_L_FILE, LEFT_FACE)} == {"face_align"}
-    assert _binds_one_of(PACKAGE_DIR / "reid" / "__init__.py", LEFT_REID) == []
+    assert _old_homes(SRC, REID) == []
+    assert _binds_one_of(OSNET_FILE, LEFT_REID) == []
 
 
 def test_the_sweep_would_catch_the_vendored_files_at_their_old_homes(tmp_path):
@@ -2098,17 +2116,17 @@ def test_the_sweep_would_catch_the_vendored_files_at_their_old_homes(tmp_path):
         "reid/osnet.py keeps its header\n",
     )
     assert len(_mentions([bad], REMOVED)) == 12
-    # The new homes, the face wrapper in buffalo_l.py, the wrappers that stay in reid,
-    # the provider osnet.py, the vendored files by their new paths, the vector model
-    # names and prose are fine.
+    # The new homes, the face wrapper in buffalo_l.py, the reid wrapper in the provider
+    # osnet.py, the vendored files by their new paths, the vector model names and prose
+    # are fine.
     good = _write(
         tmp_path / "good.py",
         "from walkie_vision._vendor.insightface.face_align import _similarity_transform, arcface_dst\n"
         "from walkie_vision._vendor.insightface import face_align\n"
         "from walkie_vision.providers.face_recognition.buffalo_l import HeadCropConfig, HeadFaceRecognizer\n"
         "from walkie_vision.providers.face_recognition.buffalo_l import box_iou, clip_faces\n"
-        "from walkie_vision.reid import INPUT_SIZE, MEAN, STD, load_osnet\n"
-        "from walkie_vision.reid.identifier import OSNetReIdentifier, osnet_input\n"
+        "from walkie_vision.providers.reid.osnet import INPUT_SIZE, MEAN, STD, load_osnet\n"
+        "from walkie_vision.providers.reid.osnet import OSNetReIdentifier, osnet_input\n"
         "from .._vendor.torchreid.osnet import osnet_x1_0\n"
         "| `src/walkie_vision/_vendor/insightface/scrfd.py` | SCRFD (vendored) |\n"
         "`_vendor/torchreid/osnet.py` keeps its header\n"
@@ -2180,7 +2198,7 @@ def test_the_tree_check_would_catch_the_vendored_files_at_their_old_homes(tmp_pa
         "face_init.py:3: binds *",
     ]
     # The new homes, a sibling import inside the vendored package, the face wrapper in
-    # buffalo_l.py, the provider osnet.py of a later step and a docstring are fine.
+    # buffalo_l.py, the reid wrapper in the provider osnet.py and a docstring are fine.
     good = {
         "_vendor/insightface/arcface.py": "from . import face_align\n",
         "face/analysis.py": (
@@ -2583,3 +2601,149 @@ def test_the_tree_check_would_catch_face_or_its_names_at_their_old_homes(tmp_pat
         assert _reads_a_name_that_left(file, BUFFALO_L, LEFT_BUFFALO_L) == [], path
     good_provider = tmp_path / "src" / "walkie_vision" / "providers" / "face_recognition" / "buffalo_l.py"
     assert _binds_one_of(good_provider, LEFT_BUFFALO_L, imports=False) == []
+
+
+def test_reid_did_not_come_back_to_the_package_root():
+    assert OSNET_FILE.is_file()
+    assert _old_homes(SRC, REID) == []
+    # The reid vision task's package shares the old package's last name; it serves
+    # none of the provider's names, which callers import from osnet.py.
+    assert _binds_one_of(PACKAGE_DIR / "providers" / "reid" / "__init__.py", LEFT_REID_PACKAGE) == []
+
+
+def test_no_code_imports_reid():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert {
+        PACKAGE_DIR / "node.py",
+        PACKAGE_DIR / "providers" / "__init__.py",
+        ROOT / "checks" / "c09_osnet.py",
+        ROOT / "checks" / "c11_providers.py",
+        ROOT / "tests" / "test_build_providers.py",
+        ROOT / "tests" / "test_providers_reid_osnet.py",
+    } <= set(code)
+    assert [hit for file in code for hit in _imports_a_module_that_left(file, REID)] == []
+
+
+def test_the_sweep_would_catch_reid_at_its_old_home(tmp_path):
+    bad = _write(
+        tmp_path / "bad.py",
+        "from walkie_vision.reid import INPUT_SIZE, MEAN, STD, load_osnet\n"
+        "from walkie_vision.reid.identifier import OSNetReIdentifier  # noqa: E402\n"
+        "import walkie_vision.reid.identifier\n"
+        'identifier = pytest.importorskip("walkie_vision.reid.identifier")\n'
+        "from walkie_vision import errors, node, reid\n"
+        "from walkie_vision import reid as reidentification\n"
+        "| `src/walkie_vision/reid/identifier.py` | OSNet on person crops, batched |\n"
+        "  by `providers/face_recognition/buffalo_l.py` and `reid/identifier.py`. Keep the licence\n"
+        "reid/__init__.py holds code today\n"
+        '"""The tests in tests/test_reid_identifier.py use a tiny CPU module."""\n'
+        "real = identifier.load_osnet\n"
+        "model = reid.load_osnet('cpu')\n"
+        "h, w = identifier_module.INPUT_SIZE\n"
+        "pixi run python -c \"from walkie_vision.reid import load_osnet; load_osnet('cpu')\"\n",
+    )
+    assert len(_mentions([bad], REMOVED)) == 14
+    # The new home, the reid vision task, its folder and its base module, the vendored
+    # torchreid, deep-person-reid, the reid stage and provider field, the reid test file,
+    # and the dotted parameter names of a later step are fine.
+    good = _write(
+        tmp_path / "good.py",
+        "from walkie_vision.providers.reid.osnet import INPUT_SIZE, MEAN, STD, load_osnet\n"
+        'osnet = pytest.importorskip("walkie_vision.providers.reid.osnet")\n'
+        "from walkie_vision.providers.reid import osnet\n"
+        "from walkie_vision.providers import OSNET_X1_0_MSMT17, ReIdentifier\n"
+        "from .reid.base import ReIdentifier\n"
+        "from . import base\n"
+        "from ..._vendor.torchreid.osnet import osnet_x1_0\n"
+        'monkeypatch.setattr(osnet, "load_osnet", load_osnet)\n'
+        "| `src/walkie_vision/providers/reid/osnet.py` | OSNet re-identification and its weights |\n"
+        "`providers/reid/base.py` holds ReIdentifier\n"
+        "`providers/` holds one folder per vision task: `object_detection/`, `reid/`, `image_embed/`\n"
+        "      reid/\n"
+        "| `reid/` | the reid vision task: base.py, osnet.py |\n"
+        "a new reid provider goes in reid/ next to osnet.py\n"
+        "deep-person-reid in `_vendor/torchreid/`, wrapped by the reid provider\n"
+        "# https://github.com/KaiyangZhou/deep-person-reid/blob/f8cd150/torchreid/models/osnet.py\n"
+        'reid = OSNetReIdentifier(device="cpu", model=_Tiny())\n'
+        "vectors = np.asarray(reid.embed(crops))\n"
+        "times.reid = _ms_since(t)\n"
+        'appearance_model=p.reid.model_name if vector is not None else "",\n'
+        "ms p50/p95: wait 3/9 convert 6/8 objects 21/30 pose 18/25 faces 12/40 reid 9/15 build 1/2\n"
+        "tests/test_providers_reid_osnet.py patches load_osnet\n"
+        "| `reid.osnet.batch_size` |\n",
+    )
+    assert _mentions([good], REMOVED) == []
+
+
+def test_the_tree_check_would_catch_reid_at_its_old_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path / "src")
+    # The package that left, in any spelling of an import, absolute or relative.
+    caller = _write(
+        tmp_path / "src" / "walkie_vision" / "node.py",
+        "from . import (\n"
+        "    errors,\n"
+        "    reid,\n"
+        ")\n"
+        "from .reid import load_osnet\n"
+        "from .reid.identifier import OSNetReIdentifier\n"
+        "import walkie_vision.reid.identifier as identifier\n"
+        "def build():\n"
+        "    from walkie_vision.reid.identifier import OSNetReIdentifier\n"
+        "    return OSNetReIdentifier\n",
+    )
+    assert _imports_a_module_that_left(caller, REID) == [
+        "node.py:1: imports walkie_vision.reid",
+        "node.py:5: imports from walkie_vision.reid",
+        "node.py:6: imports from walkie_vision.reid.identifier",
+        "node.py:7: imports walkie_vision.reid.identifier",
+        "node.py:9: imports from walkie_vision.reid.identifier",
+    ]
+    sibling = _write(
+        tmp_path / "src" / "walkie_vision" / "reid" / "identifier.py",
+        "from . import INPUT_SIZE, MEAN, STD, load_osnet\n",
+    )
+    assert _imports_a_module_that_left(sibling, REID) == ["identifier.py:1: imports from walkie_vision.reid"]
+    check = _write(
+        tmp_path / "checks" / "c09_osnet.py",
+        "from walkie_vision import (\n    reid as reidentification,\n)\n",
+    )
+    assert _imports_a_module_that_left(check, REID) == ["c09_osnet.py:1: imports walkie_vision.reid"]
+    # A reid package, namespace folder or module at the old path.
+    assert _old_homes(tmp_path / "src", REID) == [tmp_path / "src" / "walkie_vision" / "reid"]
+    module = _write(tmp_path / "flat" / "walkie_vision" / "reid.py", "from .providers.reid.osnet import *\n")
+    assert _old_homes(tmp_path / "flat", REID) == [module]
+    # A reid task package that re-exports the provider's names serves them under a
+    # second name.
+    init = _write(
+        tmp_path / "reid_init.py",
+        "from .osnet import OSNetReIdentifier\nfrom .osnet import load_osnet as load_osnet\nfrom .osnet import *\n",
+    )
+    assert _binds_one_of(init, LEFT_REID_PACKAGE) == [
+        "reid_init.py:1: binds OSNetReIdentifier",
+        "reid_init.py:2: binds load_osnet",
+        "reid_init.py:3: binds *",
+    ]
+    # The new home, the reid vision task's package and base module from inside and
+    # outside providers/, a module named reid inside another package, the vendored
+    # torchreid and a docstring are fine.
+    good = {
+        "node.py": (
+            '"""OSNetReIdentifier was in walkie_vision.reid.identifier."""\n'
+            "from .providers import reid\n"
+            "from .providers.reid.osnet import OSNetReIdentifier\n"
+        ),
+        "providers/__init__.py": "from .reid.base import ReIdentifier\n",
+        "providers/reid/osnet.py": (
+            "from ..._vendor.torchreid.osnet import osnet_x1_0\n"
+            "from ...weights import HUB_MODELS, OSNET_CHECKPOINT\n"
+            "from ..vector_tables import OSNET_X1_0_MSMT17\n"
+            "from . import base\n"
+            "from .base import ReIdentifier\n"
+        ),
+        "providers/reid/registry.py": "from . import osnet\nfrom .. import reid\nfrom .osnet import load_osnet\n",
+        "_vendor/torchreid/__init__.py": '"""Wrapped by walkie_vision.providers.reid.osnet."""\n',
+        "camera/image.py": "from . import reid\nfrom .reid import crop\n",
+    }
+    for path, text in good.items():
+        file = _write(tmp_path / "src" / "walkie_vision" / path, text)
+        assert _imports_a_module_that_left(file, REID) == [], path

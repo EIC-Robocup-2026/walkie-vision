@@ -144,7 +144,7 @@ and the launch starts it again whenever it exits. It needs:
 - the model files from step 3 and the messages from step 4;
 - OSNet's checkpoint in the Hugging Face cache, which needs the internet
   once:
-  `pixi run python -c "from walkie_vision.reid import load_osnet; load_osnet('cpu')"`;
+  `pixi run python -c "from walkie_vision.providers.reid.osnet import load_osnet; load_osnet('cpu')"`;
 - a Zenoh router and the right `ROS_DOMAIN_ID`, as in step 7.
 
 In simulation, add `sim:=true`. The node then uses sim time and publishes

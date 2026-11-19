@@ -1,4 +1,4 @@
-"""Check 9: OSNet x1.0 person re-identification (walkie_vision.reid) on the GPU.
+"""Check 9: OSNet x1.0 person re-identification (walkie_vision.providers.reid.osnet) on the GPU.
 
 Three people cropped from bus.jpg: each crop must be closer to a shifted copy
 of itself than to the other two people.
@@ -11,7 +11,7 @@ import torch
 from PIL import Image
 
 from common import assets_dir, expect, finish, gpu_mem_of, timed_ms
-from walkie_vision.reid import INPUT_SIZE, MEAN, STD, load_osnet
+from walkie_vision.providers.reid.osnet import INPUT_SIZE, MEAN, STD, load_osnet
 from walkie_vision.weights import HUB_MODELS
 
 hub = HUB_MODELS["osnet"]

@@ -1,4 +1,4 @@
-"""Tests of walkie_vision.reid.identifier with a tiny CPU module instead of OSNet."""
+"""Tests of walkie_vision.providers.reid.osnet with a tiny CPU module instead of OSNet."""
 
 from __future__ import annotations
 
@@ -7,9 +7,8 @@ import pytest
 import torch
 
 from walkie_vision.providers import OSNET_X1_0_MSMT17, ReIdentifier
-from walkie_vision.reid import INPUT_SIZE, MEAN, STD
-from walkie_vision.reid import identifier
-from walkie_vision.reid.identifier import OSNetReIdentifier, osnet_input
+from walkie_vision.providers.reid import osnet
+from walkie_vision.providers.reid.osnet import INPUT_SIZE, MEAN, STD, OSNetReIdentifier, osnet_input
 
 
 class _Tiny(torch.nn.Module):
@@ -109,7 +108,7 @@ def test_without_a_model_it_loads_osnet_and_warms_up(monkeypatch):
         loaded.append(device)
         return tiny
 
-    monkeypatch.setattr(identifier, "load_osnet", load_osnet)
+    monkeypatch.setattr(osnet, "load_osnet", load_osnet)
     OSNetReIdentifier(device="cpu")
     assert loaded == ["cpu"]
     assert tiny.batches == [2]

@@ -14,7 +14,7 @@ import pytest
 
 yoloe = pytest.importorskip("walkie_vision.providers.object_detection.yoloe")
 yolo_pose = pytest.importorskip("walkie_vision.providers.pose_estimation.yolo_pose")
-identifier = pytest.importorskip("walkie_vision.reid.identifier")
+osnet = pytest.importorskip("walkie_vision.providers.reid.osnet")
 buffalo_l = pytest.importorskip("walkie_vision.providers.face_recognition.buffalo_l")
 
 import huggingface_hub  # noqa: E402
@@ -57,7 +57,7 @@ def manager(monkeypatch):
         (yoloe, "YoloeTracker"),
         (yoloe, "YoloeDetector"),
         (yolo_pose, "YoloPoseTracker"),
-        (identifier, "OSNetReIdentifier"),
+        (osnet, "OSNetReIdentifier"),
         (buffalo_l, "FaceAnalyzer"),
         (buffalo_l, "HeadFaceRecognizer"),
     ):

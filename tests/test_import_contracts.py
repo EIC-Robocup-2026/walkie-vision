@@ -61,18 +61,14 @@ LAYER_OF = {
     "walkie_vision.node": 0,
     "walkie_vision.pipeline": 2,
     "walkie_vision.providers": 4,
-    "walkie_vision.reid": 4,
     "walkie_vision.services": 2,
     "walkie_vision.weights": 5,
 }
 NOT_LAYERED = {"_vendor"}
 
-# The packages whose __init__.py holds code: reid defines load_osnet.
-INIT_WITH_CODE = frozenset(
-    {
-        "walkie_vision.reid",
-    }
-)
+# The packages whose __init__.py holds code: none. Every __init__.py holds only a
+# docstring, except the re-exports in REEXPORTS.
+INIT_WITH_CODE: frozenset[str] = frozenset()
 
 # The packages whose __init__.py re-exports names, and the modules of the package
 # (relative to it) it may take them from. walkie_vision.providers re-exports the

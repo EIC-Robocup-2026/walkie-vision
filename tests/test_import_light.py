@@ -38,15 +38,14 @@ PACKAGE = "walkie_vision"
 
 HEAVY = ("torch", "torchvision", "ultralytics", "onnxruntime", "open_clip", "transformers", "timm", "insightface")
 
-# The buffalo_l face provider loads onnxruntime. The reid package and the
-# vendored OSNet network load torch. The vendored InsightFace files load only
-# cv2, numpy and onnx, so they are light.
+# The buffalo_l face provider loads onnxruntime. The osnet reid provider and
+# the vendored OSNet network load torch. The vendored InsightFace files load
+# only cv2, numpy and onnx, so they are light.
 HEAVY_AT_IMPORT = frozenset(
     {
         "walkie_vision._vendor.torchreid.osnet",
         "walkie_vision.providers.face_recognition.buffalo_l",
-        "walkie_vision.reid",
-        "walkie_vision.reid.identifier",
+        "walkie_vision.providers.reid.osnet",
     }
 )
 

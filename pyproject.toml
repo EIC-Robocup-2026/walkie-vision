@@ -48,7 +48,6 @@ source_modules = [
     "walkie_vision.errors",
     "walkie_vision.fakes",
     "walkie_vision.providers",
-    "walkie_vision.reid",
     "walkie_vision.weights",
 ]
 forbidden_modules = [
@@ -77,19 +76,19 @@ protected_modules = ["walkie_vision._vendor.insightface"]
 allowed_importers = ["walkie_vision.providers.face_recognition.buffalo_l"]
 
 # The OSNet network from torchreid, in _vendor/torchreid/, is vendored. Only
-# the reid package's loader uses it. as_packages = false keeps the allowed
-# importer to reid's __init__ (true would admit every module under reid), so
-# the package and its one module are listed one by one.
+# the reid provider, providers/reid/osnet.py, uses it, so a change to the
+# vendored code touches one caller. With as_packages = false, the package and
+# its one module are listed one by one.
 [[tool.importlinter.contracts]]
 id = "torchreid-wrapped-once"
-name = "The vendored torchreid file is imported only by reid"
+name = "The vendored torchreid file is imported only by the reid provider"
 type = "protected"
 as_packages = false
 protected_modules = [
     "walkie_vision._vendor.torchreid",
     "walkie_vision._vendor.torchreid.osnet",
 ]
-allowed_importers = ["walkie_vision.reid"]
+allowed_importers = ["walkie_vision.providers.reid.osnet"]
 
 # Vendored code stays as its upstream wrote it, so it can be compared with
 # and updated from upstream: it imports nothing else from walkie_vision.
@@ -112,7 +111,6 @@ forbidden_modules = [
     "walkie_vision.node",
     "walkie_vision.pipeline",
     "walkie_vision.providers",
-    "walkie_vision.reid",
     "walkie_vision.services",
     "walkie_vision.weights",
 ]
@@ -142,7 +140,6 @@ forbidden_modules = [
     "walkie_vision.messages",
     "walkie_vision.node",
     "walkie_vision.pipeline",
-    "walkie_vision.reid",
     "walkie_vision.services",
 ]
 

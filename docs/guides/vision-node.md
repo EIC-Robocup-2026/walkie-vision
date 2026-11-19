@@ -32,7 +32,7 @@ Do these once per computer, in the project folder:
    internet once:
 
     ```bash
-    pixi run python -c "from walkie_vision.reid import load_osnet; load_osnet('cpu')"
+    pixi run python -c "from walkie_vision.providers.reid.osnet import load_osnet; load_osnet('cpu')"
     ```
 
     The node checks the cache when it starts. Offline and without the

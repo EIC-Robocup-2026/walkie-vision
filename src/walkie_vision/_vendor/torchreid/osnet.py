@@ -28,8 +28,9 @@
 # - Only osnet_x1_0 is kept; the other widths and osnet_ibn_x1_0 are removed.
 # - The ImageNet weight download (init_pretrained_weights, through gdown and
 #   Google Drive), the `warnings` import it used and the `pretrained`
-#   argument are removed. walkie_vision.reid.load_osnet() loads the re-ID
-#   weights instead, from the kaiyangzhou/osnet repository on Hugging Face.
+#   argument are removed. walkie_vision.providers.reid.osnet.load_osnet()
+#   loads the re-ID weights instead, from the kaiyangzhou/osnet repository on
+#   Hugging Face.
 # - Moved to walkie_vision/_vendor/torchreid/.
 """OSNet x1.0 person re-identification network (512-value appearance embeddings)."""
 

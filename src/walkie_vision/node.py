@@ -539,7 +539,7 @@ def build_providers(config: VisionConfig, logger: StartupLogger) -> Providers:
         ),
     )
 
-    from walkie_vision.reid.identifier import OSNetReIdentifier
+    from walkie_vision.providers.reid.osnet import OSNetReIdentifier
 
     reid = _load(logger, "OSNet", lambda: OSNetReIdentifier(device=config.device, batch_size=config.reid_batch_size))
     embedder = None if clip_path is None else _load(logger, "CLIP", lambda: ClipEmbedder(clip_path, device=config.device))
