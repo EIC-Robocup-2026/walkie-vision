@@ -155,7 +155,8 @@ REMOVED = re.compile(
             r"from (walkie_vision\.|\.+)node import [^\n]*\b(IMAGE_QOS|CAMERA_INFO_QOS|OUTPUT_QOS)\b",
             # The vendored InsightFace files left walkie_vision.face for
             # walkie_vision._vendor.insightface, and the vendored OSNet network left
-            # walkie_vision.reid for walkie_vision._vendor.torchreid; face and reid wrap
+            # walkie_vision.reid for walkie_vision._vendor.torchreid;
+            # providers/face_recognition/buffalo_l.py and providers/reid/osnet.py wrap
             # them. The relative spellings are left to the syntax-tree check, which
             # resolves them by the file's package: inside _vendor/insightface/,
             # `from . import face_align` is the new home. insightface/scrfd.py,

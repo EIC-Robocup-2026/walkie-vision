@@ -286,6 +286,7 @@ def test_an_init_with_code_or_a_folder_without_one_is_reported(tmp_path):
     package = tmp_path / "contract_probe"
     _write(package / "__init__.py", '"""A probe package."""\n')
     _write(package / "assigns" / "__init__.py", "x = 1\n")
+    _write(package / "code_after" / "__init__.py", '"""Docstring then code."""\n\nx = 1\n')
     _write(package / "empty" / "__init__.py", "")
     _write(package / "fine" / "__init__.py", '"""Only a docstring."""\n')
     _write(package / "assigns" / "loose" / "leak.py", "import json\n")
@@ -298,6 +299,7 @@ def test_an_init_with_code_or_a_folder_without_one_is_reported(tmp_path):
         "outer/ holds Python files but no __init__.py, so grimp and the contracts skip it",
         "outer/inner/ holds Python files but no __init__.py, so grimp and the contracts skip it",
         "assigns/__init__.py must hold exactly one statement, a non-empty docstring",
+        "code_after/__init__.py must hold exactly one statement, a non-empty docstring",
         "empty/__init__.py must hold exactly one statement, a non-empty docstring",
     ]
 

@@ -447,8 +447,8 @@ def _models_dir() -> Path | None:
 
 @pytest.mark.skipif(_models_dir() is None, reason="buffalo_l is missing; run `pixi run fetch-models`")
 def test_face_analyzer_on_zidane_cpu():
-    from walkie_vision.providers.face_recognition.buffalo_l import FaceAnalyzer
     from walkie_vision.providers import ARCFACE_W600K_R50, FaceRecognizer
+    from walkie_vision.providers.face_recognition.buffalo_l import FaceAnalyzer
 
     assets = Path(importlib.util.find_spec("ultralytics").origin).parent / "assets"
     img = cv2.imread(str(assets / "zidane.jpg"))
