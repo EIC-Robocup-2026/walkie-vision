@@ -1245,33 +1245,57 @@ The status constants, `OK` to `FAILED`, are on the response
 | Response | `top_left`           | `float32`                     | The share of the torso's pixels left after clipping and masking |
 | Response | `bottom_left`        | `float32`                     | The same for the thighs                                        |
 
-## The model code
+## Package layout {#package-layout}
 
-| Module                      | What it holds                                                                     |
-| --------------------------- | --------------------------------------------------------------------------------- |
-| `walkie_vision.providers`   | The interfaces every model implements (`ObjectDetector`, `Embedder`, `PoseEstimator`, `ReIdentifier`, `FaceRecognizer`, `PersonFaceRecognizer`) and their result types, one `base` module per vision task (`providers.object_detection.base` and the others), and the vector model names with their lengths (`providers.vector_tables`), and one `registry` module per vision task that maps provider names to a `ProviderSpec` (`providers.spec`) |
-| `walkie_vision.fakes`       | A fake for each interface, with deterministic vectors, for tests without a GPU (`FakePersonFaceRecognizer` among them), and painted figures for the crop tests (`figure_pose`, `paint_figure`) |
-| `walkie_vision.fake_publisher` | Synthetic object arrays from a scene file, with no model, for consumers' tests ([The fake publisher](../guides/vision-node.md#fake-publisher)) |
-| `walkie_vision.messages`    | Model results to messages, with the checks the message comments state, and the QoS profiles of the camera input and the two arrays |
-| `walkie_vision.providers.object_detection.yoloe` | YOLOE-26 with its tracker (`YoloeTracker`)                   |
-| `walkie_vision.providers.pose_estimation.yolo_pose` | YOLO26 pose with its tracker (`YoloPoseTracker`)          |
-| `walkie_vision.providers.face_recognition.buffalo_l` | SCRFD and ArcFace on ONNX Runtime (`FaceAnalyzer`, a `FaceRecognizer`), and faces from crops around each person's head (`HeadFaceRecognizer`, a `PersonFaceRecognizer`) |
-| `walkie_vision.providers.reid.osnet` | OSNet x1.0 and its weights (`load_osnet`), and OSNet on person crops (`OSNetReIdentifier`, a `ReIdentifier`) |
-| `walkie_vision._vendor`     | Vendored MIT code, each file's header naming its upstream commit and changes: SCRFD, ArcFace and the alignment from InsightFace (`_vendor.insightface`), wrapped by `providers.face_recognition.buffalo_l`, and the OSNet network from deep-person-reid (`_vendor.torchreid`), wrapped by `providers.reid.osnet` |
-| `walkie_vision.weights`     | Every model file and Hugging Face commit, with its checksum and licence           |
-| `walkie_vision.camera`      | `sensor_msgs/Image` to a BGR array and the `camera_info` size check (`camera.image`), registered depth (`camera.depth`), and the newest image and the colour and depth pairing (`camera.mailboxes`) |
-| `walkie_vision.geometry`    | Object points and view quality from registered depth (`lift_mask`, `view_quality`) |
-| `walkie_vision.providers.image_embed.clip` | The interim CLIP provider (`ClipEmbedder`, an `Embedder`)         |
-| `walkie_vision.services`    | Bounded service work: the job and its one slot (`services.jobs`), and each service's request checks and responses (`services.embed_text`, `services.embed_crop`, `services.detect_objects`, `services.get_person_crop`) ([Bounded services](#bounded-services)) |
-| `walkie_vision.pipeline`    | One image through every provider to the two arrays, with the score floors, the person dedupe (`dedupe_poses`) and the track id base. No ROS node |
-| `walkie_vision.crops`       | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. The object sampler and padded crops (`crops.objects`), and colour recipe v1 (`crops.colour`). No ROS node and no model |
-| `walkie_vision.config`      | The node's parameters (`VisionConfig`), with the checks of the flat ones and of each vision task's provider name. Each provider's options are checked by its options dataclass in `providers.<task>.registry` |
-| `walkie_vision.loading`     | Every model the node runs, built from the vision tasks' registries after a check of their files (`build_providers`) |
-| `walkie_vision.node`        | The vision node: threads, publishing and health checks                            |
+The package is laid out by concept, in layers
+([ADR-0017](decisions/0017-package-layout.md)). An import points only to a
+lower layer, and the providers and the vendored code import no ROS package.
+import-linter checks these rules from `tests/test_import_contracts.py`, with
+the contracts in `pyproject.toml`. ADR-0017 also lists where each module of
+the old flat layout went.
+
+The table lists the modules by layer, top first. Modules in the same layer
+import none of each other, except in layer 4, whose modules share small
+pieces. No two modules import each other, directly or through others.
+
+| Layer | Module | What it holds |
+| ----- | ------ | ------------- |
+| 1 | `walkie_vision.node` | The vision node: threads, publishing and health checks |
+| 1 | `walkie_vision.debug_viz` | The optional debug viewer, started with `viz:=true` ([ADR-0016](decisions/0016-debug-visualizer-subscribes-to-the-image.md)) |
+| 2 | `walkie_vision.loading` | Every model the node runs, built from the vision tasks' registries after a check of their files (`build_providers`) |
+| 2 | `walkie_vision.fake_publisher` | Synthetic object arrays from a scene file, with no model, for consumers' tests ([The fake publisher](../guides/vision-node.md#fake-publisher)) |
+| 3 | `walkie_vision.pipeline` | One image through every provider to the two arrays, with the score floors, the person dedupe (`dedupe_poses`) and the track id base. No ROS node |
+| 3 | `walkie_vision.services` | Bounded service work: the job and its one slot (`services.jobs`), and each service's request checks and responses (`services.embed_text`, `services.embed_crop`, `services.detect_objects`, `services.get_person_crop`) ([Bounded services](#bounded-services)) |
+| 3 | `walkie_vision.fakes` | A fake for each interface, with deterministic vectors, for tests without a GPU (`FakePersonFaceRecognizer` among them), and painted figures for the crop tests (`figure_pose`, `paint_figure`) |
+| 4 | `walkie_vision.messages` | Model results to messages, with the checks the message comments state, and the QoS profiles of the camera input and the two arrays |
+| 4 | `walkie_vision.camera` | `sensor_msgs/Image` to a BGR array and the `camera_info` size check (`camera.image`), registered depth (`camera.depth`), and the newest image and the colour and depth pairing (`camera.mailboxes`) |
+| 4 | `walkie_vision.crops` | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. The object sampler and padded crops (`crops.objects`), and colour recipe v1 (`crops.colour`). No ROS node and no model |
+| 4 | `walkie_vision.geometry` | Object points and view quality from registered depth (`lift_mask`, `view_quality`) |
+| 4 | `walkie_vision.config` | The node's parameters (`VisionConfig`), with the checks of the flat ones and of each vision task's provider name. Each provider's options are checked by its options dataclass in `providers.<task>.registry` |
+| 5 | `walkie_vision.providers` | The interfaces every model implements (`ObjectDetector`, `Embedder`, `PoseEstimator`, `ReIdentifier`, `FaceRecognizer`, `PersonFaceRecognizer`) and their result types, one `base` module per vision task (`providers.object_detection.base` and the others), the vector model names with their lengths (`providers.vector_tables`), and one `registry` module per vision task that maps provider names to a `ProviderSpec` (`providers.spec`) |
+| 5 | `walkie_vision.providers.object_detection.yoloe` | YOLOE-26 with its tracker (`YoloeTracker`), and with no tracker for `DetectObjects` (`YoloeDetector`) |
+| 5 | `walkie_vision.providers.pose_estimation.yolo_pose` | YOLO26 pose with its tracker (`YoloPoseTracker`) |
+| 5 | `walkie_vision.providers.face_recognition.buffalo_l` | SCRFD and ArcFace on ONNX Runtime (`FaceAnalyzer`, a `FaceRecognizer`), and faces from crops around each person's head (`HeadFaceRecognizer`, a `PersonFaceRecognizer`) |
+| 5 | `walkie_vision.providers.reid.osnet` | OSNet x1.0 and its weights (`load_osnet`), and OSNet on person crops (`OSNetReIdentifier`, a `ReIdentifier`) |
+| 5 | `walkie_vision.providers.image_embed.clip` | The interim CLIP provider (`ClipEmbedder`, an `Embedder`) |
+| 6 | `walkie_vision.boxes` | Box and mask maths (`box_iou`, `resize_mask`) |
+| 6 | `walkie_vision.weights` | Every model file and Hugging Face commit, with its checksum and licence |
+| 6 | `walkie_vision.errors` | `StartupError` |
+| none | `walkie_vision._vendor` | Vendored MIT code, each file's header naming its upstream commit and changes: SCRFD, ArcFace and the alignment from InsightFace (`_vendor.insightface`), wrapped by `providers.face_recognition.buffalo_l`, and the OSNet network from deep-person-reid (`_vendor.torchreid`), wrapped by `providers.reid.osnet` |
 
 The node holds one provider for each model, and `pipeline` uses `messages`
 to build what they return into messages. The tests run the same path with
 the fakes, so the node is tested without a GPU.
+
+Each vision task's `registry.py` maps a provider name to its `ProviderSpec`:
+the files it needs, an optional preparation and how to build it. The
+parameter `<vision task>.provider` picks one, and
+`<vision task>.<provider>.<option>` sets its options
+([Parameters](#parameters)). A registry imports its provider modules only
+inside its `prepare`, `build` and `build_detector` functions. The one
+exception is object detection's registry: it imports `yoloe.py` at module
+level for the constant `MOBILECLIP_FILE`, and `yoloe.py` loads Ultralytics
+only in its constructors. So importing a registry loads no model library.
 
 ## The Restaurant constraint
 
@@ -1790,3 +1814,7 @@ bodies, so the node finds no people there.
 ??? success "ADR-0016: Let an optional debug visualizer subscribe to the raw image · Accepted"
 
     --8<-- "architecture/decisions/0016-debug-visualizer-subscribes-to-the-image.md:body"
+
+??? success "ADR-0017: Lay out the vision package by concept, with its import rules checked · Accepted"
+
+    --8<-- "architecture/decisions/0017-package-layout.md:body"

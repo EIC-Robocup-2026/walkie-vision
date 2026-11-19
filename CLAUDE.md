@@ -24,53 +24,52 @@ build, because `scripts/activate.sh` sources the overlay on activation.
 
 ## Layout
 
+`src/walkie_vision/` is laid out by concept, in layers listed top first
+(ADR-0017). A module imports only from a lower layer; the contracts in
+`pyproject.toml` check this in `tests/test_import_contracts.py`.
+
+1. `node.py` (the vision node, one process for every model, ADR-0010) and
+   `debug_viz.py` (the optional viewer). Nothing imports them.
+2. `loading.py` (builds the providers from the registries after checking
+   their files) and `fake_publisher.py` with `config/fakes/` (synthetic
+   object arrays for consumers' tests, ADR-0013).
+3. `pipeline.py` (one image to the two arrays, no ROS node), `services/`
+   (bounded service work on the one model worker, ADR-0015) and `fakes.py`
+   (deterministic fakes for tests).
+4. `messages.py` (results to messages, with checks, and the QoS profiles),
+   `camera/` (BGR conversion, registered depth, colour and depth pairing,
+   ADR-0014), `crops/` (person crops, the object sampler, colour shares),
+   `geometry.py` (points and view quality from depth) and `config.py` (the
+   node's parameters). These may share names with each other.
+5. `providers/`: model interfaces and result types (`base.py` per vision
+   task), one module per model under `providers/<vision task>/`, and each
+   task's `registry.py`, which maps provider names to a `ProviderSpec`
+   (`spec.py`). A provider module never imports its registry, and a module
+   inside `providers/` never imports the `providers` package itself.
+6. `boxes.py` (box and mask maths), `weights.py` (every model file and
+   Hugging Face commit, with checksums and licences) and `errors.py`.
+
+Outside the layers, `_vendor/` holds vendored model code (InsightFace,
+deep-person-reid). Only its wrapper imports it:
+`providers/face_recognition/buffalo_l.py` or `providers/reid/osnet.py`. Keep
+the licence headers and the change lists up to date. The providers and the
+vendored code import no ROS package.
+
+Outside the package:
+
 - `ros2_ws/src/walkie_vision_msgs/`: the messages and the services only.
-- `src/walkie_vision/providers/`: model interfaces and result types, one
-  `base.py` per vision task, and the vector model names in `vector_tables.py`.
-  Each vision task's `registry.py` maps provider names to a `ProviderSpec`
-  (`spec.py`): its files, its preparation and how to build it.
-  `loading.py` builds from them. A provider module never imports its registry.
-- `src/walkie_vision/messages.py`: results to messages, with validation, and
-  the QoS profiles.
-- `src/walkie_vision/node.py`, `pipeline.py`: the vision node,
-  one process for every model (ADR-0010), with its parameters in `config.py`
-  and its model loading in `loading.py`. `providers/object_detection/yoloe.py`,
-  `providers/pose_estimation/yolo_pose.py` and
-  `providers/face_recognition/buffalo_l.py` are the detector, pose and
-  head-crop face providers, including the second detector behind
-  `DetectObjects` (ADR-0009). Off by default.
-- `src/walkie_vision/camera/`: the camera input. `camera/image.py` turns images
-  into BGR arrays. `camera/depth.py` reads registered depth, and
-  `camera/mailboxes.py` pairs colour with it, bounded by wall time (ADR-0014);
-  the depth pairing is off by default.
-- `src/walkie_vision/geometry.py`: lifts masks to points and scores views. Off
-  by default.
-- `src/walkie_vision/crops/objects.py`, `crops/colour.py`: the object sampler,
-  padded crops and colour shares. `src/walkie_vision/providers/image_embed/clip.py`:
-  the interim CLIP provider. Off by default.
-- `src/walkie_vision/services/`: bounded service work on the one model worker
-  (ADR-0015): the job and its slot (`services/jobs.py`), and each service's
-  request checks and responses (`embed_text.py`, `embed_crop.py`,
-  `detect_objects.py`, `get_person_crop.py`).
 - `config/`: the node's parameters (`vision.yaml`, `sim.yaml`) and each task's
   classes and flags (`tasks/hri.yaml`, `tasks/memory.yaml`).
   `launch/vision.launch.py` starts the node and restarts it when it exits.
-- `src/walkie_vision/fakes.py`: deterministic fakes for tests.
-- `src/walkie_vision/fake_publisher.py`, `config/fakes/`: the fake object
-  publisher and its scene, for consumers' tests. Synthetic geometry, not
-  perception (ADR-0013).
-- `src/walkie_vision/_vendor/`: vendored model code (InsightFace in
-  `_vendor/insightface/`, deep-person-reid in `_vendor/torchreid/`), wrapped
-  by `providers/face_recognition/buffalo_l.py` and `providers/reid/osnet.py`.
-  Keep the licence headers and the change lists up to date.
-- `src/walkie_vision/weights.py`: every downloaded file and Hugging Face
-  commit, with checksums and licences.
-- `checks/`: the `check-env` checks, one process each. `c12_memory.py` is the
+- `checks/`: the environment checks, one process each. `c12_memory.py` is the
   memory task's explicit mode of check 12; `check-env` does not start it.
+- `tools/`: standalone programs and scored runs. The embedding bake-off is in
+  `tools/bakeoff/`, with `tests/test_bakeoff*.py` and
+  `docs/guides/bakeoff.md`.
+- `scripts/`: shell helpers for the environment (`scripts/activate.sh`).
 - `.github/workflows/`: `test.yml` runs the fake-model tests from a clean
   checkout, and `docs.yml` publishes the site.
-- `tools/bakeoff/`, `tests/test_bakeoff*.py`, `docs/guides/bakeoff.md`: the
-  embedding bake-off.
+- This repository has no `evals/` folder.
 
 ## Rules
 
@@ -91,6 +90,12 @@ build, because `scripts/activate.sh` sources the overlay on activation.
   and a rebuild in every consuming repository
   (walkie-database, walkie-agent-ros). Under rmw_zenoh, a mismatched
   definition fails silently.
+- A new top-level module in `src/walkie_vision/` gets its place in the
+  `layers-point-down` contract in `pyproject.toml`; the tests fail until it
+  has one. A new provider goes under `providers/<vision task>/`, with its
+  entry in that task's `registry.py`, named like its module.
+- No shims: a moved module leaves nothing at its old path, and
+  `tests/test_old_homes.py` checks that nothing still names it there.
 - A significant decision gets an ADR in `docs/architecture/decisions/`,
   embedded in `docs/architecture/vision.md`. Do not rewrite an accepted
   ADR: supersede it (`docs/architecture/index.md`).

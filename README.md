@@ -74,33 +74,53 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | Path                                | What it holds                                                    |
 | ----------------------------------- | ---------------------------------------------------------------- |
 | `ros2_ws/src/walkie_vision_msgs/`   | The messages and the services, built with colcon                 |
-| `src/walkie_vision/node.py`         | The vision node: threads, publishing and health checks           |
-| `src/walkie_vision/config.py`       | The vision node's parameters, with their checks                  |
-| `src/walkie_vision/loading.py`      | Loads every model the vision node runs, after checking their files |
-| `src/walkie_vision/pipeline.py`     | One image through every model to the two arrays, without ROS     |
-| `src/walkie_vision/camera/`         | Camera images to BGR arrays, the `camera_info` checks, registered depth, and colour and depth paired within bounds |
-| `src/walkie_vision/geometry.py`     | Object points and view quality from registered depth. Off by default |
-| `src/walkie_vision/providers/`      | The interfaces every model implements, their result types, and one `registry.py` per vision task that says how to build each provider (`spec.py`) |
-| `src/walkie_vision/messages.py`     | Model results to messages, with checks, and the QoS profiles     |
-| `src/walkie_vision/crops/`          | One person's crop, mask and colour shares for `GetPersonCrop`; the object sampler, padded crops and colour shares |
-| `src/walkie_vision/fakes.py`        | Fake models for tests                                            |
-| `src/walkie_vision/providers/object_detection/yoloe.py` | YOLOE-26 with its tracker, and YOLOE-26 with no tracker for `DetectObjects` |
-| `src/walkie_vision/providers/pose_estimation/yolo_pose.py` | YOLO26 pose with its tracker                            |
-| `src/walkie_vision/providers/face_recognition/buffalo_l.py` | SCRFD and ArcFace on ONNX Runtime, and faces from crops around each person's head |
-| `src/walkie_vision/providers/reid/osnet.py` | OSNet re-identification and its weights, on person crops, batched |
-| `src/walkie_vision/_vendor/`        | Vendored code, MIT: SCRFD, ArcFace and the alignment from InsightFace, OSNet from deep-person-reid |
-| `src/walkie_vision/providers/image_embed/clip.py` | The interim CLIP provider                          |
-| `src/walkie_vision/services/`       | Bounded service work: the job, its one slot, and each service's request checks and responses |
-| `src/walkie_vision/weights.py`      | Every model file and Hugging Face commit, with checksums. `fetch-models` runs it. |
+| `src/walkie_vision/`                | The vision package, laid out by concept (below)                  |
 | `config/`                           | The vision node's parameters, and one file per task with its classes |
 | `launch/`                           | The launch file that runs the vision node and restarts it        |
-| `checks/`                           | The `check-env` checks, and the memory task's explicit mode of check 12 |
+| `checks/`                           | The environment checks: `check-env`, and the memory task's explicit mode of check 12 |
+| `tools/`                            | Standalone programs and scored runs. The embedding bake-off is in `tools/bakeoff/` |
+| `scripts/`                          | Shell helpers for the environment. `scripts/activate.sh` adds the message build to every `pixi run` and `pixi shell` |
+| `tests/`                            | The tests, with fakes and no GPU                                 |
 | `.github/workflows/`                | The test workflow and the documentation workflow                 |
-| `tools/bakeoff/`                    | The embedding bake-off                                           |
-| `tests/`                            | Tests for the messages, the conversions, the fakes, the model wrappers, the pipeline, the node and the launch |
-| `scripts/activate.sh`               | Adds the message build to every `pixi run` and `pixi shell`      |
 | `models/`                           | The model files. Not in Git.                                     |
 | `docs/`                             | The documentation site (MkDocs)                                  |
+
+A new file goes by what it is: a shell helper for the environment in
+`scripts/`, a standalone program or a scored run in `tools/`, and an
+environment check in `checks/`. This repository has no `evals/` folder.
+
+### The vision package
+
+The package's modules form layers, top first. A module may import only from
+a lower layer, and never from its own layer, except that the modules in
+layer 4 share a few names. import-linter checks these rules in the tests,
+with the contracts in `pyproject.toml`
+([ADR-0017](docs/architecture/decisions/0017-package-layout.md)).
+
+| Layer | Path in `src/walkie_vision/` | What goes there | Who may import it |
+| ----- | ---------------------------- | --------------- | ----------------- |
+| 1 | `node.py`                   | The vision node: threads, publishing and health checks | Nothing. The launch file runs it |
+| 1 | `debug_viz.py`              | The optional debug viewer (`viz:=true`) | Nothing. The launch file runs it |
+| 2 | `loading.py`                | Builds every model the node runs from the registries, after checking their files | Layer 1 |
+| 2 | `fake_publisher.py`         | Synthetic object arrays from a scene file, for consumers' tests | Layer 1. Consumers run it as a program |
+| 3 | `pipeline.py`               | One image through every provider to the two arrays, without a ROS node | Layers 1 and 2 |
+| 3 | `services/`                 | Bounded service work: the job, its one slot, and each service's request checks and responses | Layers 1 and 2 |
+| 3 | `fakes.py`                  | A fake for each model interface, for tests without a GPU | Layers 1 and 2, and the tests |
+| 4 | `messages.py`               | Model results to messages, with checks, and the QoS profiles | Layers 1 to 3, and layer 4 |
+| 4 | `camera/`                   | Camera images to BGR arrays, the `camera_info` checks, registered depth, and colour and depth paired within bounds | Layers 1 to 3, and layer 4 |
+| 4 | `crops/`                    | One person's crop for `GetPersonCrop`, the object sampler, padded crops, colour shares and JPEG encoding | Layers 1 to 3, and layer 4 |
+| 4 | `geometry.py`               | Object points and view quality from registered depth. Off by default | Layers 1 to 3, and layer 4 |
+| 4 | `config.py`                 | The vision node's parameters, with their checks | Layers 1 to 3, and layer 4 |
+| 5 | `providers/`                | The model interfaces and result types (`base.py` per vision task), one provider module per model under `providers/<vision task>/`, and each vision task's `registry.py` | Layers 1 to 4. A module inside `providers/` imports the module that defines a name, never the package |
+| 6 | `boxes.py`                  | Box and mask maths | Every layer above |
+| 6 | `weights.py`                | Every model file and Hugging Face commit, with checksums and licences. `fetch-models` runs it | Every layer above |
+| 6 | `errors.py`                 | `StartupError` | Every layer above |
+| none | `_vendor/`               | Vendored MIT code: SCRFD, ArcFace and the alignment from InsightFace, OSNet from deep-person-reid | Only its wrapper: `providers/face_recognition/buffalo_l.py` for InsightFace, `providers/reid/osnet.py` for OSNet |
+
+The providers and the vendored code import no ROS package. The vision tasks
+are `object_detection`, `pose_estimation`, `face_recognition`, `reid` and
+`image_embed`. Each provider is named in its task's `registry.py`, and the
+parameter `<vision task>.provider` picks one.
 
 ## Licence
 
