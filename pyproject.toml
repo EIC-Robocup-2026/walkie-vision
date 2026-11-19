@@ -22,9 +22,8 @@ testpaths = ["tests"]
 addopts = "-p no:launch_testing -p no:launch_ros -p no:ament_copyright -p no:ament_flake8 -p no:ament_pep257 -p no:ament_xmllint -p no:ament_lint"
 
 # The package's import rules. tests/test_import_contracts.py checks them inside
-# pytest through import-linter's Python API, together with the direction of the
-# imports between top-level modules (LAYER_OF) and the __init__.py rule. A
-# module that moves or leaves the package is renamed or removed in every list
+# pytest through import-linter's Python API, together with the __init__.py rule.
+# A module that moves or leaves the package is renamed or removed in every list
 # here in the same commit: import-linter fails on a module that does not exist.
 # Whether a module loads a model library when imported is not a contract,
 # because grimp also counts imports inside functions; tests/test_import_light.py
@@ -60,6 +59,44 @@ forbidden_modules = [
     "visualization_msgs",
     "vision_msgs",
     "walkie_vision_msgs",
+]
+
+# A provider wraps one model and returns plain Python values; the node, the
+# pipeline and the services turn those into messages. So the providers and the
+# vendored code they wrap import no ROS package and none of the modules that
+# sit above them or run the node, and a provider can be loaded and tested
+# without the node, a camera or a message.
+[[tool.importlinter.contracts]]
+id = "providers-know-no-ros-or-the-node"
+name = "Providers and vendored code import neither ROS nor the node's modules"
+type = "forbidden"
+source_modules = [
+    "walkie_vision._vendor",
+    "walkie_vision.providers",
+]
+forbidden_modules = [
+    "rclpy",
+    "sensor_msgs",
+    "std_msgs",
+    "builtin_interfaces",
+    "geometry_msgs",
+    "rcl_interfaces",
+    "tf2_msgs",
+    "visualization_msgs",
+    "vision_msgs",
+    "walkie_vision_msgs",
+    "walkie_vision.camera",
+    "walkie_vision.config",
+    "walkie_vision.crops",
+    "walkie_vision.debug_viz",
+    "walkie_vision.fake_publisher",
+    "walkie_vision.fakes",
+    "walkie_vision.geometry",
+    "walkie_vision.loading",
+    "walkie_vision.messages",
+    "walkie_vision.node",
+    "walkie_vision.pipeline",
+    "walkie_vision.services",
 ]
 
 # The InsightFace files in _vendor/insightface/ (SCRFD, ArcFace, the alignment)
@@ -115,33 +152,36 @@ forbidden_modules = [
     "walkie_vision.weights",
 ]
 
-# The provider interfaces, the box maths, the model file table and the
-# exception classes sit at the bottom: every other module may import them, and
-# they import no other walkie_vision module, so a provider can be read and
-# tested on its own.
+# The top-level modules form layers, listed top first, and an import may only
+# point to a lower layer: the vision node and the debug viewer at the top;
+# then loading, which builds the providers, and the fake publisher, the stand-in
+# for the object stream; then the pipeline, the bounded services and the fake
+# providers; then the camera input, the crops, the depth geometry, the node's
+# config and the messages; then the providers, which wrap the models; and at
+# the bottom the box maths, the model file table and the exception classes,
+# which every other module may import. The modules of a layer written with "|"
+# import none of each other. The middle layer uses ":" instead, because its
+# modules share small pieces: geometry takes RegisteredDepth from camera/ and
+# the cloud point limits from messages, camera/'s mailboxes read message stamps
+# with messages.stamp_ns, and messages checks colour shares against crops/'s
+# COLOR_NAMES. The vendored code is outside the layers; the two protected
+# contracts above say which provider may import it. exhaustive = true makes
+# every top-level module part of a layer, so adding one is a two-file change:
+# the new module and its place in this list.
 [[tool.importlinter.contracts]]
-id = "bottom-imports-nothing-above"
-name = "providers, boxes, weights and errors import no other walkie_vision module"
-type = "forbidden"
-source_modules = [
-    "walkie_vision.boxes",
-    "walkie_vision.errors",
-    "walkie_vision.providers",
-    "walkie_vision.weights",
-]
-forbidden_modules = [
-    "walkie_vision.camera",
-    "walkie_vision.config",
-    "walkie_vision.crops",
-    "walkie_vision.debug_viz",
-    "walkie_vision.fake_publisher",
-    "walkie_vision.fakes",
-    "walkie_vision.geometry",
-    "walkie_vision.loading",
-    "walkie_vision.messages",
-    "walkie_vision.node",
-    "walkie_vision.pipeline",
-    "walkie_vision.services",
+id = "layers-point-down"
+name = "The vision layers point down"
+type = "layers"
+containers = ["walkie_vision"]
+exhaustive = true
+exhaustive_ignores = ["_vendor"]
+layers = [
+    "node | debug_viz",
+    "loading | fake_publisher",
+    "pipeline | services | fakes",
+    "messages : camera : crops : geometry : config",
+    "providers",
+    "boxes | weights | errors",
 ]
 
 # walkie_vision.providers re-exports the names of its modules for callers
