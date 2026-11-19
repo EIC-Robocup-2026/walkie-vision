@@ -9,12 +9,12 @@ walkie_vision._vendor.insightface. The buffalo_l model files are a separate
 matter: InsightFace releases them for non-commercial research only.
 
 HeadFaceRecognizer gives each person their face, one per person, from head
-crops at native resolution. SCRFD's 640 input shrinks a 2208 px wide image about 3.4 times. A face that
-walkie-agent-ros already trusts, 0.0469 rad or about 50 px at fx 1066, would
-be about 14 px there, the edge of what SCRFD detects. HeadFaceRecognizer
-instead runs SCRFD on a square crop around each person's head, taken from
-the full-resolution image, so the face stays at 1x or larger. The head comes
-from the pose keypoints (nose, eyes and ears).
+crops at native resolution. SCRFD's 640 input shrinks a 2208 px wide image
+about 3.4 times. A face that walkie-agent-ros already trusts, 0.0469 rad or
+about 50 px at fx 1066, would be about 14 px there, the edge of what SCRFD
+detects. HeadFaceRecognizer instead runs SCRFD on a square crop around each
+person's head, taken from the full-resolution image, so the face stays at 1x
+or larger. The head comes from the pose keypoints (nose, eyes and ears).
 
 Each face is checked against its person: its centre must lie inside the
 person's box and near the head keypoints. A face found for two people goes

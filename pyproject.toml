@@ -22,7 +22,9 @@ testpaths = ["tests"]
 addopts = "-p no:launch_testing -p no:launch_ros -p no:ament_copyright -p no:ament_flake8 -p no:ament_pep257 -p no:ament_xmllint -p no:ament_lint"
 
 # The package's import rules. tests/test_import_contracts.py checks them inside
-# pytest through import-linter's Python API, together with the __init__.py rule.
+# pytest through import-linter's Python API, together with two rules the
+# contracts do not express: the layers name every top-level module exactly once,
+# and the __init__.py rule.
 # A module that moves or leaves the package is renamed or removed in every list
 # here in the same commit: import-linter fails on a module that does not exist.
 # Whether a module loads a model library when imported is not a contract,
