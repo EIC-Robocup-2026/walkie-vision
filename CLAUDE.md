@@ -49,6 +49,12 @@ build, because `scripts/activate.sh` sources the overlay on activation.
 6. `boxes.py` (box and mask maths), `weights.py` (every model file and
    Hugging Face commit, with checksums and licences) and `errors.py`.
 
+Off by default and on for the memory task (`config/tasks/memory.yaml`): the
+depth pairing and `geometry.py` (`geometry_enabled`), the object crops
+(`object_crops_enabled`), the interim CLIP provider
+`providers/image_embed/clip.py` (`object_embeddings_enabled`) and the second
+detector behind `DetectObjects` (`on_demand_enabled`, ADR-0009).
+
 Outside the layers, `_vendor/` holds vendored model code (InsightFace,
 deep-person-reid). Only its wrapper imports it:
 `providers/face_recognition/buffalo_l.py` or `providers/reid/osnet.py`. Keep

@@ -452,9 +452,9 @@ the node exits.
 - Objects use ByteTrack (`object_detection.yoloe.tracker`).
 - People use BoT-SORT with `gmc_method: sparseOptFlow` and no re-ID model
   (`pose_estimation.yolo_pose.tracker`). The base turns while the agent
-  follows a person. The camera-motion compensation shifts the tracks by the camera's motion, so a
-  person's box does not jump past the tracker's matching gate and get a new
-  id.
+  follows a person. The camera-motion compensation shifts the tracks by the
+  camera's motion, so a person's box does not jump past the tracker's
+  matching gate and get a new id.
 - Both are parameters, so a tracker can change without a code change.
 - `c11` checks it. It pastes two people into a wide textured strip and
   moves an HD2K window across it at 64 px a frame. At fx 1066 and 10 Hz
@@ -610,7 +610,8 @@ walkie-database can cite each item by its link.
   `face_model = arcface_w600k_r50`, and a unit 512-value `face_embedding`.
 - `face_bbox` is in whole-image pixels and clipped to the image. Its centre
   is within `face_recognition.buffalo_l.max_offset` (0.25) of the head
-  crop's side from the person's head keypoints. No face is given to two people.
+  crop's side from the person's head keypoints. No face is given to two
+  people.
 - `appearance_model = osnet_x1_0_msmt17`, with a unit 512-value vector, for
   every person whose clipped box is at least 16 x 16 px.
 
@@ -1272,7 +1273,7 @@ pieces. No two modules import each other, directly or through others.
 | 4 | `walkie_vision.crops` | One person's crop for `GetPersonCrop` (`crop_person`): the nearer test, the gates, the mask and the colour shares. The object sampler and padded crops (`crops.objects`), and colour recipe v1 (`crops.colour`). No ROS node and no model |
 | 4 | `walkie_vision.geometry` | Object points and view quality from registered depth (`lift_mask`, `view_quality`) |
 | 4 | `walkie_vision.config` | The node's parameters (`VisionConfig`), with the checks of the flat ones and of each vision task's provider name. Each provider's options are checked by its options dataclass in `providers.<task>.registry` |
-| 5 | `walkie_vision.providers` | The interfaces every model implements (`ObjectDetector`, `Embedder`, `PoseEstimator`, `ReIdentifier`, `FaceRecognizer`, `PersonFaceRecognizer`) and their result types, one `base` module per vision task (`providers.object_detection.base` and the others), the vector model names with their lengths (`providers.vector_tables`), and one `registry` module per vision task that maps provider names to a `ProviderSpec` (`providers.spec`) |
+| 5 | `walkie_vision.providers` | The interfaces every model implements (`ObjectDetector`, `Embedder`, `PoseEstimator`, `ReIdentifier`, `FaceRecognizer`, `PersonFaceRecognizer`) and their result types, in one `base` module per vision task (`providers.object_detection.base` and the others). The vector model names with their lengths (`providers.vector_tables`). One `registry` module per vision task, which maps provider names to a `ProviderSpec` (`providers.spec`) |
 | 5 | `walkie_vision.providers.object_detection.yoloe` | YOLOE-26 with its tracker (`YoloeTracker`), and with no tracker for `DetectObjects` (`YoloeDetector`) |
 | 5 | `walkie_vision.providers.pose_estimation.yolo_pose` | YOLO26 pose with its tracker (`YoloPoseTracker`) |
 | 5 | `walkie_vision.providers.face_recognition.buffalo_l` | SCRFD and ArcFace on ONNX Runtime (`FaceAnalyzer`, a `FaceRecognizer`), and faces from crops around each person's head (`HeadFaceRecognizer`, a `PersonFaceRecognizer`) |
