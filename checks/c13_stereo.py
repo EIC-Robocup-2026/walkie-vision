@@ -7,12 +7,17 @@ both images show the same point. On the robot's RTX 3080 Ti Laptop GPU
 (2026-11-21) the interior median was 12.00 px, from 11.98 to 12.02 px at the
 5th and 95th percentiles, with 819 ms per call after a first call of 1.6 s
 and 3286 MiB of GPU memory. The check has not run on the RTX 2060 yet.
+
+Usage: `python checks/c13_stereo.py [MODEL.onnx]`. The default is the file
+fetch-models downloads, models/ffs/c_fast_foundationstereo_bp2_dynbatch_dynhw.onnx.
 """
 
 from __future__ import annotations
 
 import statistics
+import sys
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -28,10 +33,10 @@ TOLERANCE_PX = 1.0
 # image does not show, the edge copies on the right, and the padding.
 MARGIN_PX = 64
 
-path = models_dir() / FFS_ONNX
+path = Path(sys.argv[1]) if len(sys.argv) > 1 else models_dir() / FFS_ONNX
 t0 = time.perf_counter()
 model = load_model(path)
-print(f"{path.name}: session created in {time.perf_counter() - t0:.1f} s on {model.providers}")
+print(f"{path}: session created in {time.perf_counter() - t0:.1f} s on {model.providers}")
 expect(model.providers[0] == "CUDAExecutionProvider", "the stereo model runs on CUDAExecutionProvider")
 
 left = cv2.resize(cv2.imread(str(assets_dir() / "bus.jpg")), SIZE, interpolation=cv2.INTER_AREA)

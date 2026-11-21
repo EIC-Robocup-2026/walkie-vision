@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -12,6 +14,7 @@ from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Header
 
 from walkie_vision.depth import DepthRefused, read_registered_depth
+from walkie_vision.models import FFS_ONNX
 from walkie_vision.stereo import (
     IMAGENET_MEAN_RGB,
     IMAGENET_STD_RGB,
@@ -29,6 +32,7 @@ from walkie_vision.stereo import (
     unpad,
 )
 
+REPO = Path(__file__).resolve().parents[1]
 WIDTH, HEIGHT = 64, 48
 LEFT_FRAME = "zed_head_left_camera_frame_optical"
 RIGHT_FRAME = "zed_head_right_camera_frame_optical"
@@ -334,6 +338,23 @@ def test_stereo_imports_onnxruntime_only_when_loading_a_model():
     first, rest = out.stdout.split("\n", 1)
     assert "fetch-models" in first
     assert rest.strip() == ""
+
+
+@pytest.mark.parametrize("named", [True, False])
+def test_check_13_loads_the_onnx_file_named_on_its_command_line(tmp_path, named):
+    """Neither file exists, so the check stops at the file it tried, before any GPU work."""
+    candidate, models = tmp_path / "candidate.onnx", tmp_path / "models"
+    out = subprocess.run(
+        [sys.executable, str(REPO / "checks" / "c13_stereo.py"), *([str(candidate)] if named else [])],
+        env=dict(os.environ, WALKIE_VISION_MODELS=str(models)),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert out.returncode != 0
+    tried = candidate if named else models / FFS_ONNX
+    assert f"FileNotFoundError: {tried} is missing" in out.stderr
 
 
 def _tiny_graph(path, *, left_name: str = "left_image", keepdims: int = 1) -> None:
