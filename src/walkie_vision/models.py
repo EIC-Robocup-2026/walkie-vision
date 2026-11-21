@@ -9,7 +9,9 @@ Hugging Face models (SigLIP 2, Florence-2, EmbeddingGemma 2, OSNet) are not
 downloaded here: they download into the Hugging Face cache on first use.
 HUB_MODELS pins each of them to one commit. The exception is in HUB_FILES:
 the node loads the CLIP weights offline only, so this task fetches them into
-the same cache, at their pinned commit.
+the same cache, at their pinned commit. The Fast-FoundationStereo ONNX is the
+exception the other way: it is a single file, so this task downloads it from
+a commit URL and checks its SHA-256 like the release files.
 """
 
 from __future__ import annotations
@@ -26,6 +28,9 @@ from pathlib import Path
 BUFFALO_L_DIR = "buffalo_l"
 ULTRALYTICS_DIR = "ultralytics"
 _ULTRALYTICS_RELEASE = "https://github.com/ultralytics/assets/releases/download/v8.4.0"
+FFS_DIR = "ffs"
+FFS_ONNX = f"{FFS_DIR}/c_fast_foundationstereo_bp2_dynbatch_dynhw.onnx"
+_FFS_REVISION = "53a84e28a368f37e699776250215fcb450d6a109"
 
 
 @dataclass(frozen=True)
@@ -85,6 +90,15 @@ DOWNLOADS = (
         size=253_794_476,
         dest=f"{ULTRALYTICS_DIR}/mobileclip2_b.ts",
         licence="Apple ML Research Model licence (MobileCLIP2-B): non-commercial research only",
+    ),
+    # The stereo depth node's model (walkie_vision.stereo), pinned to a commit
+    # of an ungated Hugging Face repository.
+    Download(
+        url=f"https://huggingface.co/nvidia/c-fast-foundationstereo/resolve/{_FFS_REVISION}/onnx/c_fast_foundationstereo_bp2_dynbatch_dynhw.onnx",
+        sha256="2c79bbb274dc0aef687a8732b987077e9e3aa26ff9dd653141cda48c57dad5d3",
+        size=103_228_473,
+        dest=FFS_ONNX,
+        licence="NVIDIA Open Model Agreement",
     ),
 )
 
