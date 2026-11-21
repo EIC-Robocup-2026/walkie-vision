@@ -161,6 +161,12 @@ description = "Check the GPU builds, every model and rclpy on this computer (log
 cmd = "ros2 launch launch/vision.launch.py"
 description = "Run the vision node (objects and people from the head camera), restarted if it exits"
 
+# Experimental (ADR-0017): started by hand, not by launch/vision.launch.py.
+# Arguments go to the node: `pixi run stereo-depth --ros-args -p scale_y:=0.333`.
+[tasks.stereo-depth]
+cmd = "python -P -m walkie_vision.stereo_depth"
+description = "Run the experimental stereo depth node (Fast-FoundationStereo on the ZED's left and right images) for task:=memory_ffs"
+
 # Fast DDS, this computer only and domain 77, so that synthetic objects cannot
 # reach a robot's graph (docs/guides/vision-node.md). Arguments go to the node:
 # `pixi run fake-detections --ros-args -p loop:=false`.
