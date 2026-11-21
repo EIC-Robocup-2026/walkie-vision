@@ -62,7 +62,7 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 | `pixi run vision`       | Run the vision node, restarted if it exits. `task:=hri` or `task:=memory`, `sim:=true`. The memory task also serves `DetectObjects`; its cost is not measured yet. |
 | `pixi run fake-detections` | Publish synthetic object arrays with no camera, GPU or model, on Fast DDS in domain 77. |
 | `pixi run test`         | Run the tests. They use fake models and need no GPU, no model files and no router. `.github/workflows/test.yml` runs them from a clean checkout. |
-| `pixi run check-env`    | Run the 18 checks: the GPU builds, every model, the vision node's models and rclpy on this computer. Logs in `checks/output/`. The memory task's check is separate and needs a recording: `python checks/c12_vision_node.py --memory pair.npz`. |
+| `pixi run check-env`    | Run the 19 checks: the GPU builds, every model, the vision node's models and rclpy on this computer. Logs in `checks/output/`. The memory task's check is separate and needs a recording: `python checks/c12_vision_node.py --memory pair.npz`. |
 | `pixi run bakeoff`      | Compare the object and room embedders on labelled images.                   |
 | `pixi run docs`         | Serve the documentation at <http://127.0.0.1:8000>.                          |
 | `pixi run docs-build`   | Build the documentation, failing on any warning.                            |

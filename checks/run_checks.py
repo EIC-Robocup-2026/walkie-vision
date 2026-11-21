@@ -46,6 +46,7 @@ CHECKS = [
     ("c10_ml_first", ["c10_ros.py", "ml-first"]),
     ("c11_providers", ["c11_providers.py"]),
     ("c12_vision_node", ["c12_vision_node.py"]),
+    ("c13_stereo", ["c13_stereo.py"]),
 ]
 
 

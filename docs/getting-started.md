@@ -69,7 +69,7 @@ change a file in `ros2_ws/src/walkie_vision_msgs/`.
 pixi run check-env
 ```
 
-`check-env` runs `fetch-models` first, then 18 checks, each in its own
+`check-env` runs `fetch-models` first, then 19 checks, each in its own
 process: the GPU architectures compiled into PyTorch and ONNX Runtime, every
 model on the GPU, and rclpy next to the models. It prints one line per
 check:
@@ -77,7 +77,7 @@ check:
 ```text
 c01_fatbins            PASS     8.8 s  exit 0  checks/output/c01_fatbins.log
 ...
-18 of 18 checks passed
+19 of 19 checks passed
 ```
 
 The full output of each check, with its timings and GPU memory, is in
