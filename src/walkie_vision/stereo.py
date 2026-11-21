@@ -101,6 +101,8 @@ class StereoFrame:
     """The left camera_info, with the left image's header."""
     valid_share: float
     """The share of depth pixels that are finite."""
+    nearest_m: float
+    """The nearest depth the model can give at this size (nearest_depth_m()); nearer surfaces are NaN."""
     times_ms: dict[str, float]
     """Keys "prepare", "model" and "depth"."""
 
@@ -151,6 +153,15 @@ def disparity_to_depth(disparity: np.ndarray, fx: float, baseline_m: float) -> n
         valid = np.isfinite(d) & (d > 0) & (d < MAX_DISPARITY_PX) & (columns - d >= 0)
         depth = np.float32(fx * baseline_m) / d
     return np.where(valid, depth, np.float32(np.nan)).astype(np.float32)
+
+
+def nearest_depth_m(fx: float, baseline_m: float) -> float:
+    """Return the nearest depth disparity_to_depth() keeps: fx * baseline_m / MAX_DISPARITY_PX.
+
+    fx is in the disparity's pixels, so the nearest depth grows with the
+    scale the model runs at: on the ZED, about 0.35 m at 0.5 and 0.71 m at 1.
+    """
+    return fx * baseline_m / MAX_DISPARITY_PX
 
 
 def read_stereo_calibration(
@@ -297,6 +308,7 @@ def stereo_depth(
         depth_info=scaled_camera_info(left_info, width_s, height_s, left.header),
         image_info=image_info,
         valid_share=float(np.isfinite(depth).mean()),
+        nearest_m=nearest_depth_m(fx_s, calib.baseline_m),
         times_ms={"prepare": (t1 - t0) * 1000.0, "model": (t2 - t1) * 1000.0, "depth": (t3 - t2) * 1000.0},
     )
 

@@ -348,6 +348,10 @@ class StereoDepthNode(Node):
         self._depth_pub.publish(depth_image(frame.depth, left.header))
         age_s = (self.get_clock().now().nanoseconds - stamp_ns(left.header)) / 1e9
         self._image_pub.publish(left)
+        self.get_logger().info(
+            f"depth starts at {frame.nearest_m:.2f} m at scale_x {cfg.scale_x:g}; nearer surfaces are NaN",
+            once=True,
+        )
         self.counts["published"] += 1
         self._failures_in_a_row = 0
         for stage in _STAGES:

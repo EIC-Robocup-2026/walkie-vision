@@ -20,11 +20,16 @@ depth spread means less blur:
 | ---------------------------------------------- | ------ | ---- | ------- | ------------ | -------- |
 | This node's processing, scale 0.5 x 0.5        | 14     | 1.00 | 55.7 mm | 30.8 mm      | 0.2 mm   |
 | This node's processing, scale 0.5 x 0.333      | 14     | 1.00 | 56.2 mm | 60.4 mm      | 0.1 mm   |
-| Fast-FoundationStereo ONNX, scale 1            | 8      | 1.00 | 56.9 mm | 101.4 mm     | 0.2 mm   |
 | ZED `NEURAL_LIGHT`                             | 70     | 0.83 | 58.5 mm | 69.0 mm      | 2.2 mm   |
 | ZED `NEURAL`                                   | 70     | 0.96 | 58.0 mm | 121.7 mm     | 2.8 mm   |
 | ZED `NEURAL_PLUS`                              | 70     | 0.85 | 56.3 mm | 61.4 mm      | 2.5 mm   |
 | ZED `ULTRA`                                    | 70     | 0.71 | 57.2 mm | 57.6 mm      | 2.8 mm   |
+
+The table leaves out a run at scale 1. The model measures disparities up to
+about 192 px at the size it runs at, so at scale 1 on the ZED nothing nearer
+than about 0.68 m is in its range, and most of the bottle, 0.60 to 0.67 m
+away, was nearer. Those points came out 30 to 40 mm too far, so that run's
+depth spread (101.4 mm) says nothing about resolution.
 
 - NVIDIA publishes an ONNX export of Fast-FoundationStereo's commercial
   checkpoint in an ungated Hugging Face repository,
@@ -89,6 +94,12 @@ Rejected:
   do not hold while it runs.
 - A scale of 0.333 on y saves about 280 ms per pair, but doubles the bottle's
   depth spread. Measure on more objects before using it to save time.
+- `scale_x` sets the nearest depth the node gives. It keeps disparities
+  below 184 px, inside the model's range, so the nearest depth is
+  fx × `scale_x` × baseline / 184 px: about 0.35 m at the default 0.5 and
+  0.71 m at 1 on the ZED. Nearer surfaces are NaN. A larger `scale_x` cannot
+  sharpen objects within reach of the arm, and the node logs the nearest
+  depth with its first depth image.
 - Pairing needs the ZED's left and right images to carry equal stamps. That
   is not yet checked on the robot.
 - The model file adds 103 MB to `fetch-models` on every computer, whether or

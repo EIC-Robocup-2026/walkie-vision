@@ -319,6 +319,17 @@ def test_the_outputs_go_out_infos_then_depth_then_image(make_node):
     assert node.counts["published"] == 1
 
 
+def test_the_node_logs_the_nearest_depth_once(make_node, capfd):
+    node = make_node()
+    _hold_infos(node)
+    _record(node)
+    for sec in (1, 2):
+        node._process(_image(sec), _image(sec, RIGHT_FRAME))
+    assert node.counts["published"] == 2
+    # 25 px * 0.1 m / 184 px at the depth's size.
+    assert "".join(capfd.readouterr()).count("depth starts at 0.01 m at scale_x 0.5") == 1
+
+
 def test_a_refused_pair_is_counted_by_reason_and_publishes_nothing(make_node):
     calls = []
     node = make_node(model=lambda left, right: calls.append(1))

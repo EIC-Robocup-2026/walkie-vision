@@ -26,6 +26,7 @@ from walkie_vision.stereo import (
     inference_size,
     load_model,
     model_input,
+    nearest_depth_m,
     read_stereo_calibration,
     scaled_camera_info,
     stereo_depth,
@@ -158,6 +159,14 @@ def test_disparity_to_depth_marks_invalid_disparities_nan(d):
     assert np.isnan(np.delete(depth, 200, axis=1)).all()
 
 
+def test_the_nearest_depth_grows_with_the_scale_the_model_runs_at():
+    # The ZED's HD2K calibration: fx 1082.901 px and a baseline of 0.120121 m.
+    assert nearest_depth_m(1082.901 * 0.5, 0.120121) == pytest.approx(0.354, abs=1e-3)
+    assert nearest_depth_m(1082.901, 0.120121) == pytest.approx(0.707, abs=1e-3)
+    depth = disparity_to_depth(np.full((1, 300), 183.99, np.float32), 541.45, 0.120121)
+    assert np.nanmin(depth) >= nearest_depth_m(541.45, 0.120121)
+
+
 # The calibration.
 
 
@@ -285,6 +294,7 @@ def test_stereo_depth_returns_depth_at_the_inference_size_with_the_left_header()
     assert frame.image_info.header == left.header and list(frame.image_info.k) == K
     assert shapes == [(1, 3, 32, 32), (1, 3, 32, 32)]
     assert frame.valid_share == pytest.approx(29 / 32)
+    assert frame.nearest_m == pytest.approx(25 * 0.1 / 184)
     assert set(frame.times_ms) == {"prepare", "model", "depth"}
 
 

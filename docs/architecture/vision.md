@@ -381,7 +381,8 @@ image again after the depth, with the same header, and the task reads that
 image. The two pair on their exact stamp, in either arrival order.
 `pair_wait_s` is 0.1 there, the cap, to cover the delivery order between the
 two topics. At the default scale the depth is half the image's size, with
-its own scaled `camera_info`, which passes the 1 px ray check above.
+its own scaled `camera_info`, which passes the 1 px ray check above. It
+starts at about 0.35 m: the model's disparity range sets the nearest depth.
 
 ### QoS
 

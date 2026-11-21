@@ -197,7 +197,7 @@ Its parameters are read-only, so set them at the start:
 
 | Parameter     | Default                                               | What it does |
 | ------------- | ----------------------------------------------------- | ------------ |
-| `scale_x`, `scale_y` | 0.5                                            | The size the model runs at, as a share of the image's. The depth has this size |
+| `scale_x`, `scale_y` | 0.5                                            | The size the model runs at, as a share of the image's. The depth has this size. `scale_x` also sets the nearest depth: about 0.35 m at 0.5 and 0.71 m at 1 on the ZED |
 | `max_rate_hz` | 0.0                                                   | The most pairs per second; 0 runs every pair it can take |
 | `model`       | `ffs/c_fast_foundationstereo_bp2_dynbatch_dynhw.onnx` | A path under `models/`, or an absolute path |
 | The topics    | The ZED's `rgb/color/rect` and `right/color/rect`, and `/walkie_vision/stereo/...` | See [Topics and services](../architecture/vision.md#topics-and-services) |
@@ -209,6 +209,12 @@ drops them unless the trial raises its limit. `DetectObjects` and
 `EmbedCrop` answer `STALE_IMAGE`. `scale_y:=0.333` takes about 0.56 s per
 pair, but it doubled the depth spread on a bottle in the one recording
 measured.
+
+Do not raise `scale_x` for more detail on objects within reach. The model's
+disparity range ends at about 192 px at the size it runs at, so at
+`scale_x:=1.0` nothing nearer than about 0.71 m has depth, and a bottle on a
+table 0.65 m from the head camera is mostly NaN. The node logs the nearest
+depth with its first depth image: `depth starts at 0.35 m at scale_x 0.5`.
 
 ### The first start on a new GPU
 
