@@ -1435,7 +1435,10 @@ def test_the_vision_node_pairs_the_relayed_stereo_image_with_its_depth(harness, 
             lambda: all(p.get_subscription_count() >= 1 for p in (*pubs.values(), *out_pubs))
         ), "the stereo node did not match"
         h.wait_matched()
-        h.freeze_pair_clock()
+        # The pair clock runs, unlike in the tests above: the stereo node
+        # publishes the depth and then the image in one callback, and the
+        # vision node must pair them within pair_wait_s of wall time, as on
+        # the robot. A pair lost to a slow machine is retried with the next.
         left_info, right_info = h.camera_info(1), h.camera_info(1)
         left_info.d = right_info.d = [0.0] * 5
         left_info.p = [50.0, 0.0, 32.0, 0.0, 0.0, 50.0, 24.0, 0.0, 0.0, 0.0, 1.0, 0.0]
