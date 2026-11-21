@@ -196,13 +196,14 @@ def report_lines(
 ) -> list[tuple[str, str]]:
     """Return the periodic report as (level, text) pairs; level is "info" or "warning"."""
     left, right, published = delta.get("left", 0), delta.get("right", 0), delta.get("published", 0)
+    unmatched, rate_skipped, failed = delta.get("unmatched", 0), delta.get("rate_skipped", 0), delta.get("failed", 0)
     refusals = {k.removeprefix("refused_"): n for k, n in sorted(delta.items()) if k.startswith("refused_") and n}
     refused = sum(refusals.values())
     breakdown = f" ({', '.join(f'{reason} {n}' for reason, n in refusals.items())})" if refused else ""
     text = (
         f"last {REPORT_PERIOD_S:g} s: left {left} right {right} published {published} "
-        f"unmatched {delta.get('unmatched', 0)} zero_stamp {delta.get('zero_stamp', 0)} "
-        f"rate_skipped {delta.get('rate_skipped', 0)} refused {refused}{breakdown} failed {delta.get('failed', 0)}"
+        f"unmatched {unmatched} zero_stamp {delta.get('zero_stamp', 0)} "
+        f"rate_skipped {rate_skipped} refused {refused}{breakdown} failed {failed}"
     )
     if published > 0 and ages_s:
         stages = " ".join(f"{stage} {_median(times_ms.get(stage, ())):.0f}" for stage in _STAGES)
@@ -223,6 +224,16 @@ def report_lines(
         lines.append(("warning", f"no left images on {cfg.left_image_topic}"))
     elif left == 0 and right == 0:
         lines.append(("info", f"waiting for images on {cfg.left_image_topic} and {cfg.right_image_topic}"))
+    elif unmatched > 0 and published + refused + failed + rate_skipped == 0:
+        # Images arrive on both sides, but no left image found a right one
+        # with its stamp.
+        lines.append(
+            (
+                "warning",
+                f"no left and right images share a stamp, and the node pairs only equal stamps; compare the "
+                f"stamps on {cfg.left_image_topic} and {cfg.right_image_topic}",
+            )
+        )
     if ages_s and _median(ages_s) > AGE_WARN_S:
         lines.append(
             (

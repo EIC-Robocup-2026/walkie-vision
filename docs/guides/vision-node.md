@@ -185,7 +185,9 @@ parameter, a missing model file or a session that is not on CUDA, and with
 status 1 when the model fails three pairs in a row. Nothing restarts it.
 Every 10 s it logs one line with the
 left, right, published, unmatched and refused counts, the stage times and the
-age of the depth when published. It warns when no right images arrive.
+age of the depth when published. It warns when no right images arrive, and
+when left and right images arrive but none share a stamp: the node pairs
+only equal stamps.
 
 Its parameters are read-only, so set them at the start:
 `pixi run stereo-depth --ros-args -p max_rate_hz:=1.0`.

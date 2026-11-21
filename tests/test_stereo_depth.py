@@ -378,6 +378,15 @@ def test_the_report_warns_when_depth_is_older_than_age_warn_s():
     assert "model 800" in fresh[0][1] and "age s p50 0.30" in fresh[0][1] and "valid p50 90%" in fresh[0][1]
 
 
+def test_the_report_warns_when_no_left_and_right_images_share_a_stamp():
+    lines = _report({"left": 300, "right": 300, "unmatched": 299})
+    assert any(level == "warning" and "share a stamp" in text for level, text in lines)
+    pairing = _report({"left": 150, "right": 150, "unmatched": 280, "published": 10}, ages=[0.3] * 10)
+    assert not any("share a stamp" in text for _, text in pairing)
+    refusing = _report({"left": 150, "right": 150, "unmatched": 280, "refused_camera_info": 10})
+    assert not any("share a stamp" in text for _, text in refusing)
+
+
 def test_the_node_logs_a_report_with_info_and_warning_lines(make_node, capfd):
     node = make_node()
     node.counts["left"] += 5
