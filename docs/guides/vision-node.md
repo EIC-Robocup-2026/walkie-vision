@@ -187,7 +187,10 @@ Every 10 s it logs one line with the
 left, right, published, unmatched and refused counts, the stage times and the
 age of the depth when published. It warns when no right images arrive, and
 when left and right images arrive but none share a stamp: the node pairs
-only equal stamps.
+only equal stamps. It also warns when the depth is over 1.5 s old when
+published, well over the 0.9 s expected. The `memory_ffs` task sets the
+vision node's `stale_warn_s` to 2.0 for the same reason: its arrays are
+expected to be 1.3 to 1.5 s old, so a warning at 1 s would show on every one.
 
 Its parameters are read-only, so set them at the start:
 `pixi run stereo-depth --ros-args -p max_rate_hz:=1.0`.

@@ -76,8 +76,13 @@ OUTPUT_QOS = QoSProfile(
     durability=DurabilityPolicy.VOLATILE,
 )
 REPORT_PERIOD_S = 10.0
-AGE_WARN_S = 0.6
-"""The median age of a published depth above which the report warns."""
+AGE_WARN_S = 1.5
+"""The median age of a published depth above which the report warns.
+
+One pair took about 0.85 s on the robot (ADR-0017), so a working node
+publishes depth about 0.9 s old. The warning is for a node that is clearly
+slower than that, not for its normal age.
+"""
 MAX_CONSECUTIVE_FAILURES = 3
 _TOPICS = (
     "left_image_topic",
@@ -238,8 +243,8 @@ def report_lines(
         lines.append(
             (
                 "warning",
-                f"depth is {_median(ages_s):.2f} s old when published; the vision node adds its own time, "
-                "and walkie-database refuses arrays older than 1.0 s",
+                f"depth is {_median(ages_s):.2f} s old when published, over {AGE_WARN_S:g} s; one pair took "
+                "about 0.85 s on the robot, so the model or the images are slower than measured",
             )
         )
     return lines

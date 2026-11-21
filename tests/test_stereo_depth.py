@@ -160,7 +160,9 @@ def test_memory_ffs_reads_what_the_stereo_node_publishes():
     for name in OUTPUTS:
         assert ffs.pop(name) == getattr(cfg, name), name
     assert ffs.pop("pair_wait_s") == MAX_PAIR_WINDOW_S
-    assert ffs.pop("stale_warn_s") == 1.0
+    # Over the 1.3 to 1.5 s these arrays are expected to be (ADR-0017), so
+    # the stale warning is not on for every array.
+    assert ffs.pop("stale_warn_s") == 2.0
     assert ffs == memory
 
 
@@ -370,18 +372,19 @@ def test_the_report_hints_at_publish_left_right_when_only_left_images_arrive():
 
 
 def test_the_report_warns_when_depth_is_older_than_age_warn_s():
-    assert AGE_WARN_S < 0.7
-    old = _report({"left": 2, "right": 2, "published": 2}, ages=[0.7, 0.8])
-    assert any(level == "warning" and "1.0 s" in text for level, text in old)
-    fresh = _report({"left": 1, "right": 1, "published": 1}, ages=[0.3])
-    assert [level for level, _ in fresh] == ["info"]
-    assert "model 800" in fresh[0][1] and "age s p50 0.30" in fresh[0][1] and "valid p50 90%" in fresh[0][1]
+    assert AGE_WARN_S < 1.6
+    old = _report({"left": 2, "right": 2, "published": 2}, ages=[1.6, 1.7])
+    assert any(level == "warning" and "1.65 s old" in text for level, text in old)
+    # About the age a working node publishes at on the robot: no warning.
+    normal = _report({"left": 1, "right": 1, "published": 1}, ages=[0.9])
+    assert [level for level, _ in normal] == ["info"]
+    assert "model 800" in normal[0][1] and "age s p50 0.90" in normal[0][1] and "valid p50 90%" in normal[0][1]
 
 
 def test_the_report_warns_when_no_left_and_right_images_share_a_stamp():
     lines = _report({"left": 300, "right": 300, "unmatched": 299})
     assert any(level == "warning" and "share a stamp" in text for level, text in lines)
-    pairing = _report({"left": 150, "right": 150, "unmatched": 280, "published": 10}, ages=[0.3] * 10)
+    pairing = _report({"left": 150, "right": 150, "unmatched": 280, "published": 10}, ages=[0.9] * 10)
     assert not any("share a stamp" in text for _, text in pairing)
     refusing = _report({"left": 150, "right": 150, "unmatched": 280, "refused_camera_info": 10})
     assert not any("share a stamp" in text for _, text in refusing)
