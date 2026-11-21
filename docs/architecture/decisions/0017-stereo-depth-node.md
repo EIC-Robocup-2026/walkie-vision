@@ -87,7 +87,8 @@ Rejected:
   receives it, so its arrays are expected to be 1.3 to 1.5 s old: over the 1 s
   that consumers accept ([Freshness](/architecture/vision.md#contract-freshness)).
   walkie-database drops them unless a trial raises its limit. `DetectObjects`
-  and `EmbedCrop` accept images up to 1 s old, so they answer `STALE_IMAGE`.
+  accepts images up to 1 s old and `EmbedCrop` up to 0.3 s, so both answer
+  `STALE_IMAGE`.
 - The stereo node is a second subscriber to the raw left image, and the only
   one to the right image: two 11 MB streams at up to 15 Hz. It also holds a
   second CUDA context. ADR-0010's one copy of the image and one CUDA context

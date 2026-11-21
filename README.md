@@ -32,7 +32,7 @@ curl -fsSL https://pixi.sh/install.sh | sh  # once per computer, then reopen the
 git clone https://github.com/EIC-Robocup-2026/walkie-vision.git
 cd walkie-vision
 pixi install           # about 9.6 GB
-pixi run fetch-models  # about 600 MB into models/, and CLIP into the Hugging Face cache
+pixi run fetch-models  # about 720 MB into models/, and CLIP into the Hugging Face cache
 pixi run build-msgs    # builds walkie_vision_msgs in ros2_ws/
 pixi run test
 ```
