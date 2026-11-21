@@ -391,9 +391,12 @@ its own scaled `camera_info`, which passes the 1 px ray check above.
 | People and objects        | RELIABLE    | KEEP_LAST 5 | VOLATILE   |
 | The node's services       | RELIABLE    | KEEP_LAST 10 | VOLATILE  |
 | The fake publisher's objects | RELIABLE | KEEP_LAST 5 | VOLATILE |
+| The stereo depth node's inputs: the ZED's images and `camera_info` | BEST_EFFORT | KEEP_LAST 1 | VOLATILE |
+| The stereo depth node's outputs: `/walkie_vision/stereo/*` | RELIABLE | KEEP_LAST 1 | VOLATILE |
 
 RELIABLE outputs match both RELIABLE and BEST_EFFORT subscribers. The
-services use rclpy's default profile for services.
+services use rclpy's default profile for services. The stereo depth node
+keeps one message per output, so no subscriber gets a backlog of old depth.
 walkie-agent-ros's `VisionFeed` subscribes BEST_EFFORT.
 
 ### The latency line
