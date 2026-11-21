@@ -61,6 +61,7 @@ from walkie_vision.fakes import (
 from walkie_vision.node import IMAGE_QOS, NODE_NAME, CropJob, CropMailbox, VisionConfig, VisionNode
 from walkie_vision.pipeline import Providers, TrackIdBase
 from walkie_vision.providers import Detection, Face, PersonPose
+from walkie_vision.stereo_depth import StereoDepthNode
 
 REPO = Path(__file__).resolve().parents[1]
 CONFIG = REPO / "config"
@@ -1404,6 +1405,67 @@ def test_a_paired_image_publishes_points_in_the_optical_frame(harness):
         atol=1e-5,
     )
     assert 0.0 < det.view_quality <= 1.0
+
+
+STEREO_INPUTS = ("left_image_topic", "left_camera_info_topic", "right_image_topic", "right_camera_info_topic")
+STEREO_OUTPUTS = ("image_topic", "camera_info_topic", "depth_topic", "depth_camera_info_topic")
+
+
+def test_the_vision_node_pairs_the_relayed_stereo_image_with_its_depth(harness, ctx):
+    """task:=memory_ffs's wiring: the stereo node's four outputs are the vision node's four inputs (ADR-0017)."""
+    h = harness(_masked_providers(), geometry_enabled=True, require_depth=True, pair_wait_s=0.1)
+    prefix = f"/t_{uuid.uuid4().hex[:10]}"
+    topics = {name: f"{prefix}/{name.removesuffix('_topic')}" for name in STEREO_INPUTS}
+    topics.update({name: h.topics[name] for name in STEREO_OUTPUTS})
+    # 2.5 px everywhere. The depth is half size, so fx is 25 there, and the
+    # right P[3] of -5 gives a baseline of 0.1 m: 25 * 0.1 / 2.5 = 1.0 m.
+    stereo = StereoDepthNode(
+        model=lambda left, right: np.full(left.shape[2:], 2.5, np.float32),
+        context=ctx,
+        parameter_overrides=[Parameter(k, value=v) for k, v in topics.items()],
+    )
+    h.executor.add_node(stereo)
+    try:
+        pubs = {
+            name: h.helper.create_publisher(CameraInfo if "info" in name else Image, topics[name], IMAGE_QOS)
+            for name in STEREO_INPUTS
+        }
+        out_pubs = [stereo._info_pub, stereo._depth_info_pub, stereo._depth_pub, stereo._image_pub]
+        assert h.spin_until(
+            lambda: all(p.get_subscription_count() >= 1 for p in (*pubs.values(), *out_pubs))
+        ), "the stereo node did not match"
+        h.wait_matched()
+        h.freeze_pair_clock()
+        left_info, right_info = h.camera_info(1), h.camera_info(1)
+        left_info.d = right_info.d = [0.0] * 5
+        left_info.p = [50.0, 0.0, 32.0, 0.0, 0.0, 50.0, 24.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        right_info.p = [50.0, 0.0, 32.0, -5.0, 0.0, 50.0, 24.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+        right_info.header.frame_id = "zed_head_right_camera_frame_optical"
+        deadline, sec = time.monotonic() + DEADLINE_S, 1
+        while not h.got["objects reliable"] and time.monotonic() < deadline:
+            right = h.image(sec)
+            right.header.frame_id = right_info.header.frame_id
+            pubs["left_camera_info_topic"].publish(left_info)
+            pubs["right_camera_info_topic"].publish(right_info)
+            pubs["right_image_topic"].publish(right)
+            pubs["left_image_topic"].publish(h.image(sec))
+            h.spin_for(0.2)
+            sec += 1
+        assert h.got["objects reliable"], f"no objects array; the stereo node counted {dict(stereo.counts)}"
+        array = h.got["objects reliable"][0]
+        (det,) = array.detections
+        assert array.header.frame_id == FRAME
+        assert det.points.header == array.header
+        xyz = np.frombuffer(bytes(det.points.data), dtype="<f4").reshape(-1, 3)
+        assert len(xyz) > 0
+        np.testing.assert_array_equal(xyz[:, 2], 1.0)
+        # K has fx = 50 at cx = 32, and the eroded mask spans pixels 10 to 37.
+        assert -0.52 <= xyz[:, 0].min() and xyz[:, 0].max() <= 0.20 and xyz[:, 0].max() > 0
+        assert h.node.depth_paired >= 1
+        assert stereo.counts["published"] >= 1
+    finally:
+        h.executor.remove_node(stereo)
+        stereo.destroy_node()
 
 
 @pytest.mark.parametrize(
