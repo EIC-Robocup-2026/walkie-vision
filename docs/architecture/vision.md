@@ -69,6 +69,10 @@ it publishes, and why it is built this way.
   [Bounded services](#bounded-services)).
 - The code is AGPL-3.0-only, to match Ultralytics. The models keep their
   own licences ([ADR-0012](decisions/0012-license-agpl-3-0-only.md)).
+- An experimental stereo depth node, started by hand, computes depth with
+  Fast-FoundationStereo for `task:=memory_ffs`. It relays the left image with
+  the depth, so the vision node pairs them without waiting
+  ([ADR-0017](decisions/0017-stereo-depth-node.md)).
 
 ```mermaid
 flowchart LR
@@ -96,6 +100,7 @@ flowchart LR
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
 | Vision node (`walkie_vision.node`) | YOLOE-26 segmentation with tracking, in text-prompt mode; YOLO26 pose with tracking; SCRFD and ArcFace (InsightFace's `buffalo_l`); OSNet | PyTorch and ONNX Runtime, both on CUDA |
 | Debug visualizer (`walkie_vision.debug_viz`), only with `viz:=true` | None: it draws the object arrays on the image and as 3D markers ([ADR-0016](decisions/0016-debug-visualizer-subscribes-to-the-image.md)) | CPU |
+| Stereo depth (`walkie_vision.stereo_depth`), experimental, started by hand | Fast-FoundationStereo, NVIDIA's ONNX export ([ADR-0017](decisions/0017-stereo-depth-node.md)) | ONNX Runtime on CUDA |
 
 The node also serves `GetPersonCrop`, `EmbedText`, `EmbedCrop` and
 `DescribeCrop`, all on one model worker
@@ -108,6 +113,10 @@ Why one process ([ADR-0010](decisions/0010-one-vision-process.md)):
   camera image. An HD2K image in `bgra8` is about 11 MB, 15 times a second.
   The one exception is the debug visualizer, which runs only with `viz:=true`
   ([ADR-0016](decisions/0016-debug-visualizer-subscribes-to-the-image.md)).
+  The experimental stereo depth node also subscribes to the left and right
+  images while it runs. Then the vision node reads the image it relays, about
+  once a second, instead of the camera's
+  ([ADR-0017](decisions/0017-stereo-depth-node.md)).
 - **One CUDA context.** The models share one context instead of paying for
   two.
 - **Faces at native resolution.** SCRFD runs on a crop around each
@@ -364,6 +373,16 @@ published, with empty clouds.
 The gap between the depth and colour topics is not measured on the robot yet.
 The sim renders both from one camera.
 
+`task:=memory_ffs` reads depth from the experimental stereo depth node
+instead ([ADR-0017](decisions/0017-stereo-depth-node.md)). Its depth is about
+0.8 s behind the camera, longer than any wait the buffer allows, so it could
+never pair with the camera's own image. The stereo node publishes the left
+image again after the depth, with the same header, and the task reads that
+image. The two pair on their exact stamp, in either arrival order.
+`pair_wait_s` is 0.1 there, the cap, to cover the delivery order between the
+two topics. At the default scale the depth is half the image's size, with
+its own scaled `camera_info`, which passes the 1 px ray check above.
+
 ### QoS
 
 | Topics                    | Reliability | History     | Durability |
@@ -483,6 +502,11 @@ and about 11 ms more on a mostly black one (20.9 against 10.1 ms). Run
   takes the level when it is created.
 - On the robot the ZED SDK's depth shares the GPU, and neither memory nor
   latency is measured there yet.
+- The experimental stereo depth node is a second process with its own CUDA
+  context. On the robot's RTX 3080 Ti Laptop GPU, at 1104 x 621, the model
+  took 819 to 841 ms per pair, and check 13's process held 3286 MiB
+  ([ADR-0017](decisions/0017-stereo-depth-node.md)). It has not run next to
+  the vision node.
 
 What `c12` measured on the laptop (RTX 2060, 2026-10-26). It loads the
 models the way the node does and runs 20 HD2K frames of `zidane.jpg` with
@@ -515,6 +539,7 @@ even so.
 | Crops, view quality and JPEG | Nothing | One Laplacian per image, at most 3 objects per image | No work |
 | CLIP ViT-B/16 | Its batch time and its share of the GPU are unknown. SigLIP's 4 ms per crop is not a CLIP measurement | A track once in 10 images and at most 3 per image: about one crop per image at 10 eligible tracks | No model, no Hugging Face access |
 | `DetectObjects` | About 1.5 s for a new list of 5 classes, from the setup log. The second YOLOE's GPU memory is unknown | One request at a time, one new list per 2 s. A new list can stop the stream for its whole preparation | No second model, no image kept |
+| Stereo depth, `task:=memory_ffs` | 819 to 841 ms per pair at 1104 x 621, in check 13 and an offline run on the robot without the vision node. 3286 MiB in check 13 ([ADR-0017](decisions/0017-stereo-depth-node.md)) | None: it is experimental. Its arrays are expected to be 1.3 to 1.5 s old, over the 1 s that consumers accept | Not started: it runs only by hand |
 
 The combined GPU memory is unknown. Budget the robot as 24 GB until it is
 measured. The RTX 2060's 6 GB on the laptops is not evidence for the combined
@@ -1016,6 +1041,23 @@ whose size does not match the `camera_info`, so a wrong topic shows as
 skipped images in the latency line. The node subscribes to the depth image
 on `depth_topic` only with `geometry_enabled`
 ([Depth pairing](#depth-pairing)).
+
+The experimental stereo depth node, started by hand
+([ADR-0017](decisions/0017-stereo-depth-node.md)), subscribes to the ZED's
+`rgb/color/rect` and `right/color/rect` images and their `camera_info`
+topics. The ZED publishes the right image only with
+`video.publish_left_right: true`. Every topic is a parameter. It publishes,
+each with the left image's header:
+
+| Name                                      | Type                     | What it is                                         |
+| ----------------------------------------- | ------------------------ | -------------------------------------------------- |
+| `/walkie_vision/stereo/camera_info`       | `sensor_msgs/CameraInfo` | The left `camera_info`                             |
+| `/walkie_vision/stereo/depth/camera_info` | `sensor_msgs/CameraInfo` | The left `camera_info` scaled to the depth         |
+| `/walkie_vision/stereo/depth`             | `sensor_msgs/Image`      | `32FC1` depth in metres, NaN where invalid, 1104 x 621 at the default scale |
+| `/walkie_vision/stereo/image`             | `sensor_msgs/Image`      | The left image, unchanged, published last          |
+
+`task:=memory_ffs` reads these four topics. No other consumer may depend on
+them while the node is experimental.
 
 ## Messages
 
@@ -1770,3 +1812,7 @@ bodies, so the node finds no people there.
 ??? success "ADR-0016: Let an optional debug visualizer subscribe to the raw image · Accepted"
 
     --8<-- "architecture/decisions/0016-debug-visualizer-subscribes-to-the-image.md:body"
+
+??? note "ADR-0017: Compute depth with Fast-FoundationStereo in a separate, experimental node · Proposed"
+
+    --8<-- "architecture/decisions/0017-stereo-depth-node.md:body"

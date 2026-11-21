@@ -155,6 +155,56 @@ gets the answer: nothing is published on the objects topic.
 has the details, and [Bounded services](../architecture/vision.md#bounded-services)
 the error codes.
 
+### Stereo depth (experimental) {#stereo-depth}
+
+`walkie_vision.stereo_depth` computes depth from the ZED's left and right
+images with Fast-FoundationStereo, for sharper object edges than the ZED's
+own depth ([ADR-0017](../architecture/decisions/0017-stereo-depth-node.md)).
+It is for trials on the robot only, not for `sim:=true`, and the launch file
+does not start it.
+
+1. The ZED must publish its right image: `video.publish_left_right: true` in
+   walkie-ros's ZED configuration. It is off on the robot. Ask the ZED's
+   owner to turn it on and restart the ZED.
+2. Fetch the model, a 103 MB ONNX file in `models/ffs/`:
+
+    ```bash
+    pixi run fetch-models
+    ```
+
+3. Start the stereo node, then the vision node with the `memory_ffs` task:
+
+    ```bash
+    pixi run stereo-depth
+    pixi run vision task:=memory_ffs
+    ```
+
+The stereo node logs `loading ...; this takes about 30 s`, then the provider.
+It runs only on CUDA. It exits with status 2 when it cannot start, for a bad
+parameter, a missing model file or a session that is not on CUDA, and with
+status 1 when the model fails three pairs in a row. Nothing restarts it.
+Every 10 s it logs one line with the
+left, right, published, unmatched and refused counts, the stage times and the
+age of the depth when published. It warns when no right images arrive.
+
+Its parameters are read-only, so set them at the start:
+`pixi run stereo-depth --ros-args -p max_rate_hz:=1.0`.
+
+| Parameter     | Default                                               | What it does |
+| ------------- | ----------------------------------------------------- | ------------ |
+| `scale_x`, `scale_y` | 0.5                                            | The size the model runs at, as a share of the image's. The depth has this size |
+| `max_rate_hz` | 0.0                                                   | The most pairs per second; 0 runs every pair it can take |
+| `model`       | `ffs/c_fast_foundationstereo_bp2_dynbatch_dynhw.onnx` | A path under `models/`, or an absolute path |
+| The topics    | The ZED's `rgb/color/rect` and `right/color/rect`, and `/walkie_vision/stereo/...` | See [Topics and services](../architecture/vision.md#topics-and-services) |
+
+On the robot's GPU one pair takes about 0.84 s at the default scale, so the
+vision node gets about one image a second, and its arrays are expected to be
+1.3 to 1.5 s old. That is over the 1 s that walkie-database accepts, so it
+drops them unless the trial raises its limit. `DetectObjects` and
+`EmbedCrop` answer `STALE_IMAGE`. `scale_y:=0.333` takes about 0.56 s per
+pair, but it doubled the depth spread on a bottle in the one recording
+measured.
+
 ### The first start on a new GPU
 
 On a GPU that ONNX Runtime has no machine code for, such as an RTX 50, the

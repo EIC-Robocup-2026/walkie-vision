@@ -309,6 +309,7 @@ None of these models is gated, so no Hugging Face login is needed.
 | ------------------------- | -------------------------------- | ----------------------------------- | ------------------ |
 | InsightFace `buffalo_l`   | `models/buffalo_l/`              | `pixi run fetch-models`             | 326 MB             |
 | Ultralytics weights       | `models/ultralytics/`            | `pixi run fetch-models`             | 295 MB             |
+| Fast-FoundationStereo ONNX, for the experimental stereo depth node | `models/ffs/` | `pixi run fetch-models`, from a pinned commit of `nvidia/c-fast-foundationstereo` on Hugging Face, checked by SHA-256 | 103 MB |
 | Hugging Face models       | `~/.cache/huggingface/hub`       | The first load, for example in `check-env`. `pixi run fetch-models` also fetches CLIP's `open_clip_model.safetensors`, because the vision node loads it offline only | SigLIP 2 1.5 GB, EmbeddingGemma 2 1.5 GB, CLIP 571 MB, Florence-2 447 MB, OSNet 17 MB |
 
 `WALKIE_VISION_MODELS` moves `models/` elsewhere. Git ignores `models/`, and
@@ -350,6 +351,7 @@ check to `checks/output/summary.txt`:
 | `c10_*`        | rclpy on Zenoh next to every ML library, imported in both orders, through a private router |
 | `c11_providers` | Each of the vision node's model wrappers on the GPU: YOLOE-26, YOLO26 pose with tracking (and a camera pan), faces from head crops, OSNet |
 | `c12_vision_node` | The vision node's start path and 20 HD2K frames through every model in one process, with latency and GPU memory. `--memory FIXTURE` runs the memory task on a recording instead. `check-env` does not start that mode, and it has not run with real models ([Unmeasured budgets](../architecture/vision.md#unmeasured-budgets)) |
+| `c13_stereo` | The stereo depth node's Fast-FoundationStereo model on CUDA: `bus.jpg` at 1104 x 621 against a copy moved 12 px, which must give a median disparity within 1 px of 12 ([ADR-0017](../architecture/decisions/0017-stereo-depth-node.md)) |
 
 `cuda-cuobjdump` is pinned to 12.8 because a 13.x `cuobjdump` pulls in
 conda's `cuda-version` 13, which declares that it needs a CUDA 13 driver.
@@ -360,6 +362,9 @@ it.
 ## Measured on the RTX 2060
 
 All 18 checks passed on the laptop (RTX 2060, driver 595.91, 2026-10-26).
+`c13_stereo` came later and has not run on the laptop. On the robot's RTX
+3080 Ti Laptop GPU (2026-11-21) it passed with a median disparity of
+12.00 px, 819 ms per call and 3286 MiB.
 Each check runs one model in its own process, except `c11` and `c12`, which
 load the vision node's four models together. The time is the median after
 warm-up unless noted. The memory is what `nvidia-smi` reports for the process
@@ -425,6 +430,7 @@ repository uses keep their own licences:
 | Florence-2                                                   | MIT                              |
 | OSNet, the vendored code and the weights                     | MIT                              |
 | CLIP ViT-B/16, OpenAI's weights                              | MIT (the timm mirror's model card says Apache-2.0) |
+| Fast-FoundationStereo, NVIDIA's ONNX export of the commercial checkpoint (`nvidia/c-fast-foundationstereo`). No code from the research repository is used | NVIDIA Open Model Agreement |
 
 !!! danger "Two models are for non-commercial research only"
     `buffalo_l` (SCRFD, ArcFace) and `mobileclip2_b.ts`, the text encoder

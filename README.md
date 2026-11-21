@@ -57,9 +57,10 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 
 | Command                 | What it does                                                                 |
 | ----------------------- | ---------------------------------------------------------------------------- |
-| `pixi run fetch-models` | Download the face and Ultralytics model files into `models/` and check their SHA-256. Fetch the CLIP weights into the Hugging Face cache. |
+| `pixi run fetch-models` | Download the face, Ultralytics and Fast-FoundationStereo model files into `models/` and check their SHA-256. Fetch the CLIP weights into the Hugging Face cache. |
 | `pixi run build-msgs`   | Build the `walkie_vision_msgs` package in `ros2_ws/` with colcon.            |
 | `pixi run vision`       | Run the vision node, restarted if it exits. `task:=hri` or `task:=memory`, `sim:=true`. The memory task also serves `DetectObjects`; its cost is not measured yet. |
+| `pixi run stereo-depth` | Run the experimental stereo depth node, by hand, for `task:=memory_ffs` on the robot. It needs the ZED's right image: see [Stereo depth](https://eic-robocup-2026.github.io/walkie-vision/guides/vision-node/#stereo-depth). |
 | `pixi run fake-detections` | Publish synthetic object arrays with no camera, GPU or model, on Fast DDS in domain 77. |
 | `pixi run test`         | Run the tests. They use fake models and need no GPU, no model files and no router. `.github/workflows/test.yml` runs them from a clean checkout. |
 | `pixi run check-env`    | Run the 19 checks: the GPU builds, every model, the vision node's models and rclpy on this computer. Logs in `checks/output/`. The memory task's check is separate and needs a recording: `python checks/c12_vision_node.py --memory pair.npz`. |

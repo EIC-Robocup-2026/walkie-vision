@@ -14,6 +14,7 @@ pixi run test           # pytest; fakes only, no GPU, no models, Fast DDS
 pixi run check-env      # every model on this GPU; logs in checks/output/
 pixi run python checks/c12_vision_node.py --memory pair.npz  # the memory task on a recording; GPU, never in check-env
 pixi run vision         # the vision node (launch/vision.launch.py); needs a router
+pixi run stereo-depth   # experimental stereo depth node, by hand, for task:=memory_ffs (ADR-0017)
 pixi run fake-detections  # synthetic object arrays, no models; Fast DDS, domain 77
 pixi run docs-build     # mkdocs build --strict; must pass with no warnings
 pixi install --locked   # must succeed: pixi.lock is committed
@@ -37,8 +38,13 @@ build, because `scripts/activate.sh` sources the overlay on activation.
   shares and the interim CLIP provider. Off by default.
 - `src/walkie_vision/requests.py`: bounded service work on the one model worker
   (ADR-0015): the job, its slot, the current image and the request checks.
+- `src/walkie_vision/stereo.py`: depth from a stereo pair with the
+  Fast-FoundationStereo ONNX file, without ROS. `stereo_depth.py`: the
+  experimental node around it, which relays the left image with the depth
+  (ADR-0017). Not started by the launch file.
 - `config/`: the node's parameters (`vision.yaml`, `sim.yaml`) and each task's
-  classes and flags (`tasks/hri.yaml`, `tasks/memory.yaml`).
+  classes and flags (`tasks/hri.yaml`, `tasks/memory.yaml`,
+  `tasks/memory_ffs.yaml` for the stereo node's depth).
   `launch/vision.launch.py` starts the node and restarts it when it exits.
 - `src/walkie_vision/fakes.py`: deterministic fakes for tests.
 - `src/walkie_vision/fake_publisher.py`, `config/fakes/`: the fake object
@@ -68,7 +74,13 @@ build, because `scripts/activate.sh` sources the overlay on activation.
   while their vision node runs: consumers would get two arrays per image
   (`docs/guides/vision-node.md`).
 - Use only ungated Hugging Face models, pinned to a commit in `HUB_MODELS`,
-  and pass that `revision` when loading. Never log in to Hugging Face.
+  and pass that `revision` when loading. Never log in to Hugging Face. A
+  single file that `fetch-models` downloads from Hugging Face, such as the
+  Fast-FoundationStereo ONNX, goes in `DOWNLOADS` with a commit URL and its
+  SHA-256.
+- Use only NVIDIA's ONNX export of Fast-FoundationStereo. Copy no code,
+  comments or constants from the research repository: its licence allows
+  research only.
 - A message change needs: the `.msg` comments, `convert.py`, the field pins
   in `tests/test_convert.py`, and a rebuild in every consuming repository
   (walkie-database, walkie-agent-ros). Under rmw_zenoh, a mismatched

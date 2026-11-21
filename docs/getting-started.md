@@ -44,8 +44,9 @@ first install takes several minutes.
 pixi run fetch-models
 ```
 
-This downloads about 600 MB into `models/`: InsightFace's `buffalo_l` face
-models and three Ultralytics files. It checks every file against its
+This downloads about 720 MB into `models/`: InsightFace's `buffalo_l` face
+models, three Ultralytics files, and the Fast-FoundationStereo ONNX file
+for the experimental stereo depth node. It checks every file against its
 SHA-256, and skips a file that is already there, so it also passes offline
 once it has run. Git ignores `models/`.
 
