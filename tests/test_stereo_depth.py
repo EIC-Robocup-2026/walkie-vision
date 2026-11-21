@@ -285,12 +285,13 @@ def test_the_node_publishes_both_infos_and_depth_and_relays_the_left_image(ctx, 
         # first sends, and keep-last 1 can drop a different output per stamp.
         while not one_stamp_has_every_output():
             assert time.monotonic() < deadline, f"timed out: {({k: len(v) for k, v in got.items()})}, {node.counts}"
-            sent[sec] = _image(sec, value=sec)
+            # The pixel value is a uint8: wrap it so a slow run reaches the timeout, not an OverflowError.
+            sent[sec] = _image(sec, value=sec % 256)
             for name, msg in (
                 ("left_camera_info_topic", _info()),
                 ("right_camera_info_topic", _info(RIGHT_FRAME, RIGHT_P)),
                 ("left_image_topic", sent[sec]),
-                ("right_image_topic", _image(sec, RIGHT_FRAME, value=sec)),
+                ("right_image_topic", _image(sec, RIGHT_FRAME, value=sec % 256)),
             ):
                 pubs[name].publish(msg)
                 for _ in range(3):
@@ -407,6 +408,23 @@ def test_a_refused_pair_leaves_the_rate_window_to_the_next_pair(make_node):
     node._monotonic = lambda: 0.5
     node._process(_image(2), _image(2, RIGHT_FRAME))
     assert node.counts["published"] == 1 and not node.counts["rate_skipped"]
+
+
+def test_a_model_failure_starts_the_rate_window(make_node):
+    calls = []
+
+    def failing(left, right):
+        calls.append(1)
+        raise RuntimeError("cuda failure")
+
+    node = make_node(model=failing, max_rate_hz=1.0)
+    _hold_infos(node)
+    _record(node)
+    for sec, now in ((1, 0.0), (2, 0.5)):
+        node._monotonic = lambda now=now: now
+        node._process(_image(sec), _image(sec, RIGHT_FRAME))
+    assert len(calls) == 1
+    assert node.counts["failed"] == 1 and node.counts["rate_skipped"] == 1
 
 
 # The report.
