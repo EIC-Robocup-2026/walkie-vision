@@ -410,7 +410,7 @@ def test_a_refused_pair_leaves_the_rate_window_to_the_next_pair(make_node):
     assert node.counts["published"] == 1 and not node.counts["rate_skipped"]
 
 
-def test_a_model_failure_starts_the_rate_window(make_node):
+def test_a_model_failure_starts_the_rate_window_and_it_ends_on_time(make_node):
     calls = []
 
     def failing(left, right):
@@ -420,11 +420,11 @@ def test_a_model_failure_starts_the_rate_window(make_node):
     node = make_node(model=failing, max_rate_hz=1.0)
     _hold_infos(node)
     _record(node)
-    for sec, now in ((1, 0.0), (2, 0.5)):
+    for sec, now in ((1, 0.0), (2, 0.5), (3, 1.0)):
         node._monotonic = lambda now=now: now
         node._process(_image(sec), _image(sec, RIGHT_FRAME))
-    assert len(calls) == 1
-    assert node.counts["failed"] == 1 and node.counts["rate_skipped"] == 1
+    assert len(calls) == 2
+    assert node.counts["failed"] == 2 and node.counts["rate_skipped"] == 1
 
 
 # The report.
