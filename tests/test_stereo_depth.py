@@ -9,10 +9,12 @@ import sys
 import time
 import uuid
 from collections import Counter
+from pathlib import Path
 
 import numpy as np
 import pytest
 import rclpy
+import yaml
 from builtin_interfaces.msg import Time
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.parameter import Parameter
@@ -20,6 +22,7 @@ from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Header
 
 from walkie_vision import models
+from walkie_vision.node import MAX_PAIR_WINDOW_S
 from walkie_vision.stereo_depth import (
     AGE_WARN_S,
     INPUT_QOS,
@@ -29,6 +32,7 @@ from walkie_vision.stereo_depth import (
     report_lines,
 )
 
+REPO = Path(__file__).resolve().parents[1]
 TIMEOUT_S = 20.0
 WIDTH, HEIGHT = 64, 48
 LEFT_FRAME = "zed_head_left_camera_frame_optical"
@@ -143,6 +147,21 @@ def test_the_stereo_model_is_pinned_to_a_commit():
     assert re.search(r"/resolve/[0-9a-f]{40}/", item.url)
     assert re.fullmatch(r"[0-9a-f]{64}", item.sha256)
     assert item.size == 103_228_473
+
+
+def _vision_parameters(name: str) -> dict:
+    path = REPO / "config" / "tasks" / f"{name}.yaml"
+    return yaml.safe_load(path.read_text())["walkie_vision"]["ros__parameters"]
+
+
+def test_memory_ffs_reads_what_the_stereo_node_publishes():
+    ffs, memory = _vision_parameters("memory_ffs"), _vision_parameters("memory")
+    cfg = StereoConfig()
+    for name in OUTPUTS:
+        assert ffs.pop(name) == getattr(cfg, name), name
+    assert ffs.pop("pair_wait_s") == MAX_PAIR_WINDOW_S
+    assert ffs.pop("stale_warn_s") == 1.0
+    assert ffs == memory
 
 
 @pytest.mark.parametrize(

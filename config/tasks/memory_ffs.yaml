@@ -1,0 +1,27 @@
+# Object memory with depth from walkie_vision.stereo_depth (ADR-0017).
+# Experimental, for the robot only, not for sim:=true.
+# Start `pixi run stereo-depth` first. It needs the ZED's right image
+# (video.publish_left_right: true).
+# The arrays are about 1.3 to 1.5 s old: older than walkie-database's 1.0 s
+# limit. DetectObjects and EmbedCrop refuse images that old.
+walkie_vision:
+  ros__parameters:
+    classes: [cup, bottle, bowl, apple, banana, backpack, chair, table, shelf, cabinet, sofa]
+
+    # Every image needs its depth: an object without points cannot be placed.
+    geometry_enabled: true
+    require_depth: true
+    object_crops_enabled: true
+    object_embeddings_enabled: true
+    on_demand_enabled: true
+
+    # The stereo node's outputs: the left image it relays, the left
+    # camera_info, and depth with its own camera_info, all with one header.
+    image_topic: /walkie_vision/stereo/image
+    camera_info_topic: /walkie_vision/stereo/camera_info
+    depth_topic: /walkie_vision/stereo/depth
+    depth_camera_info_topic: /walkie_vision/stereo/depth/camera_info
+    # The depth and the relayed image share a stamp; the cap covers the
+    # delivery order between the two topics.
+    pair_wait_s: 0.1
+    stale_warn_s: 1.0
