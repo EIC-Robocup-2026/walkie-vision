@@ -41,10 +41,17 @@ IMAGENET_MEAN_RGB = (123.675, 116.28, 103.53)
 IMAGENET_STD_RGB = (58.395, 57.12, 57.375)
 PAD_MULTIPLE = 32
 """The input's height and width must be multiples of this."""
-# The graph behaves like a maximum disparity of 192 px at its input size. At
-# scale 0.5 on the ZED that puts the nearest valid depth at about 0.34 m.
-# Its 8 refinement iterations are baked in.
-MAX_DISPARITY_PX = 192.0
+# The graph measures disparities up to about 192 px at its input size. Near
+# that limit its output scatters by a few px, so a surface just past it can
+# come out under 192 px and read as a depth a few percent too far. On
+# bus.jpg shifted by known amounts at 1104 x 621, a cut at 184 px kept every
+# pixel of a 180 px shift. It let through 2.5 % of a 192 px shift, 0.2 % of
+# a 196 px shift and none from 200 to 260 px, against 54 %, 11 % and 3.5 to
+# 0.5 % with a cut at 192 px. At scale 0.5 on the ZED, 184 px puts the
+# nearest depth at about 0.35 m instead of 0.34 m.
+# The graph's 8 refinement iterations are baked in.
+MAX_DISPARITY_PX = 184.0
+"""The largest disparity kept as depth: 8 px inside the model's range of about 192 px."""
 INPUT_NAMES = ("left_image", "right_image")
 OUTPUT_NAME = "disparity"
 MAX_RECTIFICATION_ERROR_PX = 0.5

@@ -146,11 +146,13 @@ def test_disparity_to_depth_is_fx_times_baseline_over_disparity():
     assert np.isnan(depth[:, :3]).all()
 
 
-@pytest.mark.parametrize("d", [0.0, -1.0, float("nan"), float("inf"), 192.0, 250.0])
+# 184 to 192 px is inside the model's range, but a surface past the range can
+# come out there.
+@pytest.mark.parametrize("d", [0.0, -1.0, float("nan"), float("inf"), 184.0, 191.9, 192.0, 250.0])
 def test_disparity_to_depth_marks_invalid_disparities_nan(d):
     disparity = np.full((2, 300), d, np.float32)
     assert np.isnan(disparity_to_depth(disparity, 541.0, 0.12)).all()
-    disparity[:, 200] = 191.9
+    disparity[:, 200] = 183.9
     depth = disparity_to_depth(disparity, 541.0, 0.12)
     assert np.isfinite(depth[:, 200]).all()
     assert np.isnan(np.delete(depth, 200, axis=1)).all()
