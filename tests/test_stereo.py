@@ -99,6 +99,11 @@ def test_centre_padding_reaches_a_multiple_of_32_and_puts_the_extra_row_at_the_b
 
 
 def test_model_input_is_rgb_normalised_nchw_with_edge_padding():
+    # Check 13 cannot catch a wrong input format: the model finds a uniform
+    # shift with or without these values. They were checked against a real
+    # stereo pair on the robot (ADR-0017); changing them needs that again.
+    assert IMAGENET_MEAN_RGB == (123.675, 116.28, 103.53)
+    assert IMAGENET_STD_RGB == (58.395, 57.12, 57.375)
     bgr = np.zeros((4, 6, 3), np.uint8)
     bgr[..., 0], bgr[..., 1], bgr[..., 2] = 10, 120, 230  # B, G, R
     bgr[0, 0] = (1, 2, 3)

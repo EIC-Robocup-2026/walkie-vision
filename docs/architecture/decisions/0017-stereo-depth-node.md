@@ -30,6 +30,10 @@ depth spread means less blur:
   checkpoint in an ungated Hugging Face repository,
   `nvidia/c-fast-foundationstereo`, under the NVIDIA Open Model Agreement.
   The research repository's code is under a research licence.
+- The ONNX file takes RGB normalised by the ImageNet mean and standard
+  deviation. On `scene1` at scale 0.5, the node's depth matched the research
+  code's PyTorch output to 0.05 mm at the median; without the normalisation
+  it was 28 to 56 mm off. Check 13's uniform shift cannot tell the two apart.
 - On the robot's RTX 3080 Ti Laptop GPU, with the robot's other processes
   running, one pair at 1104 x 621 takes 841 ms at the median, and 558 ms at
   1104 x 414. Creating the CUDA session takes about 27 s. Check 13's process

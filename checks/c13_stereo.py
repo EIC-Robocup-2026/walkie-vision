@@ -8,6 +8,10 @@ both images show the same point. On the robot's RTX 3080 Ti Laptop GPU
 5th and 95th percentiles, with 819 ms per call after a first call of 1.6 s
 and 3286 MiB of GPU memory. The check has not run on the RTX 2060 yet.
 
+A uniform shift does not test the input format: the model also finds 12 px
+with unnormalised input, or with BGR read as RGB. tests/test_stereo.py pins
+the format, and an offline run on a recorded scene checked it (ADR-0017).
+
 Usage: `python checks/c13_stereo.py [MODEL.onnx]`. The default is the file
 fetch-models downloads, models/ffs/c_fast_foundationstereo_bp2_dynbatch_dynhw.onnx.
 """
