@@ -234,6 +234,15 @@ def test_the_pairer_keeps_only_the_newest_and_counts_what_it_drops():
     assert pairer.offer_right(right4) == (left4, right4)
 
 
+def test_the_pairer_never_pairs_stamps_a_millisecond_apart():
+    pairer = StereoPairer()
+    right = _image(1, RIGHT_FRAME)
+    right.header.stamp.nanosec = 1_000_000
+    assert pairer.offer_left(_image(1)) is None
+    assert pairer.offer_right(right) is None
+    assert pairer.counts["unmatched"] == 1
+
+
 def test_the_pairer_never_pairs_a_zero_stamp():
     counts: Counter = Counter()
     pairer = StereoPairer(counts)
@@ -265,11 +274,16 @@ def test_the_node_publishes_both_infos_and_depth_and_relays_the_left_image(ctx, 
     executor.add_node(node)
     executor.add_node(helper)
     sent: dict[int, Image] = {}
+
+    def one_stamp_has_every_output() -> bool:
+        return bool(set.intersection(*[{m.header.stamp.sec for m in msgs} for msgs in got.values()]))
+
     try:
         deadline = time.monotonic() + TIMEOUT_S
         sec = 1
-        # Publish until every output arrives: discovery can drop the first sends.
-        while not all(got.values()):
+        # Publish until one stamp has all four outputs: discovery can drop the
+        # first sends, and keep-last 1 can drop a different output per stamp.
+        while not one_stamp_has_every_output():
             assert time.monotonic() < deadline, f"timed out: {({k: len(v) for k, v in got.items()})}, {node.counts}"
             sent[sec] = _image(sec, value=sec)
             for name, msg in (
@@ -355,6 +369,21 @@ def test_three_failures_in_a_row_raise_and_a_success_resets_the_run(make_node):
     assert node.counts["failed"] == 4 and node.counts["published"] == 1
     with pytest.raises(RuntimeError, match="cuda failure"):
         node._process(_image(6), _image(6, RIGHT_FRAME))
+
+
+def test_a_refused_pair_between_failures_does_not_end_the_run(make_node):
+    def failing(left, right):
+        raise RuntimeError("cuda failure")
+
+    node = make_node(model=failing)
+    _hold_infos(node)
+    _record(node)
+    for sec in (1, 2):
+        node._process(_image(sec), _image(sec, RIGHT_FRAME))
+    node._process(_image(3), _image(4, RIGHT_FRAME))
+    assert node.counts["refused_stamp"] == 1 and node.counts["failed"] == 2
+    with pytest.raises(RuntimeError, match="cuda failure"):
+        node._process(_image(5), _image(5, RIGHT_FRAME))
 
 
 def test_max_rate_hz_skips_a_pair_that_comes_too_soon(make_node):

@@ -298,6 +298,26 @@ def test_stereo_depth_returns_depth_at_the_inference_size_with_the_left_header()
     assert set(frame.times_ms) == {"prepare", "model", "depth"}
 
 
+def test_stereo_depth_scales_each_axis_on_its_own_and_uses_the_rounded_width_for_fx():
+    width = WIDTH + 1
+    frame = stereo_depth(
+        _image(width=width),
+        _image(RIGHT_FRAME, width=width),
+        _info(width=width),
+        _info(RIGHT_FRAME, RIGHT_P, width=width),
+        0.5,
+        0.25,
+        _constant_model,
+    )
+    # 65 * 0.5 rounds up to 33 columns; 48 * 0.25 is 12 rows.
+    assert frame.depth.shape == (12, 33)
+    fx_s = K[0] * 33 / width
+    np.testing.assert_allclose(frame.depth[:, 3:], fx_s * 0.1 / DISPARITY, rtol=1e-6)
+    assert (frame.depth_info.width, frame.depth_info.height) == (33, 12)
+    assert frame.depth_info.k[0] == pytest.approx(fx_s)
+    assert frame.depth_info.k[4] == pytest.approx(K[4] * 12 / HEIGHT)
+
+
 def test_stereo_depth_hands_the_model_left_then_right():
     seen = []
 
