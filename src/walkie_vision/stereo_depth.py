@@ -320,16 +320,17 @@ class StereoDepthNode(Node):
         if cfg.max_rate_hz > 0 and self._last_start is not None and now - self._last_start < 1.0 / cfg.max_rate_hz:
             self.counts["rate_skipped"] += 1
             return
-        self._last_start = now
         try:
             frame = stereo_depth(left, right, self._left_info, self._right_info, cfg.scale_x, cfg.scale_y, self._model)
         except StereoRefused as e:
             # A refusal is about the input, not the model: it neither counts
-            # as a failure nor ends a run of failures.
+            # as a failure nor ends a run of failures. It comes before the
+            # model runs, so it leaves the max_rate_hz window to the next pair.
             self.counts[f"refused_{e.reason}"] += 1
             self.get_logger().warning(f"refused a stereo pair ({e.reason}): {e}", throttle_duration_sec=10.0)
             return
         except Exception as e:
+            self._last_start = now
             self.counts["failed"] += 1
             self._failures_in_a_row += 1
             if self.counts["failed"] == 1:
@@ -341,6 +342,7 @@ class StereoDepthNode(Node):
             if self._failures_in_a_row >= MAX_CONSECUTIVE_FAILURES:
                 raise
             return
+        self._last_start = now
         # The vision node then holds both infos and the depth when the image
         # arrives, so its RgbdBuffer pairs on the exact stamp without waiting.
         self._info_pub.publish(frame.image_info)

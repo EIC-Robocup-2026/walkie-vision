@@ -368,6 +368,18 @@ def test_max_rate_hz_skips_a_pair_that_comes_too_soon(make_node):
     assert node.counts["rate_skipped"] == 1
 
 
+def test_a_refused_pair_leaves_the_rate_window_to_the_next_pair(make_node):
+    node = make_node(max_rate_hz=1.0)
+    _record(node)
+    node._monotonic = lambda: 0.0
+    node._process(_image(1), _image(1, RIGHT_FRAME))
+    assert node.counts["refused_camera_info"] == 1
+    _hold_infos(node)
+    node._monotonic = lambda: 0.5
+    node._process(_image(2), _image(2, RIGHT_FRAME))
+    assert node.counts["published"] == 1 and not node.counts["rate_skipped"]
+
+
 # The report.
 
 
