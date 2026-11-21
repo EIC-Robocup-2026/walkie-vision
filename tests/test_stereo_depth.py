@@ -378,6 +378,20 @@ def test_the_report_warns_when_depth_is_older_than_age_warn_s():
     assert "model 800" in fresh[0][1] and "age s p50 0.30" in fresh[0][1] and "valid p50 90%" in fresh[0][1]
 
 
+def test_the_node_logs_a_report_with_info_and_warning_lines(make_node, capfd):
+    node = make_node()
+    node.counts["left"] += 5
+    # rclpy refuses a second severity at one call site, so an info line then
+    # a warning must not come from the same call.
+    node._report()
+    node.counts["left"] += 5
+    node._report()
+    out = "".join(capfd.readouterr())
+    assert out.count("left 5 right 0") == 2
+    assert out.count("publish_left_right") == 2
+    assert node._reported["left"] == 10
+
+
 def test_the_report_line_counts_refusals_by_reason():
     ((level, text), *_) = _report({"left": 3, "right": 3, "refused_frame": 1, "refused_camera_info": 2})
     assert level == "info"

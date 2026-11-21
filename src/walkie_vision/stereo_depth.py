@@ -343,7 +343,12 @@ class StereoDepthNode(Node):
         delta = {k: self.counts[k] - self._reported[k] for k in self.counts}
         logger = self.get_logger()
         for level, text in report_lines(delta, self._times, self._ages, self._valid, self.config):
-            (logger.warning if level == "warning" else logger.info)(text)
+            # One call per severity: rclpy keeps each call site's severity and
+            # raises ValueError when one call site logs at two.
+            if level == "warning":
+                logger.warning(text)
+            else:
+                logger.info(text)
         self._reported = Counter(self.counts)
         for values in (*self._times.values(), self._ages, self._valid):
             values.clear()
