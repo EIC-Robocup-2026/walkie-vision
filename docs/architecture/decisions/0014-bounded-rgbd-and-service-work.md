@@ -65,13 +65,13 @@ walkie-database is the only memory.
   waits the full 60 ms before it goes to the worker.
 - Depth that arrives more than 60 ms before or after its image does not pair.
   The default was 20 ms until 2026-11-22. That day, on the robot with HD2K
-  colour and depth through the team router and a heavily loaded computer, the
-  memory task paired 0 to 1 images in 10 s, against 13 to 19 earlier the same
-  day. The stamps of the two topics match exactly, so the cause is the wall-time
-  gap between their arrival; that gap is still not measured directly. A wait
-  near the frame interval does not help, because the next image replaces the
-  waiting one, so 60 ms stays under the 66 to 90 ms between frames at 15 to
-  11 Hz.
+  colour and depth through the shared Zenoh router and a heavily loaded
+  computer, the memory task paired 0 to 1 images in 10 s, against 13 to 19
+  earlier the same day. The stamps of the two topics match exactly when they
+  pair, which points to the wall-time gap between their arrival; that gap is
+  still not measured directly. A wait near the frame interval does not help,
+  because the next image replaces the waiting one, so 60 ms stays under the 67
+  to 90 ms between frames at 15 to 11 Hz.
 - A second CameraInfo subscription exists only when the depth has its own topic.
 - The buffer is in use now, with `geometry_enabled`. The counter and the
   scheduler arrive with the slices that need them; this ADR does not change then.
