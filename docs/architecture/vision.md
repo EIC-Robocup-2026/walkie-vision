@@ -248,7 +248,7 @@ sim output topics and the sim service names. Write every double with a decimal p
 | `depth_topic`              | string   | `/zed_head/zed_node/depth/depth_registered` | Rectified depth registered to the RGB image, 32FC1 in metres or 16UC1 in millimetres. The sim publishes the same name |
 | `depth_camera_info_topic`  | string   | `/zed_head/zed_node/depth/camera_info`   | The calibration of the depth pixels. When it equals `camera_info_topic`, the node keeps one subscription |
 | `max_pair_gap_s`           | double   | 0.005                                    | The largest stamp difference of a pair, from 0 to 0.1. An exact stamp wins                    |
-| `pair_wait_s`              | double   | 0.020                                    | How long an image waits for its depth, in seconds of wall time, over 0 and at most 0.1. The services' depth pairs within it too |
+| `pair_wait_s`              | double   | 0.060                                    | How long an image waits for its depth, in seconds of wall time, over 0 and at most 0.1. The services' depth pairs within it too |
 | `require_depth`            | bool     | false                                    | Skip an image without usable depth, instead of publishing it with empty clouds. Needs `geometry_enabled` |
 | `depth_min_m`              | double   | 0.2                                      | Nearer depth becomes no point. Over 0. A starting value for the ZED and the sim, to tune on recordings |
 | `depth_max_m`              | double   | 3.0                                      | Farther depth becomes no point. Finite and above `depth_min_m`. A starting value too          |
@@ -295,20 +295,21 @@ The callbacks pair on arrival:
 | Earlier, within 5 ms                | The image holds it, and keeps waiting for an exact or later one |
 | Over 5 ms apart                     | No pair                                                   |
 
-An image waits at most 20 ms of wall time. Then it goes to the worker with the
-depth it holds, or without one. Several rules keep a pair from going stale:
+An image waits at most `pair_wait_s` of wall time, 60 ms by default. Then it
+goes to the worker with the depth it holds, or without one. Several rules keep a
+pair from going stale:
 
 - The wait uses wall time, not `/clock`. A paused sim cannot hang the worker.
 - A depth image is used once.
-- A depth image that waited over 20 ms is dropped when an image arrives, so a
-  sim that restarts cannot match it to a new image with an equal stamp.
+- A depth image that waited over `pair_wait_s` is dropped when an image arrives,
+  so a sim that restarts cannot match it to a new image with an equal stamp.
 - A jump back of the ROS clock, as at a sim restart, drops every image the
   worker has not taken: the waiting image with the depth it holds, the depth
   that waits, and a finished pair. The next run repeats the stamps of the
   previous one, so nothing held at the jump pairs with anything after it, even
-  within 20 ms, and nothing held reaches the arrays. Only the image the worker
-  already took goes on. Without depth the node drops its one waiting image the
-  same way. walkie-database clears its TF on the same jump.
+  within `pair_wait_s`, and nothing held reaches the arrays. Only the image the
+  worker already took goes on. Without depth the node drops its one waiting
+  image the same way. walkie-database clears its TF on the same jump.
 - An image taken before the jump and delivered after it is new input to the
   stream, and is published with its own stamp, ahead of the clock. The node
   cannot tell which run a stamp comes from.
@@ -318,8 +319,8 @@ depth it holds, or without one. Several rules keep a pair from going stale:
 
 The services that read depth, `EmbedCrop` and `DetectObjects`, keep their own
 pair by the same bounds: stamps within 5 ms, no zero stamp, and the two images
-received within 20 ms of wall time of each other, in either order. A depth
-received later than that gives a service no depth either. A jump back of the
+received within `pair_wait_s` of wall time of each other, in either order. A
+depth received later than that gives a service no depth either. A jump back of the
 ROS clock drops the services' images and their pair, so no image or depth held
 at a sim restart answers a read after it, alone or paired. On sim time the
 services also keep no image or depth stamped more than 1 s ahead of `/clock`.

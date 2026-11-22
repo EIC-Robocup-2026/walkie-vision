@@ -31,7 +31,7 @@ sim's clock stays paused.
   colour image, the newest depth image and one finished bundle. A new one
   replaces the old one. There is no queue and no older image.
 - **Pairing is bounded twice.** The stamps may differ by `max_pair_gap_s` (5 ms)
-  and an exact stamp wins. An image waits at most `pair_wait_s` (20 ms) of wall
+  and an exact stamp wins. An image waits at most `pair_wait_s` (60 ms) of wall
   time. Then `require_depth` decides: skip and count the image, or publish it
   with empty clouds. The wait uses wall time, so a paused or reset sim clock
   cannot hang the worker. A depth image that waited longer than `pair_wait_s`
@@ -59,12 +59,19 @@ walkie-database is the only memory.
 
 - Up to three large messages stay in memory at a time. At HD2K each one is about
   11 MB. A restart still loses only the track ids and that counter.
-- An image with a depth just before it waits for the whole 20 ms, in case an
+- An image with a depth just before it waits for the whole 60 ms, in case an
   exact depth still comes. On a stream with inexact stamps, that adds up to
-  20 ms per image. An exact stamp costs nothing.
-- Depth that arrives more than 20 ms before or after its image does not pair. The
-  gap between the two topics is not measured on the robot yet. If it is larger,
-  raise `pair_wait_s` and accept the extra age.
+  60 ms per image. An exact stamp costs nothing. An image without depth also
+  waits the full 60 ms before it goes to the worker.
+- Depth that arrives more than 60 ms before or after its image does not pair.
+  The default was 20 ms until 2026-11-22. That day, on the robot with HD2K
+  colour and depth through the team router and a heavily loaded computer, the
+  memory task paired 0 to 1 images in 10 s, against 13 to 19 earlier the same
+  day. The stamps of the two topics match exactly, so the cause is the wall-time
+  gap between their arrival; that gap is still not measured directly. A wait
+  near the frame interval does not help, because the next image replaces the
+  waiting one, so 60 ms stays under the 66 to 90 ms between frames at 15 to
+  11 Hz.
 - A second CameraInfo subscription exists only when the depth has its own topic.
 - The buffer is in use now, with `geometry_enabled`. The counter and the
   scheduler arrive with the slices that need them; this ADR does not change then.
