@@ -101,8 +101,9 @@ walkie_vision:
     max_pair_gap_s: 0.005
     # How long an image waits for its depth, in seconds of wall time. A
     # service's depth must also arrive within this of its image. On the loaded
-    # robot the ZED's two HD2K topics arrive more than 20 ms apart, so keep it
-    # above that and below the frame interval (about 90 ms at 11 Hz).
+    # robot the ZED's two HD2K topics appear to arrive more than 20 ms apart
+    # (inferred from the pairing counts, not measured), so keep it above that
+    # and below the frame interval: about 67 ms at 15 Hz, 90 ms at 11 Hz.
     pair_wait_s: 0.060
     # Skip an image that has no usable depth, instead of publishing it without
     # points. Needs geometry_enabled.
