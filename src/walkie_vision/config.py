@@ -130,7 +130,7 @@ class VisionConfig:
     depth_topic: str = "/zed_head/zed_node/depth/depth_registered"
     depth_camera_info_topic: str = "/zed_head/zed_node/depth/camera_info"
     max_pair_gap_s: float = 0.005
-    pair_wait_s: float = 0.020
+    pair_wait_s: float = 0.060
     require_depth: bool = False
     depth_min_m: float = 0.2
     depth_max_m: float = 3.0

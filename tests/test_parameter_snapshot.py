@@ -96,7 +96,7 @@ DEFAULTS = {
     "objects_min_score": ("DOUBLE", 0.25, True),
     "objects_topic": ("STRING", "/walkie_vision/objects", True),
     "on_demand_enabled": ("BOOL", False, True),
-    "pair_wait_s": ("DOUBLE", 0.02, True),
+    "pair_wait_s": ("DOUBLE", 0.06, True),
     "people_dedupe_iou": ("DOUBLE", 0.5, True),
     "people_min_score": ("DOUBLE", 0.25, True),
     "people_topic": ("STRING", "/walkie_vision/people", True),
